@@ -1,0 +1,7 @@
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+test_usage_counts_only_tokens_before_the_thinking_delimiter (dev.tests.server.test_chat_completions.ChatCompletionTests.test_usage_counts_only_tokens_before_the_thinking_delimiter) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.714s
+
+OK

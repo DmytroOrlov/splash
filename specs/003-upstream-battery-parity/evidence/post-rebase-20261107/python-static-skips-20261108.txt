@@ -1,0 +1,9 @@
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+dev.tests.install.test_clients.InstalledCodexTests.test_config_overrides_keep_requests_on_the_local_provider set SPLASH_CODEX_BINARY for CLI routing test
+dev.tests.install.test_clients.InstalledCodexTests.test_truncated_response_has_a_bounded_client_outcome set SPLASH_CODEX_BINARY for CLI routing test
+dev.tests.install.test_clients.InstalledOpenCodeTests.test_private_server_configuration_is_isolated_from_the_existing_service set SPLASH_OPENCODE_BINARY for private-server configuration test
+dev.tests.install.test_clients.InstalledPiTests.test_text_tools_and_session_resume_against_splash_http set SPLASH_PI_BINARY for Pi HTTP test
+dev.tests.install.test_completion.CompletionTests.test_actual_fish_completion fish is not installed
+dev.tests.install.test_completion.CompletionTests.test_fish_autoload_through_global_symlink_survives_upgrade fish is not installed
+dev.tests.install.test_completion.CompletionTests.test_fish_completes_local_model_paths_with_spaces fish is not installed
+dev.tests.install.test_completion.CompletionTests.test_fish_loaded_completion_survives_release_upgrade fish is not installed

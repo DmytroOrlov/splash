@@ -1,0 +1,148 @@
+swift test --package-path app
+Building for debugging...
+[Using on-disk description]
+[2 / 6] SplashTests-product
+[5 / 9] SplashTests-product
+[10 / 12] SplashTests-product
+Build complete! (3,34 sec)
+Test Suite 'All tests' started at 2026-11-08 20:05:52.544.
+Test Suite 'All tests' passed at 2026-11-08 20:05:52.552.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.008) seconds
+◇ Test run started.
+↳ Testing Library Version: 2084
+↳ Target Platform: arm64e-apple-macos14.0
+◇ Suite ChatTests started.
+◇ Suite CatalogTests started.
+◇ Test asksWithImagesEarlierThoughtsAndTheEffort() started.
+◇ Test readsTheEventStream() started.
+◇ Suite ComposerTests started.
+◇ Test keepsConversationsInTheirFolder() started.
+◇ Test anAnswerTheAppQuitDuringSaysSo() started.
+◇ Test namesModels() started.
+◇ Test parsesDataLinesOnly() started.
+◇ Test measuresModelFilesOnThisMac() started.
+◇ Suite ChatContextTests started.
+➜ Suite TranscriptPictures skipped.
+◇ Suite AgentTests started.
+◇ Suite ChatContextFlowTests started.
+◇ Suite OutputTests started.
+◇ Test theComposerKeepsWhatTheInputMethodComposes() started.
+◇ Test aCountBelongsToItsPrompt() started.
+✔ Test parsesDataLinesOnly() passed after 0.001 seconds.
+◇ Test typingWaitsAndAFailedCountLeavesNone() started.
+◇ Test validatesCountResponsesAndSurfacesServerErrors() started.
+◇ Test theRingKeepsTheLastCountOfItsConversation() started.
+◇ Test anOldCountCannotReplaceANewerPromptsCount() started.
+◇ Test theRingFillsAndWarnsAsThePromptGrows() started.
+◇ Test countsTheSameImagesHistoryAndReasoningAsGeneration() started.
+➜ Test showcase() skipped.
+➜ Test whileAReplyStreams() skipped.
+◇ Test runsInTheFolderPickedWithTheServersKey() started.
+◇ Test aPromptTheContextCannotHoldStaysAndANewChatSendsIt() started.
+◇ Test saysWhyFilesCannotServe() started.
+◇ Test formatsSizes() started.
+◇ Test formatsFiguresAndTimes() started.
+◇ Test findsErrorLines() started.
+◇ Suite ServerTests started.
+◇ Suite ServeSettingsTests started.
+✔ Test runsInTheFolderPickedWithTheServersKey() passed after 0.001 seconds.
+◇ Test readsDownloadEvents() started.
+➜ Suite AppFlowTests skipped.
+◇ Suite AppStateTests started.
+◇ Test suggestsTheLargestVariantTheMacHasMemoryFor() started.
+✔ Test saysWhyFilesCannotServe() passed after 0.001 seconds.
+◇ Test servesFilesOnThisMacUnderANameTheServerTakes() started.
+◇ Test followsTheStepsOfAStart() started.
+◇ Test keepsTheKeyInTheKeychain() started.
+◇ Test keepsTheOptionsAndReadsBadOnesAsDefaults() started.
+◇ Test readsTheStatus() started.
+◇ Test warnsOfAServerOthersCanUse() started.
+◇ Test offersMemoryLimitsBelowTheMacs() started.
+◇ Test defaultsServeOfflineOnThePort() started.
+◇ Test saysWhatMakesRoomForAModel() started.
+◇ Test readsTheRequestsTheLogFinishes() started.
+◇ Test saysWhenAChatOutgrowsTheContext() started.
+◇ Test leavesOutOptionsTheOthersLeaveNoEffect() started.
+◇ Test passesTheOptionsSetInTheTablesOrder() started.
+◇ Test readsAndNamesContextLengths() started.
+◇ Test typedValuesTakeServesForms() started.
+➜ Test everyServeOptionHasItsPlace() skipped.
+➜ Test aDownloadReportsProgressCancelsAndResumes() skipped.
+✔ Suite AgentTests passed after 0.001 seconds.
+➜ Test aModelInstallsStartsServesAndStops() skipped.
+◇ Suite TranscriptTests started.
+➜ Test quittingStopsEverythingAndStartsNothing() skipped.
+➜ Test aStartThatFailsSaysWhy() skipped.
+◇ Test keepsTheKeyTheOptionsHave() started.
+➜ Test thisMacIsSupportedAndGetsSuggestions() skipped.
+➜ Test aBusyPortFailsAtOnce() skipped.
+➜ Test modelFilesOnThisMacStartAndAnswer() skipped.
+➜ Test aRelaunchStopsTheServerACrashLeftBehind() skipped.
+➜ Test switchingStopsOneModelAndStartsTheNext() skipped.
+✔ Test readsDownloadEvents() passed after 0.001 seconds.
+✔ Test suggestsTheLargestVariantTheMacHasMemoryFor() passed after 0.002 seconds.
+✔ Test followsTheStepsOfAStart() passed after 0.001 seconds.
+✔ Test offersMemoryLimitsBelowTheMacs() passed after 0.001 seconds.
+✔ Test asksWithImagesEarlierThoughtsAndTheEffort() passed after 0.002 seconds.
+✔ Test warnsOfAServerOthersCanUse() passed after 0.001 seconds.
+✔ Test readsTheEventStream() passed after 0.002 seconds.
+✔ Test defaultsServeOfflineOnThePort() passed after 0.001 seconds.
+✔ Test findsErrorLines() passed after 0.001 seconds.
+✔ Test leavesOutOptionsTheOthersLeaveNoEffect() passed after 0.001 seconds.
+✔ Test readsTheStatus() passed after 0.001 seconds.
+◇ Test sendsMessagesAsThePageReadsThem() started.
+✔ Test anAnswerTheAppQuitDuringSaysSo() passed after 0.002 seconds.
+✔ Test servesFilesOnThisMacUnderANameTheServerTakes() passed after 0.001 seconds.
+✔ Test measuresModelFilesOnThisMac() passed after 0.003 seconds.
+✔ Test typedValuesTakeServesForms() passed after 0.002 seconds.
+✔ Test readsTheRequestsTheLogFinishes() passed after 0.002 seconds.
+✔ Suite ServerTests passed after 0.004 seconds.
+✔ Test passesTheOptionsSetInTheTablesOrder() passed after 0.002 seconds.
+✔ Test namesModels() passed after 0.004 seconds.
+✔ Suite CatalogTests passed after 0.004 seconds.
+✔ Test keepsTheOptionsAndReadsBadOnesAsDefaults() passed after 0.004 seconds.
+✔ Test saysWhenAChatOutgrowsTheContext() passed after 0.010 seconds.
+✔ Test formatsFiguresAndTimes() passed after 0.011 seconds.
+✔ Test readsAndNamesContextLengths() passed after 0.010 seconds.
+✔ Test formatsSizes() passed after 0.012 seconds.
+✔ Suite OutputTests passed after 0.012 seconds.
+✔ Test saysWhatMakesRoomForAModel() passed after 0.012 seconds.
+✔ Test keepsTheKeyInTheKeychain() passed after 0.020 seconds.
+✔ Suite ServeSettingsTests passed after 0.022 seconds.
+✔ Test theComposerKeepsWhatTheInputMethodComposes() passed after 2.385 seconds.
+◇ Test aNewChatKeepsTheComposer() started.
+✔ Test theRingFillsAndWarnsAsThePromptGrows() passed after 2.432 seconds.
+✔ Test countsTheSameImagesHistoryAndReasoningAsGeneration() passed after 2.432 seconds.
+✔ Test keepsConversationsInTheirFolder() passed after 2.474 seconds.
+✔ Test sendsMessagesAsThePageReadsThem() passed after 2.471 seconds.
+✔ Test keepsTheKeyTheOptionsHave() passed after 2.472 seconds.
+✔ Suite ChatTests passed after 2.474 seconds.
+✔ Suite AppStateTests passed after 2.472 seconds.
+◇ Test theReplyLineSaysWhatComesBeforeTheAnswer() started.
+✔ Test validatesCountResponsesAndSurfacesServerErrors() passed after 2.474 seconds.
+✔ Test aCountBelongsToItsPrompt() passed after 2.474 seconds.
+✔ Test theReplyLineSaysWhatComesBeforeTheAnswer() passed after 0.012 seconds.
+◇ Test onlyTheStreamingReplyGoesAgainWhileItStreams() started.
+✔ Test onlyTheStreamingReplyGoesAgainWhileItStreams() passed after 0.001 seconds.
+◇ Test thePageDrawsRepliesSafelyAndAsksAgain() started.
+✔ Test theRingKeepsTheLastCountOfItsConversation() passed after 2.493 seconds.
+✔ Test aNewChatKeepsTheComposer() passed after 0.122 seconds.
+✔ Suite ComposerTests passed after 2.508 seconds.
+✔ Test anOldCountCannotReplaceANewerPromptsCount() passed after 2.560 seconds.
+✔ Test thePageDrawsRepliesSafelyAndAsksAgain() passed after 0.117 seconds.
+◇ Test theComposerTakesTheKeyboardBackFromThePage() started.
+✔ Test theComposerTakesTheKeyboardBackFromThePage() passed after 0.109 seconds.
+◇ Test followsTheLatestUntilTheReaderScrollsUp() started.
+✔ Test typingWaitsAndAFailedCountLeavesNone() passed after 3.270 seconds.
+✔ Suite ChatContextTests passed after 3.271 seconds.
+✔ Test aPromptTheContextCannotHoldStaysAndANewChatSendsIt() passed after 3.568 seconds.
+◇ Test aPromptInsideTheReplyAllowanceStillGoes() started.
+✔ Test aPromptInsideTheReplyAllowanceStillGoes() passed after 0.988 seconds.
+◇ Test aFailedOrSlowCountHoldsNothingBack() started.
+✔ Test followsTheLatestUntilTheReaderScrollsUp() passed after 2.782 seconds.
+◇ Test theChatShowsAgainWithoutLoadingOrDrawingItsPageAgain() started.
+✔ Test theChatShowsAgainWithoutLoadingOrDrawingItsPageAgain() passed after 0.215 seconds.
+✔ Suite TranscriptTests passed after 5.710 seconds.
+✔ Test aFailedOrSlowCountHoldsNothingBack() passed after 1.590 seconds.
+✔ Suite ChatContextFlowTests passed after 6.148 seconds.
+✔ Test run with 61 tests in 13 suites passed after 6.148 seconds.

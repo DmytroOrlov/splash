@@ -1,0 +1,200 @@
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/slot-file-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/model/SlotFile.cpp runtime/model/SsdReaders.cpp dev/tests/engine/slot_file_test.cpp -o build/t015-corrected/sanitizers/slot-file-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/slot-file-tsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread \
+		runtime/model/SlotFile.cpp runtime/model/SsdReaders.cpp dev/tests/engine/slot_file_test.cpp -o build/t015-corrected/sanitizers/slot-file-tsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/kv-slot-format-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/ops/KvSlotFormat.cpp dev/tests/engine/kv_slot_format_test.cpp -o build/t015-corrected/sanitizers/kv-slot-format-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/kv-page-tier-host-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/ops/KvSlotFormat.cpp runtime/model/SlotFile.cpp runtime/model/SsdReaders.cpp runtime/model/KvCopyRead.cpp dev/tests/engine/kv_page_tier_host_test.cpp -o build/t015-corrected/sanitizers/kv-page-tier-host-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/kv-page-tier-host-tsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread \
+		runtime/ops/KvSlotFormat.cpp runtime/model/SlotFile.cpp runtime/model/SsdReaders.cpp runtime/model/KvCopyRead.cpp dev/tests/engine/kv_page_tier_host_test.cpp -o build/t015-corrected/sanitizers/kv-page-tier-host-tsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/disk-space-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/engine/DiskSpace.cpp runtime/engine/CacheDirectory.cpp runtime/model/SlotFile.cpp dev/tests/engine/disk_space_test.cpp -o build/t015-corrected/sanitizers/disk-space-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/disk-space-tsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread \
+		runtime/engine/DiskSpace.cpp runtime/engine/CacheDirectory.cpp runtime/model/SlotFile.cpp dev/tests/engine/disk_space_test.cpp -o build/t015-corrected/sanitizers/disk-space-tsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/cache-directory-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/engine/CacheDirectory.cpp dev/tests/engine/cache_directory_test.cpp -o build/t015-corrected/sanitizers/cache-directory-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/cache-directory-tsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread \
+		runtime/engine/CacheDirectory.cpp dev/tests/engine/cache_directory_test.cpp -o build/t015-corrected/sanitizers/cache-directory-tsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/persistent-cache-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/engine/Scheduler.cpp runtime/model/DraftContextPlan.cpp runtime/engine/KvPool.cpp runtime/engine/KvCache.cpp runtime/engine/StateCache.cpp runtime/engine/Cache.cpp runtime/engine/WriteBehind.cpp runtime/engine/Engine.cpp runtime/engine/Protocol.cpp runtime/engine/NativeRuntime.cpp runtime/engine/ResourceDomainLease.cpp runtime/model/SlotFile.cpp dev/tests/engine/persistent_cache_test.cpp -o build/t015-corrected/sanitizers/persistent-cache-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/persistent-cache-tsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread \
+		runtime/engine/Scheduler.cpp runtime/model/DraftContextPlan.cpp runtime/engine/KvPool.cpp runtime/engine/KvCache.cpp runtime/engine/StateCache.cpp runtime/engine/Cache.cpp runtime/engine/WriteBehind.cpp runtime/engine/Engine.cpp runtime/engine/Protocol.cpp runtime/engine/NativeRuntime.cpp runtime/engine/ResourceDomainLease.cpp runtime/model/SlotFile.cpp dev/tests/engine/persistent_cache_test.cpp -o build/t015-corrected/sanitizers/persistent-cache-tsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/engine-cache-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/engine/KvPool.cpp runtime/engine/KvCache.cpp runtime/engine/StateCache.cpp runtime/engine/Cache.cpp runtime/engine/WriteBehind.cpp runtime/model/SlotFile.cpp dev/tests/engine/engine_cache_test.cpp -o build/t015-corrected/sanitizers/engine-cache-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/engine-cache-tsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread \
+		runtime/engine/KvPool.cpp runtime/engine/KvCache.cpp runtime/engine/StateCache.cpp runtime/engine/Cache.cpp runtime/engine/WriteBehind.cpp runtime/model/SlotFile.cpp dev/tests/engine/engine_cache_test.cpp -o build/t015-corrected/sanitizers/engine-cache-tsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/cache-property-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/engine/KvPool.cpp runtime/engine/KvCache.cpp runtime/engine/StateCache.cpp runtime/engine/Cache.cpp runtime/engine/WriteBehind.cpp runtime/model/SlotFile.cpp dev/tests/engine/cache_property_test.cpp -o build/t015-corrected/sanitizers/cache-property-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/cache-property-tsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread \
+		runtime/engine/KvPool.cpp runtime/engine/KvCache.cpp runtime/engine/StateCache.cpp runtime/engine/Cache.cpp runtime/engine/WriteBehind.cpp runtime/model/SlotFile.cpp dev/tests/engine/cache_property_test.cpp -o build/t015-corrected/sanitizers/cache-property-tsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/protocol-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/engine/Protocol.cpp dev/tests/engine/ProtocolPeer.cpp dev/tests/engine/protocol_test.cpp -o build/t015-corrected/sanitizers/protocol-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/protocol-tsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread \
+		runtime/engine/Protocol.cpp dev/tests/engine/ProtocolPeer.cpp dev/tests/engine/protocol_test.cpp -o build/t015-corrected/sanitizers/protocol-tsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/engine-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/engine/Scheduler.cpp runtime/model/DraftContextPlan.cpp runtime/engine/KvPool.cpp runtime/engine/KvCache.cpp runtime/engine/StateCache.cpp runtime/engine/Cache.cpp runtime/engine/WriteBehind.cpp runtime/engine/Engine.cpp runtime/engine/MemoryGovernor.cpp runtime/engine/ResourceDomainLease.cpp dev/tests/engine/engine_test.cpp -o build/t015-corrected/sanitizers/engine-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/engine-tsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread \
+		runtime/engine/Scheduler.cpp runtime/model/DraftContextPlan.cpp runtime/engine/KvPool.cpp runtime/engine/KvCache.cpp runtime/engine/StateCache.cpp runtime/engine/Cache.cpp runtime/engine/WriteBehind.cpp runtime/engine/Engine.cpp runtime/engine/MemoryGovernor.cpp runtime/engine/ResourceDomainLease.cpp dev/tests/engine/engine_test.cpp -o build/t015-corrected/sanitizers/engine-tsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/ragged-scheduler-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/engine/Scheduler.cpp dev/tests/engine/ragged_scheduler_test.cpp -o build/t015-corrected/sanitizers/ragged-scheduler-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/ragged-scheduler-tsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread \
+		runtime/engine/Scheduler.cpp dev/tests/engine/ragged_scheduler_test.cpp -o build/t015-corrected/sanitizers/ragged-scheduler-tsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/native-fd-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/engine/Scheduler.cpp runtime/model/DraftContextPlan.cpp runtime/engine/KvPool.cpp runtime/engine/KvCache.cpp runtime/engine/StateCache.cpp runtime/engine/Cache.cpp runtime/engine/WriteBehind.cpp runtime/engine/Engine.cpp runtime/engine/Protocol.cpp runtime/engine/NativeRuntime.cpp runtime/engine/FdTransport.cpp runtime/engine/ResourceDomainLease.cpp dev/tests/engine/ProtocolPeer.cpp dev/tests/engine/native_fd_transport_test.cpp -o build/t015-corrected/sanitizers/native-fd-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/native-fd-tsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread \
+		runtime/engine/Scheduler.cpp runtime/model/DraftContextPlan.cpp runtime/engine/KvPool.cpp runtime/engine/KvCache.cpp runtime/engine/StateCache.cpp runtime/engine/Cache.cpp runtime/engine/WriteBehind.cpp runtime/engine/Engine.cpp runtime/engine/Protocol.cpp runtime/engine/NativeRuntime.cpp runtime/engine/FdTransport.cpp runtime/engine/ResourceDomainLease.cpp dev/tests/engine/ProtocolPeer.cpp dev/tests/engine/native_fd_transport_test.cpp -o build/t015-corrected/sanitizers/native-fd-tsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/ane-ffn-calibration-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/ops/AneFfnCalibration.cpp dev/tests/engine/ane_ffn_calibration_test.cpp -o build/t015-corrected/sanitizers/ane-ffn-calibration-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/ane-ffn-calibration-tsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread \
+		runtime/ops/AneFfnCalibration.cpp dev/tests/engine/ane_ffn_calibration_test.cpp -o build/t015-corrected/sanitizers/ane-ffn-calibration-tsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/sparse-row-store-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/model/SparseRowStore.cpp runtime/model/SsdReaders.cpp runtime/model/WeightSource.cpp dev/tests/engine/sparse_row_store_test.cpp -o build/t015-corrected/sanitizers/sparse-row-store-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/sparse-row-store-tsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread \
+		runtime/model/SparseRowStore.cpp runtime/model/SsdReaders.cpp runtime/model/WeightSource.cpp dev/tests/engine/sparse_row_store_test.cpp -o build/t015-corrected/sanitizers/sparse-row-store-tsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/ssd-readers-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/model/SsdReaders.cpp dev/tests/engine/ssd_readers_test.cpp -o build/t015-corrected/sanitizers/ssd-readers-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/ssd-readers-tsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread \
+		runtime/model/SsdReaders.cpp dev/tests/engine/ssd_readers_test.cpp -o build/t015-corrected/sanitizers/ssd-readers-tsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/elastic-kv-pool-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/engine/KvPool.cpp dev/tests/engine/elastic_kv_pool_test.cpp -o build/t015-corrected/sanitizers/elastic-kv-pool-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/elastic-kv-pool-tsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread \
+		runtime/engine/KvPool.cpp dev/tests/engine/elastic_kv_pool_test.cpp -o build/t015-corrected/sanitizers/elastic-kv-pool-tsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/slot-recycler-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/model/SlotRecycler.cpp dev/tests/engine/slot_recycler_test.cpp -o build/t015-corrected/sanitizers/slot-recycler-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/slot-recycler-tsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread \
+		runtime/model/SlotRecycler.cpp dev/tests/engine/slot_recycler_test.cpp -o build/t015-corrected/sanitizers/slot-recycler-tsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/engine-memory-plan-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/metal/DeviceCapabilities.cpp runtime/engine/MemoryPlan.cpp dev/tests/engine/engine_memory_plan_test.cpp -o build/t015-corrected/sanitizers/engine-memory-plan-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/memory-audit-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/metal/DeviceCapabilities.cpp runtime/engine/MemoryPlan.cpp runtime/engine/MemoryAudit.cpp dev/tests/engine/memory_audit_test.cpp -o build/t015-corrected/sanitizers/memory-audit-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/runtime-status-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/metal/DeviceCapabilities.cpp runtime/engine/MemoryPlan.cpp runtime/engine/MemoryAudit.cpp runtime/engine/Status.cpp dev/tests/engine/runtime_status_test.cpp -o build/t015-corrected/sanitizers/runtime-status-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/memory-governor-asan-ubsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=address,undefined \
+		runtime/metal/DeviceCapabilities.cpp runtime/engine/MemoryPlan.cpp runtime/engine/MemoryGovernor.cpp runtime/engine/ResourceDomainLease.cpp dev/tests/engine/memory_governor_test.cpp -o build/t015-corrected/sanitizers/memory-governor-asan-ubsan
+python3 dev/tools/build_config.py record --output 'build/t015-corrected/sanitizers/memory-governor-tsan' --config 41617c8bb2a4e6f7 -- xcrun -sdk macosx clang++ -std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread \
+		runtime/metal/DeviceCapabilities.cpp runtime/engine/MemoryPlan.cpp runtime/engine/MemoryGovernor.cpp runtime/engine/ResourceDomainLease.cpp dev/tests/engine/memory_governor_test.cpp -o build/t015-corrected/sanitizers/memory-governor-tsan
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/slot-file-asan-ubsan
+23:34:47 An SSD cache file takes no more writes after one failed (File too large); what it holds stays readable.
+Slot file tests passed
+TSAN_OPTIONS=halt_on_error=1 build/t015-corrected/sanitizers/slot-file-tsan
+23:34:48 An SSD cache file takes no more writes after one failed (File too large); what it holds stays readable.
+Slot file tests passed
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/kv-slot-format-asan-ubsan
+kv_slot_format_test: PASS
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/kv-page-tier-host-asan-ubsan
+round trips int8 slot format v0
+teardown int8
+round trips int8 slot format v0
+teardown int8
+round trips int8 slot format v1
+teardown int8
+round trips bf16 slot format v0
+teardown bf16
+round trips bf16 slot format v0
+teardown bf16
+round trips bf16 slot format v1
+teardown bf16
+kv page tier host tests passed
+TSAN_OPTIONS=halt_on_error=1 build/t015-corrected/sanitizers/kv-page-tier-host-tsan
+round trips int8 slot format v0
+teardown int8
+round trips int8 slot format v0
+teardown int8
+round trips int8 slot format v1
+teardown int8
+round trips bf16 slot format v0
+teardown bf16
+round trips bf16 slot format v0
+teardown bf16
+round trips bf16 slot format v1
+teardown bf16
+kv page tier host tests passed
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/disk-space-asan-ubsan
+23:35:00 SSD cache: a second write found /Volumes/Test full while it shows 100.0 GiB available; the cache keeps within the 0.0 GiB it holds while this server runs.
+23:35:00 SSD cache: a second write found /Volumes/Test full while it shows 100.0 GiB available; the cache keeps within the 0.0 GiB it holds while this server runs.
+23:35:00 SSD cache: a second write found /Volumes/Share full, a volume whose free space it does not follow; the cache keeps within the 0.0 GiB it holds while this server runs.
+23:35:00 Persistent cache: removed /var/folders/yg/jt10cw_114z0fdrh_bmbzlsh0000gn/T/splash-disk-space-root-whDNOj/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (0.0 GiB), the oldest cache nobody holds, to keep the cache root within 0.0 GiB.
+23:35:00 Persistent cache: removed /var/folders/yg/jt10cw_114z0fdrh_bmbzlsh0000gn/T/splash-disk-space-root-yH3I2O/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (0.0 GiB), the oldest cache nobody holds, to keep the cache root within 0.0 GiB.
+23:35:00 Persistent cache: removed /var/folders/yg/jt10cw_114z0fdrh_bmbzlsh0000gn/T/splash-disk-space-root-RmtEzm/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (0.0 GiB), the oldest cache nobody holds, to keep the cache root within 0.0 GiB.
+Disk space tests passed
+TSAN_OPTIONS=halt_on_error=1 build/t015-corrected/sanitizers/disk-space-tsan
+23:35:00 SSD cache: a second write found /Volumes/Test full while it shows 100.0 GiB available; the cache keeps within the 0.0 GiB it holds while this server runs.
+23:35:00 SSD cache: a second write found /Volumes/Test full while it shows 100.0 GiB available; the cache keeps within the 0.0 GiB it holds while this server runs.
+23:35:00 SSD cache: a second write found /Volumes/Share full, a volume whose free space it does not follow; the cache keeps within the 0.0 GiB it holds while this server runs.
+23:35:00 Persistent cache: removed /var/folders/yg/jt10cw_114z0fdrh_bmbzlsh0000gn/T/splash-disk-space-root-jhX9U0/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (0.0 GiB), the oldest cache nobody holds, to keep the cache root within 0.0 GiB.
+23:35:00 Persistent cache: removed /var/folders/yg/jt10cw_114z0fdrh_bmbzlsh0000gn/T/splash-disk-space-root-tegTWM/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (0.0 GiB), the oldest cache nobody holds, to keep the cache root within 0.0 GiB.
+23:35:00 Persistent cache: removed /var/folders/yg/jt10cw_114z0fdrh_bmbzlsh0000gn/T/splash-disk-space-root-XyOmk2/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (0.0 GiB), the oldest cache nobody holds, to keep the cache root within 0.0 GiB.
+Disk space tests passed
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/cache-directory-asan-ubsan
+Cache directory tests passed
+TSAN_OPTIONS=halt_on_error=1 build/t015-corrected/sanitizers/cache-directory-tsan
+Cache directory tests passed
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/persistent-cache-asan-ubsan
+Persistent cache tests passed
+TSAN_OPTIONS=halt_on_error=1 build/t015-corrected/sanitizers/persistent-cache-tsan
+Persistent cache tests passed
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/engine-cache-asan-ubsan
+S1 block=1 want=1 resume=32 kv=64 lost=0 pinned=1
+engine cache tests passed
+TSAN_OPTIONS=halt_on_error=1 build/t015-corrected/sanitizers/engine-cache-tsan
+S1 block=1 want=1 resume=32 kv=64 lost=0 pinned=1
+engine cache tests passed
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/cache-property-asan-ubsan
+cache property runs ok
+cache property tests passed
+TSAN_OPTIONS=halt_on_error=1 build/t015-corrected/sanitizers/cache-property-tsan
+cache property runs ok
+cache property tests passed
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/protocol-asan-ubsan dev/tests/engine/protocol_golden.txt
+native protocol tests passed
+TSAN_OPTIONS=halt_on_error=1 build/t015-corrected/sanitizers/protocol-tsan dev/tests/engine/protocol_golden.txt
+native protocol tests passed
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/engine-asan-ubsan
+engine tests passed
+TSAN_OPTIONS=halt_on_error=1 build/t015-corrected/sanitizers/engine-tsan
+engine tests passed
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/ragged-scheduler-asan-ubsan
+ragged scheduler tests passed
+TSAN_OPTIONS=halt_on_error=1 build/t015-corrected/sanitizers/ragged-scheduler-tsan
+ragged scheduler tests passed
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/native-fd-asan-ubsan
+native fd transport tests passed
+TSAN_OPTIONS=halt_on_error=1 build/t015-corrected/sanitizers/native-fd-tsan
+native fd transport tests passed
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/ane-ffn-calibration-asan-ubsan
+ane ffn calibration tests passed
+TSAN_OPTIONS=halt_on_error=1 build/t015-corrected/sanitizers/ane-ffn-calibration-tsan
+ane ffn calibration tests passed
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/sparse-row-store-asan-ubsan
+sparse row store tests passed (90- and 170-byte rows)
+TSAN_OPTIONS=halt_on_error=1 build/t015-corrected/sanitizers/sparse-row-store-tsan
+sparse row store tests passed (90- and 170-byte rows)
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/ssd-readers-asan-ubsan
+ssd_readers_test: PASS
+TSAN_OPTIONS=halt_on_error=1 build/t015-corrected/sanitizers/ssd-readers-tsan
+ssd_readers_test: PASS
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/elastic-kv-pool-asan-ubsan
+elastic KV pool tests passed
+TSAN_OPTIONS=halt_on_error=1 build/t015-corrected/sanitizers/elastic-kv-pool-tsan
+elastic KV pool tests passed
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/slot-recycler-asan-ubsan dev/tests/fixtures/kv-selection-traces
+slot_recycler_test: code128.kvst: 51521 misses, 52949 least recently used
+slot_recycler_test: novel128.kvst: 54301 misses, 55585 least recently used
+slot_recycler_test: novel256.kvst: 76406 misses, 78716 least recently used
+slot_recycler_test: PASS
+TSAN_OPTIONS=halt_on_error=1 build/t015-corrected/sanitizers/slot-recycler-tsan dev/tests/fixtures/kv-selection-traces
+slot_recycler_test: code128.kvst: 51521 misses, 52949 least recently used
+slot_recycler_test: novel128.kvst: 54301 misses, 55585 least recently used
+slot_recycler_test: novel256.kvst: 76406 misses, 78716 least recently used
+slot_recycler_test: PASS
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/engine-memory-plan-asan-ubsan
+elastic memory plan tests passed
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/memory-audit-asan-ubsan
+elastic memory audit tests passed
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/runtime-status-asan-ubsan dev/tests/engine/status_golden.json
+runtime status tests passed
+ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 build/t015-corrected/sanitizers/memory-governor-asan-ubsan
+memory governor tests passed
+TSAN_OPTIONS=halt_on_error=1 build/t015-corrected/sanitizers/memory-governor-tsan
+memory governor tests passed

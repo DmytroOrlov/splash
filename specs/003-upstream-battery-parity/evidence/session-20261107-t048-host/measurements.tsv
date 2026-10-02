@@ -1,0 +1,6 @@
+phase	power	lifecycle_revision	model_resident	native_pid	native_rss_kib	prompt_tokens	cached_tokens	uncached_tokens	wall_seconds	backend_allocated_bytes	released_bytes	start_event_capacity_tokens	notes
+initial_battery	battery	1	false	962									Status initial battery; RSS not captured
+ac_warm	ac	2	true	962		27865	0	27865	66.703512			32768	Native RSS at warm AC not independently sampled
+before_detach	ac_to_battery	3	true	962						23547833112			Opt-in native resource witness, Owner
+battery_suspended	battery	3	false	962	1054832					1192214528	22355618584		Actual disposal receipt; native ps.battery.txt
+ac_recovered	ac	4	true	962	2573104	27865	27840	25	3.027476			32768	Native ps.final.txt and decoded StartEvent

@@ -1,0 +1,4 @@
+phase	pid	rss_kib	prompt_tokens	reused_tokens	prefill_tokens	wall_seconds
+ac_warm	31346	2439744	13947	0	13947	33.92
+battery	31346	1087632
+recovered	31346	2543872	13947	13920	27	5.33

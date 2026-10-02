@@ -1,0 +1,623 @@
+unformatted: File would be reformatted
+   --> dev/tests/engine/test_server_recovery.py:244:40
+    |
+243 |         # snapshot and is refused. No /status call is needed to start refresh.
+    -         status, _, _ = harness.request(
+    -             "POST", "/v1/chat/completions", self.body()
+    -         )
+244 +         status, _, _ = harness.request("POST", "/v1/chat/completions", self.body())
+245 |         self.assertEqual(status, 503)
+--------------------------------------------------------------------------------
+261 |         # but is still refused using the old false snapshot it already read.
+    -         status, _, _ = harness.request(
+    -             "POST", "/v1/chat/completions", self.body()
+    -         )
+262 +         status, _, _ = harness.request("POST", "/v1/chat/completions", self.body())
+263 |         self.assertEqual(status, 503)
+--------------------------------------------------------------------------------
+336 |
+    -         status, _, _ = harness.request(
+    -             "POST", "/v1/chat/completions", self.body()
+    -         )
+337 +         status, _, _ = harness.request("POST", "/v1/chat/completions", self.body())
+338 |         self.assertEqual(status, 503)
+--------------------------------------------------------------------------------
+440 |         self.assertEqual(models_status, 200)
+    -         self.assertEqual(
+    -             json.loads(models_payload)["data"][0]["context_length"], 128
+    -         )
+441 +         self.assertEqual(json.loads(models_payload)["data"][0]["context_length"], 128)
+442 |         self.assertEqual(app.max_context, 64)
+--------------------------------------------------------------------------------
+464 |
+    -         status, _, _ = harness.request(
+    -             "POST", "/v1/chat/completions", self.body()
+    -         )
+465 +         status, _, _ = harness.request("POST", "/v1/chat/completions", self.body())
+466 |         self.assertEqual(status, 200)
+    |
+
+unformatted: File would be reformatted
+   --> dev/tests/install/test_launcher.py:117:18
+    |
+116 |         for enabled in (False, True):
+    -             with self.subTest(enabled=enabled), tempfile.TemporaryDirectory() as temporary:
+117 +             with (
+118 +                 self.subTest(enabled=enabled),
+119 +                 tempfile.TemporaryDirectory() as temporary,
+120 +             ):
+121 |                 arguments = [
+--------------------------------------------------------------------------------
+198 |         self.assertIsNone(parse("auto"))
+    -         self.assertIsNone(launcher.parse_args(["serve", "--model", MODEL_ID]).max_cache_disk)
+199 +         self.assertIsNone(
+200 +             launcher.parse_args(["serve", "--model", MODEL_ID]).max_cache_disk
+201 +         )
+202 |         self.assertEqual(parse("0"), 0)
+--------------------------------------------------------------------------------
+211 |         for value in ("0", "0.25", "2"):
+    -             self.assertEqual(launcher.parse_args(base + ["--decode-share", value]).decode_share, float(value))
+212 +             self.assertEqual(
+213 +                 launcher.parse_args(base + ["--decode-share", value]).decode_share,
+214 +                 float(value),
+215 +             )
+216 |         for value in ("-1", "inf", "nan", "bad"):
+--------------------------------------------------------------------------------
+221 |         for value in ("0", "bad", str(serve_options.images.MAX_PIXELS + 1)):
+    -             with mock.patch.object(launcher, "_ensure_installed") as install, mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+    -                 launcher.main(["serve", "--model", MODEL_ID, "--max-image-pixels", value])
+222 +             with (
+223 +                 mock.patch.object(launcher, "_ensure_installed") as install,
+224 +                 mock.patch("sys.stderr", io.StringIO()),
+225 +                 self.assertRaises(SystemExit),
+226 +             ):
+227 +                 launcher.main(
+228 +                     ["serve", "--model", MODEL_ID, "--max-image-pixels", value]
+229 +                 )
+230 |             install.assert_not_called()
+--------------------------------------------------------------------------------
+235 |             chosen = selection(launcher.paths.MODELS)
+236 +
+237 |             def check_exec(_binary, argv, _environment):
+--------------------------------------------------------------------------------
+241 |                         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    -             with mock.patch.object(launcher, "RUNTIME_DIR", runtime), mock.patch.object(launcher.socket, "socket"), mock.patch.object(launcher, "_ensure_installed") as install, mock.patch.object(launcher.os, "execve", side_effect=check_exec):
+242 +
+243 +             with (
+244 +                 mock.patch.object(launcher, "RUNTIME_DIR", runtime),
+245 +                 mock.patch.object(launcher.socket, "socket"),
+246 +                 mock.patch.object(launcher, "_ensure_installed") as install,
+247 +                 mock.patch.object(launcher.os, "execve", side_effect=check_exec),
+248 +             ):
+249 |                 launcher.main(["serve", "--model", MODEL_ID])
+    |
+
+unformatted: File would be reformatted
+  --> dev/tests/native_peer.py:55:23
+   |
+54 |         "maximum_context_tokens": 128,
+   -         "lifecycle": {"power": "ac", "state": "ready", "revision": 1, "observation_sequence": 1, "control_ready": True, "inference_ready": True, "model_resident": True},
+55 +         "lifecycle": {
+56 +             "power": "ac",
+57 +             "state": "ready",
+58 +             "revision": 1,
+59 +             "observation_sequence": 1,
+60 +             "control_ready": True,
+61 +             "inference_ready": True,
+62 +             "model_resident": True,
+63 +         },
+64 |     }
+--------------------------------------------------------------------------------
+85 |             return wire.FrameType.START, struct.pack(
+   -                 "<QIII", event.request_id, event.lane, event.matched_prompt_tokens, event.capacity_tokens
+86 +                 "<QIII",
+87 +                 event.request_id,
+88 +                 event.lane,
+89 +                 event.matched_prompt_tokens,
+90 +                 event.capacity_tokens,
+91 |             )
+   |
+
+unformatted: File would be reformatted
+   --> dev/tests/server/test_native_backend.py:356:32
+    |
+355 |         self.assertEqual(app.request_deadline({"timeout": 5}, 10), 15)
+    -         with mock.patch.object(native, "status", return_value=native_peer.status_event()):
+356 +         with mock.patch.object(
+357 +             native, "status", return_value=native_peer.status_event()
+358 +         ):
+359 |             transport.status()
+--------------------------------------------------------------------------------
+798 |         self.assertFalse(transport._cache_status(document(11, 1, False), generation, 5))
+    -         self.assertTrue(transport._cache_status(document(1, 1), runtime.restart_count, 6))
+799 +         self.assertTrue(
+800 +             transport._cache_status(document(1, 1), runtime.restart_count, 6)
+801 +         )
+802 |         accepted = copy.deepcopy(transport.status_snapshot)
+--------------------------------------------------------------------------------
+826 |
+    -         lifecycle = backend_api.json_codec.loads(native_peer.status_event().json)["lifecycle"]
+827 +         lifecycle = backend_api.json_codec.loads(native_peer.status_event().json)[
+828 +             "lifecycle"
+829 +         ]
+830 |
+--------------------------------------------------------------------------------
+840 |
+    -         runtime.status_event = native_peer.status_event(ready="false", lifecycle=observation(2))
+841 +         runtime.status_event = native_peer.status_event(
+842 +             ready="false", lifecycle=observation(2)
+843 +         )
+844 |         transport.status()
+845 |         self.assertFalse(transport.is_ready())
+846 |
+    -         runtime.status_event = native_peer.status_event(memory_pressure=None, lifecycle=observation(3))
+847 +         runtime.status_event = native_peer.status_event(
+848 +             memory_pressure=None, lifecycle=observation(3)
+849 +         )
+850 |         transport.status()
+    |
+
+unformatted: File would be reformatted
+   --> dev/tests/server/test_protocol_python.py:281:25
+    |
+280 |         self.assertEqual(decode_event(native_peer.serialize_event(start)), start)
+    -         self.assertLess(start.capacity_tokens, p.ReadyEvent(4, 1024, False).max_context_tokens)
+281 +         self.assertLess(
+282 +             start.capacity_tokens, p.ReadyEvent(4, 1024, False).max_context_tokens
+283 +         )
+284 |         data = native_peer.serialize_event(start)
+    |
+
+unformatted: File would be reformatted
+   --> dev/tests/server/test_protocol_recovery.py:515:1
+    |
+514 |             admit(65)
+515 +
+516 |         with mock.patch.object(app, "_encode_score_prompt", side_effect=score):
+517 |             with self.assertRaises(api_errors.ContextLengthError) as caught:
+    -                 app.prepare_judgment(judgment_body(), deadline=FOREVER, disconnected=lambda: False)
+518 +                 app.prepare_judgment(
+519 +                     judgment_body(), deadline=FOREVER, disconnected=lambda: False
+520 +                 )
+521 |         self.assertEqual(caught.exception.maximum_input_tokens, 64)
+--------------------------------------------------------------------------------
+527 |         runtime.status_event = native_peer.status_event(
+    -             effective_context_tokens=64, maximum_context_tokens=64,
+    -             lifecycle={"power": "ac", "state": "ready", "revision": 2,
+    -                        "observation_sequence": 2, "control_ready": True,
+    -                        "inference_ready": True, "model_resident": True},
+528 +             effective_context_tokens=64,
+529 +             maximum_context_tokens=64,
+530 +             lifecycle={
+531 +                 "power": "ac",
+532 +                 "state": "ready",
+533 +                 "revision": 2,
+534 +                 "observation_sequence": 2,
+535 +                 "control_ready": True,
+536 +                 "inference_ready": True,
+537 +                 "model_resident": True,
+538 +             },
+539 |         )
+--------------------------------------------------------------------------------
+560 |         runtime.status_event = native_peer.status_event(
+    -             configured_context_ceiling=2, effective_context_tokens=2, maximum_context_tokens=2
+561 +             configured_context_ceiling=2,
+562 +             effective_context_tokens=2,
+563 +             maximum_context_tokens=2,
+564 |         )
+    |
+
+unformatted: File would be reformatted
+   --> dev/tests/server/test_response_lifecycle.py:122:46
+    |
+121 |         harness.backend.runtime.status_event = fixtures.native_peer.status_event(
+    -             configured_context_ceiling=65536, effective_context_tokens=65536,
+122 +             configured_context_ceiling=65536,
+123 +             effective_context_tokens=65536,
+124 |             maximum_context_tokens=65536,
+    |
+
+unformatted: File would be reformatted
+    --> dev/tests/server/test_runtime.py:1034:26
+     |
+1033 |                         message.correlation_id,
+     -                         (f"{{\"schema_version\":{wire.STATUS_SCHEMA_VERSION},\"ready\":false,"
+     -                          "\"control_ready\":true,\"inference_ready\":"
+     -                          + value + "}").encode(),
+1034 +                         (
+1035 +                             f'{{"schema_version":{wire.STATUS_SCHEMA_VERSION},"ready":false,'
+1036 +                             '"control_ready":true,"inference_ready":' + value + "}"
+1037 +                         ).encode(),
+1038 |                     )
+1039 |                 )
+1040 |
+1041 |         factory = FakeFactory(handler)
+     -         runtime = engine_runtime.MultiplexedRuntime(process_factory=factory, eager_start=True)
+1042 +         runtime = engine_runtime.MultiplexedRuntime(
+1043 +             process_factory=factory, eager_start=True
+1044 +         )
+1045 |         self.addCleanup(runtime.close)
+     |
+
+unformatted: File would be reformatted
+   --> dev/tests/server/test_serve_options.py:422:35
+    |
+421 |         for enabled in (False, True):
+    -             args = api.parse_args([*SERVER_ARGS, *(["--pause-on-battery"] if enabled else [])])
+422 +             args = api.parse_args(
+423 +                 [*SERVER_ARGS, *(["--pause-on-battery"] if enabled else [])]
+424 +             )
+425 |             for context in (None, 61433):
+    |
+
+unformatted: File would be reformatted
+   --> dev/tests/server/test_server_recovery.py:90:43
+    |
+89  |         )
+    -         backend.configure_context_ceiling(READY.max_context_tokens, self._context_limit_updated)
+90  +         backend.configure_context_ceiling(
+91  +             READY.max_context_tokens, self._context_limit_updated
+92  +         )
+93  |         self.addCleanup(backend.close)
+--------------------------------------------------------------------------------
+116 |             snapshot.update(
+    -                 ready=ready, control_ready=True, inference_ready=ready,
+    -                 model_resident=ready, configured_context_ceiling=READY.max_context_tokens,
+    -                 effective_context_tokens=effective, maximum_context_tokens=effective,
+    -                 lifecycle={"power": "ac" if ready else "battery",
+    -                            "state": "ready" if ready else "suspended",
+    -                            "revision": revision, "observation_sequence": revision,
+    -                            "control_ready": True, "inference_ready": ready,
+    -                            "model_resident": ready},
+117 +                 ready=ready,
+118 +                 control_ready=True,
+119 +                 inference_ready=ready,
+120 +                 model_resident=ready,
+121 +                 configured_context_ceiling=READY.max_context_tokens,
+122 +                 effective_context_tokens=effective,
+123 +                 maximum_context_tokens=effective,
+124 +                 lifecycle={
+125 +                     "power": "ac" if ready else "battery",
+126 +                     "state": "ready" if ready else "suspended",
+127 +                     "revision": revision,
+128 +                     "observation_sequence": revision,
+129 +                     "control_ready": True,
+130 +                     "inference_ready": ready,
+131 +                     "model_resident": ready,
+132 +                 },
+133 +             )
+134 +             return wire.StatusJsonEvent(
+135 +                 1, json.dumps(snapshot, separators=(",", ":")).encode()
+136 |             )
+    -             return wire.StatusJsonEvent(1, json.dumps(snapshot, separators=(",", ":")).encode())
+137 |
+--------------------------------------------------------------------------------
+169 |                 harness.backend._queue_status_refresh_locked()
+    -             self.wait_until(lambda: harness.backend.status_order == (revision, 1, revision), 2)
+170 +             self.wait_until(
+171 +                 lambda: harness.backend.status_order == (revision, 1, revision), 2
+172 +             )
+173 |
+174 |         controls()
+175 |         self.assertEqual(harness.request("GET", "/ready")[0], 503)
+    -         self.assertEqual(harness.request("POST", "/v1/chat/completions", chat_body(max_tokens=4))[0], 503)
+176 +         self.assertEqual(
+177 +             harness.request("POST", "/v1/chat/completions", chat_body(max_tokens=4))[0],
+178 +             503,
+179 +         )
+180 |         self.assertEqual(runtime.requests, [])
+181 |         refresh(2, 72)
+182 |         self.assertEqual(harness.app.max_context, 72)
+183 |         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+    -             pending = pool.submit(harness.request, "POST", "/v1/chat/completions", chat_body(max_tokens=4))
+184 +             pending = pool.submit(
+185 +                 harness.request, "POST", "/v1/chat/completions", chat_body(max_tokens=4)
+186 +             )
+187 |             try:
+--------------------------------------------------------------------------------
+191 |                 self.assertEqual(harness.request("GET", "/ready")[0], 503)
+    -                 self.assertEqual(harness.request("POST", "/v1/chat/completions", chat_body(max_tokens=4))[0], 503)
+192 +                 self.assertEqual(
+193 +                     harness.request(
+194 +                         "POST", "/v1/chat/completions", chat_body(max_tokens=4)
+195 +                     )[0],
+196 +                     503,
+197 +                 )
+198 |                 self.assertEqual(len(runtime.requests), 1)
+--------------------------------------------------------------------------------
+206 |         model = json.loads(harness.request("GET", "/v1/models")[2])["data"][0]
+    -         self.assertEqual((model["max_model_len"], model["context_length"]), (READY.max_context_tokens,) * 2)
+207 +         self.assertEqual(
+208 +             (model["max_model_len"], model["context_length"]),
+209 +             (READY.max_context_tokens,) * 2,
+210 +         )
+211 |         self.assertEqual(harness.request("GET", "/ready")[0], 200)
+--------------------------------------------------------------------------------
+219 |     def test_invalid_resolved_context_fails_closed_without_fencing_generation(self):
+    -         cases = ("missing", "null", "zero", "negative", "float", "string", "bool",
+    -                  "over ceiling", "ceiling mismatch", "missing ceiling", "missing maximum",
+    -                  "maximum mismatch", "readiness mismatch")
+220 +         cases = (
+221 +             "missing",
+222 +             "null",
+223 +             "zero",
+224 +             "negative",
+225 +             "float",
+226 +             "string",
+227 +             "bool",
+228 +             "over ceiling",
+229 +             "ceiling mismatch",
+230 +             "missing ceiling",
+231 +             "missing maximum",
+232 +             "maximum mismatch",
+233 +             "readiness mismatch",
+234 +         )
+235 |         for case in cases:
+236 |             with self.subTest(case=case):
+237 |                 runtime = FakeRuntime()
+    -                 with mock.patch.object(runtime, "wait_ready", wraps=runtime.wait_ready) as handshake:
+238 +                 with mock.patch.object(
+239 +                     runtime, "wait_ready", wraps=runtime.wait_ready
+240 +                 ) as handshake:
+241 |                     harness = self.harness(runtime, max_context=128)
+--------------------------------------------------------------------------------
+249 |                         snapshot.pop(field)
+    -                     elif case in ("null", "zero", "negative", "float", "string", "bool", "over ceiling"):
+    -                         snapshot[field] = {"null": None, "zero": 0, "negative": -1,
+    -                                            "float": 1.5, "string": "64", "bool": True,
+    -                                            "over ceiling": 129}[case]
+250 +                     elif case in (
+251 +                         "null",
+252 +                         "zero",
+253 +                         "negative",
+254 +                         "float",
+255 +                         "string",
+256 +                         "bool",
+257 +                         "over ceiling",
+258 +                     ):
+259 +                         snapshot[field] = {
+260 +                             "null": None,
+261 +                             "zero": 0,
+262 +                             "negative": -1,
+263 +                             "float": 1.5,
+264 +                             "string": "64",
+265 +                             "bool": True,
+266 +                             "over ceiling": 129,
+267 +                         }[case]
+268 |                     elif case == "ceiling mismatch":
+--------------------------------------------------------------------------------
+280 |                         runtime.status_event = wire.StatusJsonEvent(
+    -                             1, json.dumps(document, separators=(",", ":")).encode())
+281 +                             1, json.dumps(document, separators=(",", ":")).encode()
+282 +                         )
+283 |                         with harness.backend.lock:
+284 |                             harness.backend.status_refresh_after = 0
+285 |                             harness.backend._queue_status_refresh_locked()
+    -                         self.wait_until(lambda: harness.backend.status_order == (revision, 1, revision), 2)
+286 +                         self.wait_until(
+287 +                             lambda: (
+288 +                                 harness.backend.status_order == (revision, 1, revision)
+289 +                             ),
+290 +                             2,
+291 +                         )
+292 |
+293 |                     publish(snapshot, 2)
+294 |                     self.assertEqual(harness.request("GET", "/ready")[0], 503)
+    -                     self.assertEqual(harness.request("POST", "/v1/chat/completions", chat_body(max_tokens=4))[0], 503)
+295 +                     self.assertEqual(
+296 +                         harness.request(
+297 +                             "POST", "/v1/chat/completions", chat_body(max_tokens=4)
+298 +                         )[0],
+299 +                         503,
+300 +                     )
+301 |                     self.assertIsNone(frontend.max_context)
+--------------------------------------------------------------------------------
+312 |                     self.assertEqual(harness.request("GET", "/ready")[0], 200)
+    -                     self.assertEqual(harness.request("POST", "/v1/chat/completions", chat_body(max_tokens=4))[0], 200)
+313 +                     self.assertEqual(
+314 +                         harness.request(
+315 +                             "POST", "/v1/chat/completions", chat_body(max_tokens=4)
+316 +                         )[0],
+317 +                         200,
+318 +                     )
+319 |                     self.assertIs(runtime.readiness, witness)
+--------------------------------------------------------------------------------
+327 |         with harness.backend.lock:
+    -             harness.backend.status_confirmed_at -= backend_api.STATUS_LIFECYCLE_FRESHNESS_SECONDS + 1
+    -         with mock.patch.object(harness.backend, "_queue_status_refresh_locked") as scheduled, \
+    -              mock.patch.object(runtime, "submit", wraps=runtime.submit) as submit:
+    -             self.assertEqual(harness.request("POST", "/v1/chat/completions", chat_body(max_tokens=4))[0], 503)
+328 +             harness.backend.status_confirmed_at -= (
+329 +                 backend_api.STATUS_LIFECYCLE_FRESHNESS_SECONDS + 1
+330 +             )
+331 +         with (
+332 +             mock.patch.object(
+333 +                 harness.backend, "_queue_status_refresh_locked"
+334 +             ) as scheduled,
+335 +             mock.patch.object(runtime, "submit", wraps=runtime.submit) as submit,
+336 +         ):
+337 +             self.assertEqual(
+338 +                 harness.request(
+339 +                     "POST", "/v1/chat/completions", chat_body(max_tokens=4)
+340 +                 )[0],
+341 +                 503,
+342 +             )
+343 |             submit.assert_not_called()
+--------------------------------------------------------------------------------
+353 |         self.wait_until(lambda: harness.backend.status_order == (2, 1, 2), 2)
+    -         self.assertEqual(harness.request("POST", "/v1/chat/completions", chat_body(max_tokens=4))[0], 200)
+354 +         self.assertEqual(
+355 +             harness.request("POST", "/v1/chat/completions", chat_body(max_tokens=4))[0],
+356 +             200,
+357 +         )
+358 |         self.assertEqual(runtime.restart_count, 0)
+    |
+
+unformatted: File would be reformatted
+  --> dev/tests/server/test_status_contract.py:33:50
+   |
+32 |                 for name, path in PROMETHEUS_SERIES.items()
+   -                 if path[0] not in SERVER_SECTIONS and name not in rendered and path[0] in status
+33 +                 if path[0] not in SERVER_SECTIONS
+34 +                 and name not in rendered
+35 +                 and path[0] in status
+36 |             ],
+   |
+
+unformatted: File would be reformatted
+   --> dev/tests/server_fixtures.py:467:19
+    |
+466 |             return
+    -         call.emit(wire.StartEvent(call.request_id, 0, plan.matched_tokens, READY.max_context_tokens))
+467 +         call.emit(
+468 +             wire.StartEvent(
+469 +                 call.request_id, 0, plan.matched_tokens, READY.max_context_tokens
+470 +             )
+471 +         )
+472 |         plan.started.set()
+    |
+
+unformatted: File would be reformatted
+    --> dev/tests/test_server.py:6667:60
+     |
+6666 |                 self.assertEqual(
+     -                     large_harness.backend.runtime.requests[-1].logical_max_output_tokens,
+6667 +                     large_harness.backend.runtime.requests[
+6668 +                         -1
+6669 +                     ].logical_max_output_tokens,
+6670 |                     expected,
+     |
+
+unformatted: File would be reformatted
+   --> server/backend.py:405:12
+    |
+404 |         """Bind the ReadyEvent ceiling and Frontend's serving-limit owner."""
+    -         if (
+    -             not isinstance(ceiling, int)
+    -             or isinstance(ceiling, bool)
+    -             or ceiling <= 0
+    -         ):
+405 +         if not isinstance(ceiling, int) or isinstance(ceiling, bool) or ceiling <= 0:
+406 |             raise ValueError("configured context ceiling must be a positive integer")
+--------------------------------------------------------------------------------
+445 |         if not consistent:
+    -             inference_claim = any(
+    -                 value is True for value in values("inference_ready")
+    -             )
+446 +             inference_claim = any(value is True for value in values("inference_ready"))
+447 |             return inference_claim, None if inference_claim else ceiling, False
+--------------------------------------------------------------------------------
+519 |             callback(context)
+    -
+520 |
+--------------------------------------------------------------------------------
+664 |             failure = self.engine_error
+    -         return APIError(503, "engine is recovering; retry shortly" + (f" (last failure: {failure})" if failure else ""), "engine_recovering")
+665 +         return APIError(
+666 +             503,
+667 +             "engine is recovering; retry shortly"
+668 +             + (f" (last failure: {failure})" if failure else ""),
+669 +             "engine_recovering",
+670 +         )
+671 |
+672 |     def is_ready(self):
+673 |         snapshot = self._lifecycle_snapshot(require_fresh=True)
+    -         return snapshot is not None and self._snapshot_inference_ready(snapshot) and self._healthy(snapshot)
+674 +         return (
+675 +             snapshot is not None
+676 +             and self._snapshot_inference_ready(snapshot)
+677 +             and self._healthy(snapshot)
+678 +         )
+679 |
+680 |     @staticmethod
+681 |     def _healthy(snapshot):
+682 |         metal = snapshot.get("metal")
+    -         return (snapshot.get("ready") is True and snapshot.get("memory_pressure") in {"normal", "warning"} and isinstance(metal, dict) and metal.get("healthy") is True)
+683 +         return (
+684 +             snapshot.get("ready") is True
+685 +             and snapshot.get("memory_pressure") in {"normal", "warning"}
+686 +             and isinstance(metal, dict)
+687 +             and metal.get("healthy") is True
+688 +         )
+689 |
+690 |     def _queue_status_refresh_locked(self):
+    -         if self.runtime.ready and self.restart_due is None and time.monotonic() >= self.status_refresh_after:
+691 +         if (
+692 +             self.runtime.ready
+693 +             and self.restart_due is None
+694 +             and time.monotonic() >= self.status_refresh_after
+695 +         ):
+696 |             self.refresh_due = True
+    -             self.status_refresh_after = time.monotonic() + STATUS_LIFECYCLE_FRESHNESS_SECONDS
+697 +             self.status_refresh_after = (
+698 +                 time.monotonic() + STATUS_LIFECYCLE_FRESHNESS_SECONDS
+699 +             )
+700 |             self._ensure_recovery_locked()
+--------------------------------------------------------------------------------
+705 |                 return None
+    -             snapshot = copy.deepcopy(self.status_snapshot) if self.status_snapshot_generation == self.runtime.restart_count else None
+706 +             snapshot = (
+707 +                 copy.deepcopy(self.status_snapshot)
+708 +                 if self.status_snapshot_generation == self.runtime.restart_count
+709 +                 else None
+710 +             )
+711 |             confirmed = self.status_confirmed_at
+--------------------------------------------------------------------------------
+717 |             with self.lock:
+    -                 snapshot = copy.deepcopy(self.status_snapshot) if self.status_snapshot_generation == self.runtime.restart_count else None
+718 +                 snapshot = (
+719 +                     copy.deepcopy(self.status_snapshot)
+720 +                     if self.status_snapshot_generation == self.runtime.restart_count
+721 +                     else None
+722 +                 )
+723 |                 confirmed = self.status_confirmed_at
+    -         fresh = snapshot is not None and confirmed is not None and time.monotonic() - confirmed <= STATUS_LIFECYCLE_FRESHNESS_SECONDS
+    -         if not fresh or (snapshot is not None and not self._snapshot_inference_ready(snapshot)):
+724 +         fresh = (
+725 +             snapshot is not None
+726 +             and confirmed is not None
+727 +             and time.monotonic() - confirmed <= STATUS_LIFECYCLE_FRESHNESS_SECONDS
+728 +         )
+729 +         if not fresh or (
+730 +             snapshot is not None and not self._snapshot_inference_ready(snapshot)
+731 +         ):
+732 |             with self.lock:
+--------------------------------------------------------------------------------
+767 |         with self.lock:
+    -             if self.closing or not self.runtime.ready or self.runtime.restart_count != restarts:
+768 +             if (
+769 +                 self.closing
+770 +                 or not self.runtime.ready
+771 +                 or self.runtime.restart_count != restarts
+772 +             ):
+773 |                 return False
+--------------------------------------------------------------------------------
+863 |                 with self.lock:
+    -                     cached = copy.deepcopy(self.status_snapshot) if self.status_snapshot_generation == self.runtime.restart_count else None
+    -                 snapshot = cached or {"schema_version": wire.STATUS_SCHEMA_VERSION, "ready": False}
+864 +                     cached = (
+865 +                         copy.deepcopy(self.status_snapshot)
+866 +                         if self.status_snapshot_generation == self.runtime.restart_count
+867 +                         else None
+868 +                     )
+869 +                 snapshot = cached or {
+870 +                     "schema_version": wire.STATUS_SCHEMA_VERSION,
+871 +                     "ready": False,
+872 +                 }
+873 |                 if malformed_order:
+    |
+
+unformatted: File would be reformatted
+   --> server/metrics.py:240:18
+    |
+239 |             lines.append(f"{name} {metric_value}")
+    -     lines.extend(prometheus_latency(status.get("latency") if isinstance(status.get("latency"), dict) else {}))
+240 +     lines.extend(
+241 +         prometheus_latency(
+242 +             status.get("latency") if isinstance(status.get("latency"), dict) else {}
+243 +         )
+244 +     )
+245 |     return "\n".join(lines) + "\n"
+    |
+
+15 files would be reformatted, 140 files already formatted

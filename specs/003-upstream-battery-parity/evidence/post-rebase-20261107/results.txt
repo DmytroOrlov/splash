@@ -1,0 +1,8 @@
+ruff-check=1
+ruff-format-check=1
+runtime-bootstrap-build=0
+runtime-bootstrap=1
+test-sanitizers-metal=2
+runtime-bootstrap-host=0
+test-sanitizers-metal-host=0
+test-sanitizers=0

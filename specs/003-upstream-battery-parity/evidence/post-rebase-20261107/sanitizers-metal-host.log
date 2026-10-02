@@ -1,0 +1,25 @@
+/Applications/Xcode.app/Contents/Developer/usr/bin/make --no-print-directory -f "/Users/do/git/splash/Makefile" BUILD=build/t015-corrected/metal-tsan \
+		ENGINE_CXXFLAGS='-std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread' ENGINE_TEST_CXXFLAGS='-std=c++20 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -Iruntime -Idev -mmacosx-version-min=26.4 -fsanitize=thread' \
+		build/t015-corrected/metal-tsan/splash.metallib build/t015-corrected/metal-tsan/host-step.metallib \
+		build/t015-corrected/metal-tsan/engine-tests/kv-block-cache build/t015-corrected/metal-tsan/engine-tests/kv-history-stream
+make[1]: `build/t015-corrected/metal-tsan/splash.metallib' is up to date.
+make[1]: `build/t015-corrected/metal-tsan/host-step.metallib' is up to date.
+make[1]: `build/t015-corrected/metal-tsan/engine-tests/kv-block-cache' is up to date.
+make[1]: `build/t015-corrected/metal-tsan/engine-tests/kv-history-stream' is up to date.
+TSAN_OPTIONS=halt_on_error=1:suppressions=dev/tests/engine/metal_tsan_suppressions.txt build/t015-corrected/metal-tsan/engine-tests/kv-block-cache build/t015-corrected/metal-tsan/splash.metallib
+kv_block_cache_test: resolves PASS
+kv_block_cache_test: a page's misses in one read PASS
+kv_block_cache_test: growth and release PASS
+kv_block_cache_test: read failures PASS
+kv_block_cache_test: located attention int8, 315 blocks read, 180 paged PASS
+kv_block_cache_test: located attention bf16, 315 blocks read, 180 paged PASS
+kv_block_cache_test: refusals PASS
+kv_block_cache_test: PASS
+TSAN_OPTIONS=halt_on_error=1:suppressions=dev/tests/engine/metal_tsan_suppressions.txt build/t015-corrected/metal-tsan/engine-tests/kv-history-stream build/t015-corrected/metal-tsan/splash.metallib
+kv_history_stream_test: int8, 1 buffer, 51 pages read a layer PASS
+kv_history_stream_test: int8, 2 buffers, 51 pages read a layer PASS
+kv_history_stream_test: bf16, 1 buffer, 51 pages read a layer PASS
+kv_history_stream_test: bf16, 2 buffers, 51 pages read a layer PASS
+kv_history_stream_test: lifecycle PASS
+kv_history_stream_test: a command given up PASS
+kv_history_stream_test: PASS

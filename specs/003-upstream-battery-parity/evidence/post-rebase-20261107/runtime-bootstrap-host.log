@@ -1,0 +1,184 @@
+23:34:10 Weights loaded in 0.12 s.
+23:34:10 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:10 Kernel policy for GPU family 9 with 20 cores.
+23:34:10 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:10 Weights loaded in 0.09 s.
+23:34:10 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:10 Kernel policy for GPU family 9 with 20 cores.
+23:34:10 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:11 Weights loaded in 0.09 s.
+23:34:11 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:11 Kernel policy for GPU family 9 with 20 cores.
+23:34:11 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:11 Weights loaded in 0.09 s.
+23:34:11 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:11 Kernel policy for GPU family 9 with 20 cores.
+23:34:11 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:11 Weights loaded in 0.09 s.
+23:34:11 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:11 Kernel policy for GPU family 9 with 20 cores.
+23:34:11 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:12 Weights loaded in 0.09 s.
+23:34:12 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:12 Kernel policy for GPU family 9 with 20 cores.
+23:34:12 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:12 Weights loaded in 0.09 s.
+23:34:12 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:12 Kernel policy for GPU family 9 with 20 cores.
+23:34:12 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:13 Weights loaded in 0.09 s.
+23:34:13 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:13 Kernel policy for GPU family 9 with 20 cores.
+23:34:13 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:13 Weights loaded in 0.09 s.
+23:34:13 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:13 Kernel policy for GPU family 9 with 20 cores.
+23:34:13 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:13 Weights loaded in 0.09 s.
+23:34:13 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:13 Kernel policy for GPU family 9 with 20 cores.
+23:34:13 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:13 Weights loaded in 0.09 s.
+23:34:13 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:13 Kernel policy for GPU family 9 with 20 cores.
+23:34:13 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:14 Weights loaded in 0.09 s.
+23:34:14 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:14 Kernel policy for GPU family 9 with 20 cores.
+23:34:14 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:14 Weights loaded in 0.09 s.
+23:34:14 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:14 Kernel policy for GPU family 9 with 20 cores.
+23:34:14 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:14 Weights loaded in 0.10 s.
+23:34:14 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:14 Kernel policy for GPU family 9 with 20 cores.
+23:34:14 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:14 Weights loaded in 0.10 s.
+23:34:14 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:14 Kernel policy for GPU family 9 with 20 cores.
+23:34:14 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:14 Weights loaded in 0.10 s.
+23:34:14 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:14 Kernel policy for GPU family 9 with 20 cores.
+23:34:14 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:14 Weights loaded in 0.10 s.
+23:34:14 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:14 Kernel policy for GPU family 9 with 20 cores.
+23:34:14 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:15 Weights loaded in 0.09 s.
+23:34:15 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:15 Kernel policy for GPU family 9 with 20 cores.
+23:34:15 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:15 Weights loaded in 0.09 s.
+23:34:15 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:15 Kernel policy for GPU family 9 with 20 cores.
+23:34:15 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:16 Weights loaded in 0.09 s.
+23:34:16 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:16 Kernel policy for GPU family 9 with 20 cores.
+23:34:16 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:16 Weights loaded in 0.09 s.
+23:34:16 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:16 Kernel policy for GPU family 9 with 20 cores.
+23:34:16 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:16 Weights loaded in 0.09 s.
+23:34:16 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:16 Kernel policy for GPU family 9 with 20 cores.
+23:34:16 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:16 Weights loaded in 0.09 s.
+23:34:16 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:16 Kernel policy for GPU family 9 with 20 cores.
+23:34:16 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:16 Weights loaded in 0.09 s.
+23:34:16 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:16 Kernel policy for GPU family 9 with 20 cores.
+23:34:16 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:17 Weights loaded in 0.09 s.
+23:34:17 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:17 Kernel policy for GPU family 9 with 20 cores.
+23:34:17 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:17 Shutdown resolves a retained recovery candidate that still owns residency: the recovery adoption protocol (T029-T033) never adopted it and the mid-lifecycle candidate reaper (T032) had not reached it yet, so its ownership ends on this teardown thread in the reaper's own order, beside the retained graph.
+23:34:17 Weights loaded in 0.09 s.
+23:34:17 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:17 Kernel policy for GPU family 9 with 20 cores.
+23:34:17 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:17 Shutdown resolves a retained recovery candidate that still owns residency: the recovery adoption protocol (T029-T033) never adopted it and the mid-lifecycle candidate reaper (T032) had not reached it yet, so its ownership ends on this teardown thread in the reaper's own order, beside the retained graph.
+23:34:17 Weights loaded in 0.09 s.
+23:34:17 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:17 Kernel policy for GPU family 9 with 20 cores.
+23:34:17 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:17 Weights loaded in 0.09 s.
+23:34:17 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:17 Kernel policy for GPU family 9 with 20 cores.
+23:34:17 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:18 Weights loaded in 0.09 s.
+23:34:18 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:18 Kernel policy for GPU family 9 with 20 cores.
+23:34:18 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:18 Weights loaded in 0.09 s.
+23:34:18 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:18 Kernel policy for GPU family 9 with 20 cores.
+23:34:18 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:18 Weights loaded in 0.09 s.
+23:34:18 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:18 Kernel policy for GPU family 9 with 20 cores.
+23:34:18 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:18 Weights loaded in 0.09 s.
+23:34:18 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:18 Kernel policy for GPU family 9 with 20 cores.
+23:34:18 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:19 Weights loaded in 0.09 s.
+23:34:19 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:19 Kernel policy for GPU family 9 with 20 cores.
+23:34:19 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:19 Weights loaded in 0.09 s.
+23:34:19 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:19 Kernel policy for GPU family 9 with 20 cores.
+23:34:19 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:19 Shutdown resolves a retained recovery candidate that still owns residency: the recovery adoption protocol (T029-T033) never adopted it and the mid-lifecycle candidate reaper (T032) had not reached it yet, so its ownership ends on this teardown thread in the reaper's own order, beside the retained graph.
+23:34:19 Weights loaded in 0.09 s.
+23:34:19 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:19 Kernel policy for GPU family 9 with 20 cores.
+23:34:19 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:19 Shutdown resolves a retained recovery candidate that still owns residency: the recovery adoption protocol (T029-T033) never adopted it and the mid-lifecycle candidate reaper (T032) had not reached it yet, so its ownership ends on this teardown thread in the reaper's own order, beside the retained graph.
+23:34:19 Weights loaded in 0.09 s.
+23:34:19 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:19 Kernel policy for GPU family 9 with 20 cores.
+23:34:19 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:19 Shutdown resolves a retained recovery candidate that still owns residency: the recovery adoption protocol (T029-T033) never adopted it and the mid-lifecycle candidate reaper (T032) had not reached it yet, so its ownership ends on this teardown thread in the reaper's own order, beside the retained graph.
+23:34:19 Weights loaded in 0.10 s.
+23:34:19 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:19 Kernel policy for GPU family 9 with 20 cores.
+23:34:19 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:19 Weights loaded in 0.09 s.
+23:34:19 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:19 Kernel policy for GPU family 9 with 20 cores.
+23:34:19 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:20 Weights loaded in 0.09 s.
+23:34:20 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:20 Kernel policy for GPU family 9 with 20 cores.
+23:34:20 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:20 Weights loaded in 0.09 s.
+23:34:20 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:20 Kernel policy for GPU family 9 with 20 cores.
+23:34:20 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+23:34:20 Weights loaded in 0.09 s.
+23:34:20 Decode cycles verify every row of the draft's block (--verify-rows auto, as lifecycle-test is dense).
+23:34:20 Kernel policy for GPU family 9 with 20 cores.
+23:34:20 The GPU runs the prefill FFN alone: ANE FFN split needs a hidden size of whole 2560-channel segments.
+PASS CompletionEnvelope/RecoveryCandidate are move-only
+PASS CompletionChannel publishes exactly one and claims it once
+PASS lifecycle pump: Ready -> Draining -> Suspended -> Recovering -> Ready on the real graph, delegated off-thread
+PASS residency worker: one operation, never joined from a safe point, shutdown terminal
+PASS stale/failed candidate retained, authority not stranded
+PASS physical detach: stratum destroyed on the residency worker, retained graph intact, AC stops at the unbuilt adoption protocol
+PASS cold model-less start: one control ReadyEvent, admission closed, absent objects, one AC construction retained
+PASS control responsiveness under a blocked Worker + shutdown join
+PASS worker-slot race: deferral before any transfer, terminal wake, no stranded handoff
+PASS terminal shutdown: supersedes Suspended/Recovering, and late power never reopens inference
+PASS cold candidate: own graph's Owner on its construction thread, four independent refusals, own-token handoff and Owner return
+PASS stale candidate: queued for the ONE reaper, no concurrent construction, deleted under its own graph authority off the safe point
+PASS reaper order: cold Engine -> model -> own graph on the reap thread; warm Engine -> model while the borrowed graph survives
+PASS shutdown around reaping: queued candidates die lawfully at teardown, safe points never join a running reap, no token stranded
+native bootstrap tests passed

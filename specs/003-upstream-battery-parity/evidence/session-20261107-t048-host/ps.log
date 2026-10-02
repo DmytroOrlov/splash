@@ -1,0 +1,6 @@
+--- Native process at Battery (full source ps.battery.txt) ---
+  957 79605 156944 437189936 /opt/homebrew/Cellar/python@3.13/3.13.16_1/Frameworks/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python -m server.server /Users/do/Library/Application Support/Splash/models/.resolved/bddecda3abbdbfe69e0840a0452a50d5bbe750ca7f479a08b54bd7c38eeade73 --model ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M --binary build/t015-corrected/splash --port 18973 --pause-on-battery --max-memory 24G --max-context 32K
+  962   957 1054832 437313136 build/t015-corrected/splash serve-native /Users/do/Library/Application Support/Splash/models/.resolved/bddecda3abbdbfe69e0840a0452a50d5bbe750ca7f479a08b54bd7c38eeade73 32768 25769803776 --pause-on-battery
+
+--- Native process after AC recovery (filtered PID 962 from ps.final.txt) ---
+  962   957 2573104 466254416 build/t015-corrected/splash serve-native /Users/do/Library/Application Support/Splash/models/.resolved/bddecda3abbdbfe69e0840a0452a50d5bbe750ca7f479a08b54bd7c38eeade73 32768 25769803776 --pause-on-battery

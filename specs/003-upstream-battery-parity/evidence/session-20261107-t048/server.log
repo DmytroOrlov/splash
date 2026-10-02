@@ -1,0 +1,3 @@
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+01:31:13 Loading · ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M
+01:31:13 Error · cannot hold /Users/do/Library/Application Support/Splash/models/.resolved/bddecda3abbdbfe69e0840a0452a50d5bbe750ca7f479a08b54bd7c38eeade73 in /Users/do/Library/Application Support/Splash/models: [Errno 1] Operation not permitted: '/Users/do/Library/Application Support/Splash/models/.install.lock'

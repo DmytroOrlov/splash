@@ -1,0 +1,753 @@
+  PID  PPID    RSS      VSZ COMMAND
+    1     0  24160 435250624 /sbin/launchd
+  544     1  44304 435545568 /usr/libexec/logd
+  546     1   9840 435429248 /usr/libexec/UserEventAgent (System)
+  548     1   7264 435362384 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/FSEvents.framework/Versions/A/Support/fseventsd
+  549     1  18080 435419360 /System/Library/PrivateFrameworks/MediaRemote.framework/Support/mediaremoted
+  551     1   8128 435403536 /usr/sbin/systemstats --daemon
+  555     1  10864 435395744 /usr/libexec/configd
+  557     1   9680 435392000 /System/Library/CoreServices/powerd.bundle/powerd
+  558     1    400 435355664 /usr/libexec/IOMFB_bics_daemon
+  562     1   1648 435389920 /usr/libexec/remoted
+  566     1     16 435383840 /System/Library/PrivateFrameworks/CoreSpeech.framework/corespeechd_system
+  568     1   1232 435355040 /usr/libexec/watchdogd
+  572     1  35680 435574032 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mds
+  574     1   3232 435393760 /usr/libexec/kernelmanagerd
+  575     1   4032 435389200 /usr/libexec/diskarbitrationd
+  580     1   1984 435355536 /usr/sbin/syslogd
+  582     1   3168 435389328 /usr/libexec/thermalmonitord
+  583     1  10896 435401888 /System/Library/PrivateFrameworks/CoreDuetContext.framework/Resources/contextstored
+  584     1   9344 435398992 /usr/libexec/xprotectd
+  585     1  16256 435398128 /usr/libexec/opendirectoryd
+  586     1  13712 435500640 /System/Library/PrivateFrameworks/ApplePushService.framework/apsd
+  587     1  13040 435397680 /System/Library/CoreServices/launchservicesd
+  588     1   6048 435389520 /usr/libexec/timed
+  590     1   7488 435393024 /usr/sbin/securityd -i
+  592     1  23168 435428384 /usr/libexec/locationd
+  593     1   6080 435393152 /usr/libexec/nesessionmanager
+  595     1   1040 435354512 autofsd
+  596     1  24960 435399744 /usr/libexec/dasd
+  597     1   2528 435340848 /usr/libexec/corerepaird
+  599     1   2768 435353952 /usr/sbin/distnoted daemon
+  603     1   3600 435354528 /System/Library/CoreServices/logind
+  604     1   2912 435391072 /System/Library/PrivateFrameworks/GenerationalStorage.framework/Versions/A/Support/revisiond
+  605     1    192 435354336 /usr/sbin/KernelEventAgent
+  609     1  25392 435445360 /usr/sbin/bluetoothd
+  610     1   4960 435354656 /usr/sbin/notifyd
+  612     1   8080 435390448 /usr/libexec/corebrightnessd --launchd
+  613     1   5760 435390992 /usr/libexec/AirPlayXPCHelper
+  614     1   6544 435440384 /System/Library/Frameworks/CoreMediaIO.framework/Versions/A/Resources/com.apple.cmio.registerassistantservice
+  617     1 136672 436995872 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer -daemon
+  619     1  14544 435355536 /usr/sbin/cfprefsd daemon
+  620     1  67392 435790288 /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow console
+  621     1  20512 435404480 /usr/libexec/runningboardd
+  624     1   4240 435418960 /System/Library/CoreServices/coreservicesd
+  629     1  13824 435400864 /System/Library/PrivateFrameworks/CoreAnalytics.framework/Support/analyticsd
+  630     1  11376 435406112 /usr/libexec/lsd runAsRoot
+  638     1  32320 435442784 /usr/sbin/coreaudiod
+  640     1   3328 435389152 /usr/libexec/apfsd
+  641     1  12976 435405584 /usr/libexec/nsurlsessiond --privileged
+  644     1  14784 435439504 /usr/sbin/mDNSResponder
+  648     1   7712 435391200 /usr/libexec/biometrickitd --launchd
+  652     1  29648 435536944 /usr/libexec/airportd
+  657     1  10480 435396400 /usr/libexec/symptomsd
+  658     1   1280 435354288 /usr/sbin/distnoted agent
+  659     1   7120 435392448 /System/Library/Frameworks/Security.framework/Versions/A/XPCServices/authd.xpc/Contents/MacOS/authd
+  662     1  10112 435395136 /usr/libexec/eligibilityd
+  664     1   1024 435354528 /usr/sbin/distnoted agent
+  665     1   1024 435354128 /usr/sbin/distnoted agent
+  670     1   1744 435353792 /usr/libexec/ApplicationFirewall/socketfilterfw
+  671     1    944 435355520 /usr/sbin/mDNSResponderHelper
+  686     1  15264 435492944 /usr/libexec/syspolicyd
+  690     1   1024 435354848 /usr/sbin/distnoted agent
+  693     1   4832 435464816 Core Audio Driver (MSTeamsAudioDevice.driver)
+  698     1   8176 435392304 /usr/libexec/audiomxd
+  701     1   4288 435354656 /Library/SystemExtensions/F8CE4670-523E-4183-AE96-28D3B7C3ACCB/com.obsproject.obs-studio.mac-camera-extension.systemextension/Contents/MacOS/com.obsproject.obs-studio.mac-camera-extension
+  702     1   4032 435390576 /usr/libexec/com.apple.cmio.videodriverkithostextension.systemextension/Contents/MacOS/com.apple.cmio.videodriverkithostextension
+  706     1   7104 435443056 /usr/libexec/cameracaptured
+  707     1   4352 435390576 /System/Library/Frameworks/CoreMediaIO.framework/Versions/A/Resources/UVCAssistant.systemextension/Contents/MacOS/UVCAssistant
+  709     1   2304 435315392 /usr/libexec/audioclocksyncd
+  718     1    544 435420928 Core Audio Driver (ParrotAudioPlugin.driver)
+  721     1   4640 435412928 /System/Library/CoreServices/Software Update.app/Contents/Resources/suhelperd
+  722     1   1216 435354736 /usr/sbin/distnoted agent
+  727     1  10928 435469200 /usr/libexec/modelmanagerd
+  743     1   1024 435354080 /usr/sbin/distnoted agent
+  744     1  44496 435307168 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN com.apple.bcmwlan 0x100000fcd com.apple.DriverKit-AppleBCMWLAN
+  745     1   1008 435239632 /System/Library/DriverExtensions/com.apple.DriverKit-IOUserDockChannelSerial.dext/com.apple.DriverKit-IOUserDockChannelSerial com.apple.IOUserDockChannelSerial 0x1000011e9 com.apple.DriverKit-IOUserDockChannelSerial
+  746     1   1968 435240112 /System/Library/DriverExtensions/com.apple.AppleUserHIDDrivers.dext/com.apple.AppleUserHIDDrivers com.apple.driverkit.AppleUserHIDDrivers 0x1000011ed com.apple.AppleUserHIDDrivers
+  758   551   2832 435392256 /usr/sbin/systemstats --logger-helper /private/var/db/systemstats
+  759     1  22368 435738496 /usr/libexec/searchpartyd
+  764     1   1024 435354768 /usr/sbin/distnoted agent
+  812     1   1008 435354928 /usr/sbin/distnoted agent
+  816     1   5360 435390256 /System/Library/CoreServices/appleeventsd --server
+  852 86665  43856 435989744 /Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex -c forced_login_method="chatgpt" exec-server --remote https://codex-cloud-environments.chatgpt.com/api --environment-id ccarenv_b64_Y2NhcmVudl82YWJkNWQ3MjVmYTQ4MTkxOGMwOWJkOTY5ZWMyMDJlOA
+  853     1   1024 435354816 /usr/sbin/distnoted agent
+  868     1 137520 456485152 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mds_stores
+  882     1   1152 435354688 /usr/sbin/distnoted agent
+  937     1  11328 435354592 /usr/sbin/distnoted agent
+  939     1   1008 435239728 /System/Library/DriverExtensions/IOUserBluetoothSerialDriver.dext/IOUserBluetoothSerialDriver com.apple.IOUserBluetoothSerialDriver 0x100001322 com.apple.IOUserBluetoothSerialDriver
+  941     1   1024 435240368 /System/Library/DriverExtensions/IOUserBluetoothSerialDriver.dext/IOUserBluetoothSerialDriver com.apple.IOUserBluetoothSerialDriver 0x100001324 com.apple.IOUserBluetoothSerialDriver
+  942     1   1024 435239680 /System/Library/DriverExtensions/IOUserBluetoothSerialDriver.dext/IOUserBluetoothSerialDriver com.apple.IOUserBluetoothSerialDriver 0x100001326 com.apple.IOUserBluetoothSerialDriver
+  952     1    976 435355296 /usr/libexec/rosetta/oahd
+  958     1   1728 435389104 /System/Library/Frameworks/CryptoTokenKit.framework/ctkd -st
+  959     1   9392 435391184 /System/Library/Frameworks/LocalAuthentication.framework/Support/coreauthd
+  975     1   9408 435392160 /usr/libexec/UserEventAgent (Aqua)
+  982     1  12176 435374304 /usr/sbin/universalaccessd launchd -s
+  987     1   9296 435368960 /usr/libexec/pboard
+  989     1   6848 435391488 /usr/libexec/ContinuityCaptureAgent server
+  995     1  16784 435485488 /usr/libexec/nsurlsessiond
+  996     1  13728 435404384 /usr/libexec/rapportd
+  998     1  20192 435400224 /usr/sbin/usernoted
+ 1001     1  21920 435725408 /System/Library/CoreServices/WiFiAgent.app/Contents/MacOS/WiFiAgent
+ 1003     1   1024 435354560 /usr/sbin/distnoted agent
+ 1006     1  11424 435413424 /usr/libexec/lsd
+ 1010     1  11168 435402928 /System/Library/PrivateFrameworks/UserNotificationsCore.framework/Support/usernotificationsd
+ 1017     1  28528 435477888 /System/Library/PrivateFrameworks/IDS.framework/identityservicesd.app/Contents/MacOS/identityservicesd
+ 1021     1  15440 435397920 /System/Library/PrivateFrameworks/AuthKit.framework/Versions/A/Support/akd
+ 1023     1   7520 435397152 /System/Library/PrivateFrameworks/UsageTracking.framework/Versions/A/UsageTrackingAgent
+ 1031     1  32384 435495776 /usr/libexec/sharingd
+ 1032     1     16 435350560 /System/Library/PrivateFrameworks/SystemMigrationNetwork.framework/Resources/migrationhelper
+ 1045     1  14448 435401184 /System/Library/PrivateFrameworks/IMCore.framework/imagent.app/Contents/MacOS/imagent
+ 1046     1  10736 435392784 /System/Library/PrivateFrameworks/iCloudDriveCore.framework/Versions/A/Support/bird
+ 1055     1   7744 435394032 /System/Library/PrivateFrameworks/FamilyCircle.framework/Versions/A/Resources/familycircled
+ 1058     1   7712 435392352 /System/Library/CoreServices/sharedfilelistd
+ 1059     1  20544 435485792 /System/Library/PrivateFrameworks/FileProvider.framework/Support/fileproviderd
+ 1060     1   8720 435366736 /usr/sbin/filecoordinationd
+ 1062     1   2944 435305520 /System/Library/PrivateFrameworks/IntelligenceTasksEngine.framework/Support/intelligencetasksd
+ 1072     1  12704 435624112 /System/Library/PrivateFrameworks/AppSSO.framework/Support/AppSSOAgent.app/Contents/MacOS/AppSSOAgent
+ 1078     1  12592 435402032 /System/Library/PrivateFrameworks/Categories.framework/Versions/A/XPCServices/CategoriesService.xpc/Contents/MacOS/CategoriesService
+ 1080     1   5328 435402560 /usr/libexec/nearbyd
+ 1083     1   5616 435490272 /System/Library/PrivateFrameworks/ContextKit.framework/Versions/A/XPCServices/ContextService.xpc/Contents/MacOS/ContextService
+ 1086     1  83056 435934080 /System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter
+ 1089     1   3328 435390880 /System/Library/PrivateFrameworks/EmailDaemon.framework/Versions/A/maild
+ 1090     1   1520 435354640 /System/Library/PrivateFrameworks/CommunicationsFilter.framework/CMFSyncAgent
+ 1091     1   2064 435353600 /System/Library/PrivateFrameworks/Noticeboard.framework/Versions/A/Resources/nbstated
+ 1093     1  33280 435413936 /usr/libexec/remindd
+ 1094     1   1024 435354192 /usr/sbin/distnoted agent
+ 1102     1  15344 435588880 /System/Library/CoreServices/AccessibilityUIServer.app/Contents/MacOS/AccessibilityUIServer
+ 1116     1   1024 435354720 /usr/sbin/distnoted agent
+ 1117     1  94560 444484416 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/corespotlightd
+ 1119     1  17360 435469504 /System/Library/PrivateFrameworks/CoreSpeech.framework/corespeechd
+ 1137     1   1072 435354176 /usr/sbin/distnoted agent
+ 1145     1   1856 435370896 /System/Library/PrivateFrameworks/CoreFP.framework/Versions/A/fairplayd
+ 1147     1  88304 436078816 /System/Library/CoreServices/NotificationCenter.app/Contents/MacOS/NotificationCenter
+ 1148     1   1040 435354624 /usr/sbin/distnoted agent
+ 1149     1  13664 435395456 /System/Library/Frameworks/ApplicationServices.framework/Frameworks/ATS.framework/Support/fontd
+ 1153     1  23984 435381536 /System/Library/CoreServices/WindowManager.app/Contents/MacOS/WindowManager
+ 1154     1   9200 435396240 /System/Library/PrivateFrameworks/StatusKit.framework/StatusKitAgent
+ 1156     1   1888 435422304 /System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/ATS.framework/Versions/A/Support/fontworker
+ 1160     1   2640 435353664 /System/Library/PrivateFrameworks/MediaRemote.framework/Support/mediaremoteagent
+ 1161     1   6096 435357216 /System/Library/PrivateFrameworks/UserActivity.framework/Agents/useractivityd
+ 1162     1   5312 435330624 /usr/libexec/avconferenced
+ 1164     1  28496 435586160 /System/Library/PrivateFrameworks/ChronoCore.framework/Support/chronod
+ 1167     1   6080 435391744 /System/Library/PrivateFrameworks/ViewBridge.framework/Versions/A/XPCServices/ViewBridgeAuxiliary.xpc/Contents/MacOS/ViewBridgeAuxiliary
+ 1176     1 403040 436763808 /Users/do/Applications/pyfa.app/Contents/MacOS/pyfa
+ 1185     1  12352 435402704 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdbulkimport -s mdworker-bundle -c MDSImporterBundleFinder -m com.apple.metadata.mdbulkimport
+ 1186     1  39376 435485392 /System/Library/PrivateFrameworks/SafariPlatformSupport.framework/Versions/A/XPCServices/com.apple.SafariPlatformSupport.Helper.xpc/Contents/MacOS/com.apple.SafariPlatformSupport.Helper
+ 1205     1   6112 435391552 /System/Library/CoreServices/diagnostics_agent
+ 1224     1     16 435389152 /System/Library/Frameworks/Contacts.framework/PlugIns/ContactsCoreSpotlightExtension.appex/Contents/MacOS/ContactsCoreSpotlightExtension -AppleLanguages ("en-US", "ru-DE")
+ 1230     1     16 435481584 /System/Library/CoreServices/ControlCenter.app/Contents/PlugIns/DisplayControls.appex/Contents/MacOS/DisplayControls -LaunchArguments eyJ0eXBlIjoxLCJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuY29udHJvbHMuZGlzcGxheSJ9
+ 1231     1     16 435597728 /System/Library/CoreServices/WindowManager.app/Contents/PlugIns/WindowManagerControlsExtension.appex/Contents/MacOS/WindowManagerControlsExtension -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuV2luZG93TWFuYWdlci5jb250cm9scyJ9
+ 1232     1  25888 435444016 /System/Library/CoreServices/Screen Time.app/Contents/PlugIns/ScreenTimeWidgetExtension.appex/Contents/MacOS/ScreenTimeWidgetExtension -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuU2NyZWVuVGltZVdpZGdldEFwcGxpY2F0aW9uLlNjcmVlblRpbWVXaWRnZXRFeHRlbnNpb24ifQ==
+ 1234     1     16 435426896 /System/Library/CoreServices/Batteries.app/Contents/PlugIns/BatteriesAvocadoWidgetExtension.appex/Contents/MacOS/BatteriesAvocadoWidgetExtension -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuQmF0dGVyaWVzLkJhdHRlcmllc0F2b2NhZG9XaWRnZXRFeHRlbnNpb24ifQ==
+ 1242     1  11360 435649600 /System/Applications/Calendar.app/Contents/PlugIns/CalendarWidgetExtension.appex/Contents/MacOS/CalendarWidgetExtension -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuaUNhbC5DYWxlbmRhcldpZGdldEV4dGVuc2lvbiJ9
+ 1244     1   6496 435442304 /System/Applications/Clock.app/Contents/PlugIns/WorldClockWidget.appex/Contents/MacOS/WorldClockWidget -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuY2xvY2suV29ybGRDbG9ja1dpZGdldCJ9
+ 1246     1     16 435404608 /System/Library/CoreServices/Screen Time.app/Contents/PlugIns/ScreenTimeWidgetIntentsExtension.appex/Contents/MacOS/ScreenTimeWidgetIntentsExtension -AppleLanguages ("en-US", "ru-DE")
+ 1252     1     16 435412368 /System/Library/ExtensionKit/Extensions/AccessibilitySettingsWidgetExtension.appex/Contents/MacOS/AccessibilitySettingsWidgetExtension -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuQWNjZXNzaWJpbGl0eVNldHRpbmdzV2lkZ2V0RXh0ZW5zaW9uIn0=
+ 1253     1     16 435809552 /System/Applications/Home.app/Contents/PlugIns/HomeEnergyWidgetsExtension.appex/Contents/MacOS/HomeEnergyWidgetsExtension -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuSG9tZS5Ib21lRW5lcmd5V2lkZ2V0cyJ9
+ 1255     1     16 435401424 /System/Library/ExtensionKit/Extensions/SoundIntentsExtension.appex/Contents/MacOS/SoundIntentsExtension -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuU291bmQtU2V0dGluZ3MuU291bmRJbnRlbnRzIn0=
+ 1257     1     16 435669776 /System/Applications/Shortcuts.app/Contents/PlugIns/ShortcutsWidgetExtension.appex/Contents/MacOS/ShortcutsWidgetExtension -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuc2hvcnRjdXRzLlNob3J0Y3V0c1dpZGdldCJ9
+ 1267     1     16 435460128 /System/Library/CoreServices/PeopleViewService.app/Contents/PlugIns/PeopleWidget_macOSExtension.appex/Contents/MacOS/PeopleWidget_macOSExtension -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuUGVvcGxlVmlld1NlcnZpY2UuUGVvcGxlV2lkZ2V0LW1hY09TIn0=
+ 1268     1     16 435399696 /System/Library/PrivateFrameworks/CalendarWidget.framework/PlugIns/IntentsExtension.appex/Contents/MacOS/IntentsExtension -AppleLanguages ("en-US", "ru-DE")
+ 1270     1     16 435404016 /System/Applications/System Settings.app/Contents/PlugIns/csimporter.appex/Contents/MacOS/csimporter -AppleLanguages ("en-US", "ru-DE")
+ 1271     1     16 435426896 /System/Applications/FindMy.app/Contents/PlugIns/FindMyWidgetItems.appex/Contents/MacOS/FindMyWidgetItems -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuZmluZG15LkZpbmRNeVdpZGdldEl0ZW1zIn0=
+ 1276     1     16 435400224 /System/Applications/Shortcuts.app/Contents/PlugIns/ShortcutLiveActivityWidgetExtension.appex/Contents/MacOS/ShortcutLiveActivityWidgetExtension -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuc2hvcnRjdXRzLlNob3J0Y3V0TGl2ZUFjdGl2aXR5V2lkZ2V0In0=
+ 1277     1     16 435400816 /System/Applications/Weather.app/Contents/PlugIns/WeatherIntents.appex/Contents/MacOS/WeatherIntents -AppleLanguages ("en-US", "ru-DE")
+ 1281     1     16 435598432 /System/Applications/Notes.app/Contents/PlugIns/com.apple.Notes.WidgetExtension.appex/Contents/MacOS/com.apple.Notes.WidgetExtension -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuTm90ZXMuV2lkZ2V0RXh0ZW5zaW9uIn0=
+ 1282     1     16 435400896 /System/Applications/Utilities/Print Center.app/Contents/PlugIns/PrintCenterWidgetExtension.macOS.appex/Contents/MacOS/PrintCenterWidgetExtension.macOS -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUucHJpbnRjZW50ZXIuUHJpbnRDZW50ZXJXaWRnZXQifQ==
+ 1286     1     16 435619968 /System/Applications/Journal.app/Contents/PlugIns/JournalWidgets.appex/Contents/MacOS/JournalWidgets -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuam91cm5hbC53aWRnZXRzIn0=
+ 1287     1     16 435401184 /System/Library/PrivateFrameworks/MobileTimer.framework/PlugIns/MobileTimerIntents.appex/Contents/MacOS/MobileTimerIntents -AppleLanguages ("en-US", "ru-DE")
+ 1289     1     16 435401728 /System/Applications/VoiceMemos.app/Contents/PlugIns/VoiceMemosSettingsWidgetExtension.appex/Contents/MacOS/VoiceMemosSettingsWidgetExtension -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuVm9pY2VNZW1vcy5Wb2ljZU1lbW9zU2V0dGluZ3NXaWRnZXQifQ==
+ 1290     1     16 435433280 /System/Applications/FindMy.app/Contents/PlugIns/FindMyWidgetPeople.appex/Contents/MacOS/FindMyWidgetPeople -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuZmluZG15LkZpbmRNeVdpZGdldFBlb3BsZSJ9
+ 1291     1     16 435401120 /System/Library/CoreServices/Dock.app/Contents/PlugIns/DockControls.appex/Contents/MacOS/DockControls -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuZG9jay5jb250cm9scyJ9
+ 1292     1     16 435409632 /System/Library/CoreServices/PeopleViewService.app/Contents/PlugIns/SelectPerson_iOS.appex/Contents/MacOS/SelectPerson_iOS -AppleLanguages ("en-US", "ru-DE")
+ 1293     1     16 435629616 /System/Applications/Utilities/Screenshot.app/Contents/PlugIns/ScreenshotControls.appex/Contents/MacOS/ScreenshotControls -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuY29udHJvbHMuc2NyZWVuc2hvdCJ9
+ 1295     1     16 435401360 /System/Applications/VoiceMemos.app/Contents/PlugIns/RecordWidgetExtension.appex/Contents/MacOS/RecordWidgetExtension -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuVm9pY2VNZW1vcy5SZWNvcmRXaWRnZXQifQ==
+ 1298     1  10800 435409680 /System/Library/PrivateFrameworks/PassKitCore.framework/passd
+ 1301     1     16 435639312 /System/Applications/Home.app/Contents/PlugIns/HomeWidget.appex/Contents/MacOS/HomeWidget -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuSG9tZS5Ib21lV2lkZ2V0LkludGVyYWN0aXZlIn0=
+ 1302     1     16 435428032 /System/Applications/Notes.app/Contents/PlugIns/com.apple.Notes.IntentsExtension.appex/Contents/MacOS/com.apple.Notes.IntentsExtension -AppleLanguages ("en-US", "ru-DE")
+ 1303     1     16 435484704 /System/Applications/Podcasts.app/Contents/PlugIns/PodcastsWidget.appex/Contents/MacOS/PodcastsWidget -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUucG9kY2FzdHMud2lkZ2V0In0=
+ 1304     1     16 435435616 /System/Applications/Photos.app/Contents/PlugIns/PhotosReliveWidget.appex/Contents/MacOS/PhotosReliveWidget -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuUGhvdG9zLlBob3Rvc1JlbGl2ZVdpZGdldCJ9
+ 1305     1     16 435401632 /System/Applications/Calculator.app/Contents/PlugIns/CalculatorWidget.appex/Contents/MacOS/CalculatorWidget -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuY2FsY3VsYXRvci5DYWxjdWxhdG9yV2lkZ2V0In0=
+ 1308     1   1024 435354656 /usr/sbin/distnoted agent
+ 1311     1  21216 435402880 /System/Library/CoreServices/WallpaperAgent.app/Contents/MacOS/WallpaperAgent
+ 1312     1     16 435631472 /System/Applications/Journal.app/Contents/PlugIns/JournalWidgetsSecure.appex/Contents/MacOS/JournalWidgetsSecure -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuam91cm5hbC53aWRnZXRzLnNlY3VyZSJ9
+ 1313     1     16 435454464 /System/Applications/Reminders.app/Contents/PlugIns/RemindersWidgetExtension.appex/Contents/MacOS/RemindersWidgetExtension -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUucmVtaW5kZXJzLldpZGdldEV4dGVuc2lvbiJ9
+ 1315     1     16 435451056 /System/Applications/Tips.app/Contents/PlugIns/TipsWidgetExtension.appex/Contents/MacOS/TipsWidgetExtension -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUudGlwcy5XaWRnZXQifQ==
+ 1317     1  18656 435354768 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension -LaunchArguments eyJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS53YWxscGFwZXIuZXh0ZW5zaW9uLmFlcmlhbHMiLCJ0eXBlIjoxLCJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZX0=
+ 1319     1     16 435422576 /System/Applications/Reminders.app/Contents/PlugIns/RemindersIntentsExtension.appex/Contents/MacOS/RemindersIntentsExtension -AppleLanguages ("en-US", "ru-DE")
+ 1336     1  10272 435680384 /usr/libexec/GamePolicyAgent
+ 1346     1   8512 435397600 /System/Library/PrivateFrameworks/People.framework/peopled
+ 1347 18528 155456 1951263040 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --extension-process --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=47798 --launch-time-ticks=1744410023219 --shared-files --metrics-shmem-handle=1752395122,r,6305387765131108118,12557790188986437428,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190753775038169996 --seatbelt-client=182
+ 1350     1   4832 435400912 /System/Library/PrivateFrameworks/CloudDocs.framework/PlugIns/com.apple.CloudDocs.iCloudDriveFileProvider.appex/Contents/MacOS/com.apple.CloudDocs.iCloudDriveFileProvider -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuQ2xvdWREb2NzLmlDbG91ZERyaXZlRmlsZVByb3ZpZGVyIn0=
+ 1359     1   1008 435353952 /System/Library/CoreServices/CrashReporterSupportHelper server-init
+ 1363     1   1024 435354976 /usr/sbin/distnoted agent
+ 1475     1     16 435285232 /System/Library/ExtensionKit/Extensions/WallpaperDynamicExtension.appex/Contents/MacOS/WallpaperDynamicExtension -LaunchArguments eyJ0eXBlIjoxLCJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS53YWxscGFwZXIuZXh0ZW5zaW9uLmR5bmFtaWMiLCJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZX0=
+ 1476     1     16 435286096 /System/Library/ExtensionKit/Extensions/WallpaperMacintoshExtension.appex/Contents/MacOS/WallpaperMacintoshExtension -LaunchArguments eyJ0eXBlIjoxLCJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS53YWxscGFwZXIuZXh0ZW5zaW9uLm1hY2ludG9zaCIsImVuaGFuY2VkU2VjdXJpdHkiOmZhbHNlfQ==
+ 1477     1     16 435286816 /System/Library/ExtensionKit/Extensions/WallpaperImageExtension.appex/Contents/MacOS/WallpaperImageExtension -LaunchArguments eyJ0eXBlIjoxLCJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS53YWxscGFwZXIuZXh0ZW5zaW9uLmltYWdlIiwiZW5oYW5jZWRTZWN1cml0eSI6ZmFsc2V9
+ 1478     1     16 435285152 /System/Library/ExtensionKit/Extensions/WallpaperGradientExtension.appex/Contents/MacOS/WallpaperGradientExtension -LaunchArguments eyJ0eXBlIjoxLCJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS53YWxscGFwZXIuZXh0ZW5zaW9uLmdyYWRpZW50IiwiZW5oYW5jZWRTZWN1cml0eSI6ZmFsc2V9
+ 1479     1     16 435284800 /System/Library/ExtensionKit/Extensions/WallpaperSequoiaExtension.appex/Contents/MacOS/WallpaperSequoiaExtension -LaunchArguments eyJ0eXBlIjoxLCJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS53YWxscGFwZXIuZXh0ZW5zaW9uLnNlcXVvaWEiLCJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZX0=
+ 1480     1     16 435284672 /System/Library/ExtensionKit/Extensions/NeptuneOneWallpaper.appex/Contents/MacOS/NeptuneOneWallpaper -LaunchArguments eyJ0eXBlIjoxLCJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS5OZXB0dW5lT25lRXh0ZW5zaW9uIiwiZW5oYW5jZWRTZWN1cml0eSI6ZmFsc2V9
+ 1481     1     32 435348800 /System/Library/ExtensionKit/Extensions/WallpaperLegacyExtension.appex/Contents/MacOS/WallpaperLegacyExtension -LaunchArguments eyJ0eXBlIjoxLCJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS53YWxscGFwZXIuZXh0ZW5zaW9uLmxlZ2FjeSIsImVuaGFuY2VkU2VjdXJpdHkiOmZhbHNlfQ==
+ 1482     1     16 435284880 /System/Library/ExtensionKit/Extensions/WallpaperSonomaExtension.appex/Contents/MacOS/WallpaperSonomaExtension -LaunchArguments eyJ0eXBlIjoxLCJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS53YWxscGFwZXIuZXh0ZW5zaW9uLnNvbm9tYSIsImVuaGFuY2VkU2VjdXJpdHkiOmZhbHNlfQ==
+ 1483     1    240 435370576 /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/CVMServer
+ 1484     1   1040 435354800 /usr/sbin/distnoted agent
+ 1514     1  31360 435911600 /Library/Intune/Microsoft Intune Agent.app/Contents/MacOS/IntuneMdmDaemon
+ 1961     1   2336 435392608 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdwrite
+ 2009     1   8432 435409040 /System/Library/PrivateFrameworks/SafariSafeBrowsing.framework/com.apple.Safari.SafeBrowsing.Service
+ 2042     1     32 435670096 /System/Applications/Mail.app/Contents/MacOS/Mail -MailLibraryUpgradeOnly YES
+ 2047     1   4608 435391680 /System/Library/CoreServices/SubmitDiagInfo server-init
+ 2166     1   2672 435354288 /System/Library/Frameworks/CryptoTokenKit.framework/ctkahp.bundle/Contents/MacOS/ctkahp -d
+ 2167     1   4992 435354752 /System/Library/Frameworks/InputMethodKit.framework/Resources/imklaunchagent
+ 2170     1  22288 435483600 /System/Library/PrivateFrameworks/TextInputUIMacHelper.framework/Versions/A/XPCServices/CursorUIViewService.xpc/Contents/MacOS/CursorUIViewService
+ 2171     1   8096 435474720 /System/Library/Input Methods/PressAndHold.app/Contents/PlugIns/PAH_Extension.appex/Contents/MacOS/PAH_Extension -AppleLanguages ("en-US", "ru-DE")
+ 2173     1   2944 435354672 /System/Library/Frameworks/CryptoTokenKit.framework/ctkahp.bundle/Contents/MacOS/ctkahp
+ 2200     1  25616 435648096 /System/Library/CoreServices/Dock.app/Contents/MacOS/Dock
+ 2201     1  16608 435598576 /System/Library/CoreServices/SystemUIServer.app/Contents/MacOS/SystemUIServer
+ 2206     1 139120 437905088 /System/Library/CoreServices/Spotlight.app/Contents/MacOS/Spotlight
+ 2208     1    528 435355632 automountd
+ 2224     1   7600 435295728 /System/Library/CoreServices/Dock.app/Contents/XPCServices/com.apple.dock.extra.xpc/Contents/MacOS/com.apple.dock.extra
+ 2225     1   8624 435483504 /System/Library/CoreServices/Dock.app/Contents/XPCServices/com.apple.dock.external.extra.arm64.xpc/Contents/MacOS/com.apple.dock.external.extra.arm64
+ 2344     1   4112 435390224 /System/Library/Image Capture/Support/icdd
+ 2349     1   7040 435381952 /System/Library/CoreServices/AirPlayUIAgent.app/Contents/MacOS/AirPlayUIAgent --launchd
+ 2352     1  18592 435601536 /System/Library/CoreServices/TextInputMenuAgent.app/Contents/MacOS/TextInputMenuAgent
+ 2379     1   7824 435460064 /System/Library/Frameworks/CoreSpotlight.framework/spotlightknowledged -x
+ 2380     1   8080 435526128 /System/Library/PrivateFrameworks/UniversalAccess.framework/Versions/A/Resources/universalAccessAuthWarn.app/Contents/MacOS/universalAccessAuthWarn launchd -s
+ 2419     1   5152 435325984 tmux new-session -As main
+ 2504     1   9744 435626272 /System/Library/CoreServices/UserNotificationCenter.app/Contents/MacOS/UserNotificationCenter
+ 2930     1    128 435235056 /usr/bin/ssh-agent -l
+ 6315     1   2256 435400224 /System/Library/PrivateFrameworks/MobileDevice.framework/Versions/A/Resources/usbmuxd -launchd
+ 6372     1    208 435389792 /Library/Developer/PrivateFrameworks/CoreDevice.framework/Resources/bin/CoreDeviceDDIUpdaterService
+ 6373     1    912 435350416 /Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/bin/simdiskimaged
+ 6418     1   3200 435402080 /System/Library/PrivateFrameworks/AMPDevices.framework/Versions/A/Support/AMPDeviceDiscoveryAgent --launchd
+ 6604     1     32 435302432 /usr/libexec/cryptexd
+ 7608     1  12000 435486848 /System/Library/CoreServices/PowerChime.app/Contents/MacOS/PowerChime
+ 7616     1   5136 435391888 /usr/libexec/wifivelocityd
+ 9272     1   8880 435305648 /System/Library/Frameworks/QuickLookUI.framework/Versions/A/XPCServices/QuickLookUIService.xpc/Contents/MacOS/QuickLookUIService
+ 9283     1  74768 436727056 /System/Library/Frameworks/QuickLookUI.framework/Versions/A/XPCServices/QuickLookUIService.xpc/Contents/MacOS/QuickLookUIService
+ 9286 18528 103248 1949186528 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=47826 --launch-time-ticks=1744911863718 --shared-files --metrics-shmem-handle=1752395122,r,2299726162354852440,14408444035441368462,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190753801275341768 --seatbelt-client=226
+ 9677     1  17632 435668192 /System/Applications/Stocks.app/Contents/PlugIns/StocksWidget.appex/Contents/MacOS/StocksWidget -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUuc3RvY2tzLndpZGdldCJ9
+ 9706     1   5216 435355024 /usr/libexec/assessmentagent
+ 9760     1   7664 435355168 /usr/libexec/feedbackd
+ 9818     1  20496 435409344 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
+10311     1   1504 435390192 /System/Library/CoreServices/sharedfilelistd
+10502     1  25120 435409536 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
+10503     1  24016 435409280 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
+10504     1  25360 435409440 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
+11071 18528 135232 1951172160 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --extension-process --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=47827 --launch-time-ticks=1744975833537 --shared-files --metrics-shmem-handle=1752395122,r,3129806347695772626,3237500749420386553,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190753802212383617 --seatbelt-client=190
+11533 18528 130176 1951183568 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --extension-process --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=47828 --launch-time-ticks=1744992418445 --shared-files --metrics-shmem-handle=1752395122,r,6192726327354522692,17234244654247996893,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190753803149425466 --seatbelt-client=230
+11645     1   9616 435397680 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
+11646     1   9600 435397152 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
+11647     1   9616 435397168 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared -s mdworker -c MDSImporterWorker -m com.apple.mdworker.shared
+11652     1   1312 435354640 /usr/libexec/taskgated
+16066     1  12624 440024944 /System/Library/PrivateFrameworks/Noticeboard.framework/Versions/A/Resources/nbagent.app/Contents/MacOS/nbagent
+17462     1      0        0 /Applications/Falcon.app/Contents/PlugIns/StaticAnalysis.bundle/Contents/XPCServices/FXPredictService.xpc/Contents/MacOS/FXPredictService
+17883 18528 113536 1949340960 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=28497 --launch-time-ticks=1230941231798 --shared-files --metrics-shmem-handle=1752395122,r,1713404209346127656,784932967393882915,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190735689193442447 --seatbelt-client=91
+17914     1  18528 435524096 /usr/libexec/mobileassetd
+17935     1  26256 435481104 /System/Library/PrivateFrameworks/CloudKitDaemon.framework/Support/cloudd
+17937     1   8480 435347424 /System/Library/PrivateFrameworks/CloudTelemetry.framework/Versions/A/XPCServices/CloudTelemetryService.xpc/Contents/MacOS/CloudTelemetryService
+17939     1  13136 435402480 /System/Library/PrivateFrameworks/TCC.framework/Support/tccd
+17965     1  16464 435405024 /System/Library/Frameworks/Contacts.framework/Support/contactsd
+17981     1  14832 435397424 /System/Library/PrivateFrameworks/DoNotDisturbServer.framework/Support/donotdisturbd
+18000     1  12000 435465328 /System/Library/Frameworks/CoreTelephony.framework/Support/CommCenter -L
+18001     1   6656 435390592 /usr/libexec/securityd_system
+18005     1  14848 435398960 /System/Library/PrivateFrameworks/HearingCore.framework/heard
+18025     1      0        0 /Applications/Falcon.app/Contents/PlugIns/FileAnalysis.bundle/Contents/XPCServices/FileAnalysisService.xpc/Contents/MacOS/FileAnalysisService
+18027     1   4208 435354480 /System/Library/Frameworks/Security.framework/Versions/A/XPCServices/com.apple.CodeSigningHelper.xpc/Contents/MacOS/com.apple.CodeSigningHelper
+18042     1  12736 435397712 /usr/libexec/appleaccountd
+18043     1   7584 410272976 /System/Library/PrivateFrameworks/CoreADI.framework/adid
+18046     1   9136 435389872 /System/Library/Frameworks/LocalAuthentication.framework/Support/coreauthd
+18057     1  13776 435424128 /usr/libexec/linkd
+18062     1  11568 435401840 /System/Library/Frameworks/ExtensionFoundation.framework/Versions/A/XPCServices/extensionkitservice.xpc/Contents/MacOS/extensionkitservice
+18063     1  12320 435401248 /usr/libexec/neagent
+18072     1   8864 435392416 /usr/libexec/rtcreportingd
+18160     1  19792 435403104 /usr/libexec/swcd
+18327     1  10192 435402720 /usr/libexec/wifip2pd
+18330     1  20416 435410832 /usr/libexec/networkserviceproxy
+18528     1 973328 538062768 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+18531     1   2464 485749680 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/chrome_crashpad_handler --monitor-self-annotation=ptype=crashpad-handler --database=/Users/do/Library/Application Support/Google/Chrome/Crashpad --url=https://clients2.google.com/cr/report --annotation=channel= --annotation=plat=OS X --annotation=prod=Chrome_Mac --annotation=ver=155.0.8059.40 --handshake-fd=5
+18533 18528 213760 488099392 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper --type=gpu-process --gpu-recent-crash-count=0 --gpu-preferences=WAAAAAAAAAAgAQAEAAAAAAAAAAAAAGAAQAAAAAAAAAADAAAAAAAAADgAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAoAAAAAAAAAAgAAAAAAAAADAAAAAEAAAAAAAAAAAAAAAgAAAAAAAAACAAAAAAAAAA= --shared-files --metrics-shmem-handle=1752395122,r,1386705195779817979,2528544155850099573,262144 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190708988185955192 --seatbelt-client=20
+18534 18528 145728 486260656 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=network --shared-files --metrics-shmem-handle=1752395122,r,11129711995355765121,11362111867855311711,524288 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190708989122997041 --seatbelt-client=20
+18535 18528  20496 486172640 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=service --shared-files --metrics-shmem-handle=1752395122,r,11817539699179868183,5577207642055535907,524288 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190708990060038890 --seatbelt-client=43
+18540 18528 110816 1951271680 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --extension-process --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=6 --launch-time-ticks=639563932583 --shared-files --metrics-shmem-handle=1752395122,r,1791543504709608315,12496656286645608010,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190708991934122588 --seatbelt-client=122
+18547 18528 213760 1949497632 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --top-chrome-webui --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=12 --launch-time-ticks=639563994702 --shared-files --metrics-shmem-handle=1752395122,r,7095088051594859443,8509360533139993942,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190708997556373682 --seatbelt-client=122
+18570 18528 233248 1949347440 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=142 --launch-time-ticks=639565009013 --shared-files --metrics-shmem-handle=1752395122,r,16839813566836856306,4343017004716905438,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190709119371814052 --seatbelt-client=221
+18572 18528  34576 1949289936 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=144 --launch-time-ticks=639565926725 --shared-files --metrics-shmem-handle=1752395122,r,6663797179252150152,5779205395545237559,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190709121245897750 --seatbelt-client=236
+18576     1  13232 435474896 /System/Library/PrivateFrameworks/SafariPlatformSupport.framework/Versions/A/XPCServices/com.apple.SafariPlatformSupport.Helper.xpc/Contents/MacOS/com.apple.SafariPlatformSupport.Helper
+18606 18528  21840 486170512 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper --type=utility --utility-sub-type=audio.mojom.AudioService --lang=en-US --service-sandbox-type=audio --message-loop-type-ui --shared-files --metrics-shmem-handle=1752395122,r,16706172906060494528,3819896177760127588,524288 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190709130616316240 --seatbelt-client=315
+18630 18528  30176 486245920 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper --type=utility --utility-sub-type=video_capture.mojom.VideoCaptureService --lang=en-US --service-sandbox-type=none --message-loop-type-ui --shared-files --metrics-shmem-handle=1752395122,r,4244119250702585042,3458677644857811164,524288 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190709136238567334
+18631 18528 153488 1949493584 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --top-chrome-webui --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=161 --launch-time-ticks=639585445923 --shared-files --metrics-shmem-handle=1752395122,r,5119514052355619632,5797944317927688496,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190709137175609183 --seatbelt-client=338
+18633 18528  97136 1949306656 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=162 --launch-time-ticks=639585467270 --shared-files --metrics-shmem-handle=1752395122,r,14307649478735214145,7448171208322108986,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190709138112651032 --seatbelt-client=339
+18784     1  31664 435638304 /System/Library/Frameworks/AppKit.framework/Versions/C/XPCServices/com.apple.appkit.xpc.openAndSavePanelService.xpc/Contents/MacOS/com.apple.appkit.xpc.openAndSavePanelService
+19170     1   7456 435390304 /System/Library/PrivateFrameworks/AXAssetLoader.framework/Support/axassetsd
+19171     1  10512 435401552 /usr/libexec/secinitd
+19172     1  14848 435398592 /System/Library/PrivateFrameworks/CalendarDaemon.framework/Support/calaccessd
+19213     1  10752 435397344 /System/Library/PrivateFrameworks/ScreenTimeCore.framework/Versions/A/ScreenTimeAgent
+19214     1  15504 435399792 /usr/libexec/knowledge-agent
+19464     1  17440 435435248 /usr/libexec/searchpartyuseragent
+19465     1  10544 435397024 /usr/libexec/findmylocateagent
+19480     1  43104 435962352 /System/Library/Frameworks/QuickLookThumbnailing.framework/Support/com.apple.quicklook.ThumbnailsAgent
+19487     1  12880 435392928 /System/Library/PrivateFrameworks/GeoServices.framework/Versions/A/XPCServices/com.apple.geod.xpc/Contents/MacOS/com.apple.geod
+19497     1   8544 435392080 /usr/libexec/trustd --agent
+19670     1   6800 435400944 /System/Library/CoreServices/pbs
+19672     1   8304 435463568 /System/Library/ExtensionKit/Extensions/ImageThumbnailExtension.appex/Contents/MacOS/ImageThumbnailExtension -LaunchArguments eyJ0eXBlIjoxLCJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS5xdWlja2xvb2sudGh1bWJuYWlsLkltYWdlRXh0ZW5zaW9uIiwiZW5oYW5jZWRTZWN1cml0eSI6ZmFsc2V9
+20321     1   2064 435354432 /usr/libexec/logd_helper
+20665     1   6496 435390256 /System/Library/Frameworks/CryptoTokenKit.framework/ctkd -tw
+21085     1  14896 435402272 /usr/libexec/routined LAUNCHED_BY_LAUNCHD
+21086     1  10144 435395360 /System/Library/PrivateFrameworks/SyncedDefaults.framework/Support/syncdefaultsd
+21527     1   6288 435481552 /usr/libexec/aned
+21808     1     16 435350880 /System/Library/PrivateFrameworks/KerberosHelper/Helpers/DiskUnmountWatcher
+21849     1  23536 435408528 /usr/libexec/siriknowledged
+21856     1   6256 435389776 /System/Library/PrivateFrameworks/CascadeSets.framework/Versions/A/XPCServices/SetStoreUpdateService.xpc/Contents/MacOS/SetStoreUpdateService
+22105     1   1024 435354208 /usr/sbin/distnoted agent
+22217     1   1040 435354496 /usr/sbin/distnoted agent
+22218     1   3200 435390720 /System/Library/ExtensionKit/Extensions/GenerativeExperiencesSafetyInferenceProvider.appex/Contents/MacOS/GenerativeExperiencesSafetyInferenceProvider -LaunchArguments eyJ0eXBlIjo4LCJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS5HZW5lcmF0aXZlRnVuY3Rpb25zLkdlbmVyYXRpdmVFeHBlcmllbmNlc1NhZmV0eUluZmVyZW5jZVByb3ZpZGVyIiwiZW5oYW5jZWRTZWN1cml0eSI6ZmFsc2V9
+22221     1   2816 435479152 /System/Library/ExtensionKit/Extensions/TGOnDeviceInferenceProviderService.appex/Contents/MacOS/TGOnDeviceInferenceProviderService -LaunchArguments eyJ0eXBlIjo4LCJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS50Z29uZGV2aWNlaW5mZXJlbmNlcHJvdmlkZXJzZXJ2aWNlIiwiZW5oYW5jZWRTZWN1cml0eSI6ZmFsc2V9
+22223     1   4992 435440192 /usr/libexec/amfid
+22773     1   6608 435426400 /System/Library/PrivateFrameworks/PhotoLibraryServices.framework/Versions/A/Support/photolibraryd
+23542     1   6352 435446912 /System/Library/ExtensionKit/Extensions/AudiovisualThumbnailExtension.appex/Contents/MacOS/AudiovisualThumbnailExtension -LaunchArguments eyJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS5xdWlja2xvb2sudGh1bWJuYWlsLkF1ZGlvdmlzdWFsRXh0ZW5zaW9uIiwidHlwZSI6MSwiZW5oYW5jZWRTZWN1cml0eSI6ZmFsc2V9
+23543     1  91184 435707024 /System/Library/ExtensionKit/Extensions/TextThumbnailExtension.appex/Contents/MacOS/TextThumbnailExtension -LaunchArguments eyJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS5xdWlja2xvb2sudGh1bWJuYWlsLlRleHRFeHRlbnNpb24iLCJ0eXBlIjoxLCJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZX0=
+23550     1   5616 439896096 /System/Library/ExtensionKit/Extensions/WebThumbnailExtension.appex/Contents/MacOS/WebThumbnailExtension -LaunchArguments eyJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS5xdWlja2xvb2sudGh1bWJuYWlsLldlYkV4dGVuc2lvbiIsInR5cGUiOjEsImVuaGFuY2VkU2VjdXJpdHkiOmZhbHNlfQ==
+23551     1   5472 439920016 /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU
+25042     1  14960 435406224 /usr/libexec/transparencyd
+25162     1  14896 435422512 /System/Library/Frameworks/LocalAuthentication.framework/Support/coreautha.bundle/Contents/MacOS/coreautha
+25350 18528 1213552 1949621488 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=45507 --launch-time-ticks=1667244062216 --shared-files --metrics-shmem-handle=1752395122,r,7323033557960459731,5102141735276661579,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190751628275293937 --seatbelt-client=249
+26943     1   3520 435354384 /usr/libexec/sysmond
+27290     1   9040 435391264 /usr/libexec/ospredictiond
+27309     1   6400 435388976 /usr/libexec/findmybeaconingd
+27327     1     16 435397952 /System/Library/ExtensionKit/Extensions/TGOnDeviceInferenceProviderService.appex/Contents/MacOS/TGOnDeviceInferenceProviderService -LaunchArguments eyJ0eXBlIjo4LCJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS50Z29uZGV2aWNlaW5mZXJlbmNlcHJvdmlkZXJzZXJ2aWNlIiwiZW5oYW5jZWRTZWN1cml0eSI6ZmFsc2V9
+27354     1   3504 435385824 /System/Library/CoreServices/ReportSystemMemory
+27363     1  15744 435414896 /usr/libexec/mlhostd
+27411     1   5712 435389728 /usr/libexec/powerexperienced
+27421     1   3232 435309744 /usr/libexec/online-auth-agent
+27452     1   7008 435343904 /System/Library/PrivateFrameworks/SystemStatusServer.framework/Support/systemstatusd
+27637     1   6880 435389296 /System/Library/CoreServices/TimeMachine/backupd-helper -launchd
+27866     1   6112 435389552 /usr/libexec/mobileactivationd
+28007     1   2976 435354672 /usr/sbin/cfprefsd agent
+28008     1   2928 435355040 /usr/sbin/cfprefsd agent
+28009     1   2560 435354432 /usr/sbin/cfprefsd agent
+28010     1   2416 435354208 /usr/sbin/cfprefsd agent
+28011     1  12976 435400944 /System/Library/Frameworks/ExtensionFoundation.framework/Versions/A/XPCServices/extensionkitservice.xpc/Contents/MacOS/extensionkitservice
+28034     1   2528 435354960 /usr/sbin/cfprefsd agent
+28035     1   3136 435354176 /usr/sbin/cfprefsd agent
+28036     1   2240 435354736 /usr/sbin/cfprefsd agent
+28037     1   3136 435354528 /usr/sbin/cfprefsd agent
+28038     1   2192 435354608 /usr/sbin/cfprefsd agent
+28039     1   2432 435354512 /usr/sbin/cfprefsd agent
+28040     1   2512 435354176 /usr/sbin/cfprefsd agent
+28047     1   2464 435354208 /usr/sbin/cfprefsd agent
+28048     1   2528 435354912 /usr/sbin/cfprefsd agent
+28058     1   2496 435354080 /usr/sbin/cfprefsd agent
+28059     1   2624 435354400 /usr/sbin/cfprefsd agent
+28078     1   7440 435365632 /System/Library/PrivateFrameworks/iCloudDriveService.framework/XPCServices/ContainerMetadataExtractor.xpc/Contents/MacOS/ContainerMetadataExtractor
+28079     1  22992 435450720 /System/Library/PrivateFrameworks/VoiceShortcuts.framework/Versions/A/Support/siriactionsd
+28080     1   8288 435340096 /System/Library/PrivateFrameworks/AppPredictionFoundation.framework/Versions/A/XPCServices/AppPredictionIntentsHelperService.xpc/Contents/MacOS/AppPredictionIntentsHelperService
+28082     1   7264 435390880 /System/Library/PrivateFrameworks/SessionCore.framework/Support/liveactivitiesd
+28083     1   8288 435851136 /System/Library/PrivateFrameworks/ReplicatorCore.framework/Support/replicatord
+29971     1    864 435413520 /System/Library/ExtensionKit/Extensions/TGOnDeviceInferenceProviderService.appex/Contents/MacOS/TGOnDeviceInferenceProviderService -LaunchArguments eyJ0eXBlIjo4LCJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS50Z29uZGV2aWNlaW5mZXJlbmNlcHJvdmlkZXJzZXJ2aWNlIiwiZW5oYW5jZWRTZWN1cml0eSI6ZmFsc2V9
+30059     1     16 435411232 /System/Applications/Notes.app/Contents/PlugIns/com.apple.Notes.SpotlightIndexExtension.appex/Contents/MacOS/com.apple.Notes.SpotlightIndexExtension -AppleLanguages ("en-US", "ru-DE")
+30757     1  19328 435413696 /usr/libexec/secd
+30773     1  14944 435392256 /System/Library/PrivateFrameworks/BiomeStreams.framework/Support/BiomeAgent
+30820     1   9616 435534848 /System/Library/CoreServices/Siri.app/Contents/MacOS/Siri launchd
+30845     1   6320 435388448 /usr/libexec/containermanagerd --runmode=agent --user-container-mode=current --bundle-container-mode=proxy --system-container-mode=none
+31121     1  11840 435403152 /usr/libexec/trustd
+31179     1  10144 435390544 /System/Library/PrivateFrameworks/BiomeStreams.framework/Support/biomed
+31329     1  27616 435703040 /usr/libexec/spotlightknowledged.updater -u
+31366     1  25488 435697808 /System/Library/Frameworks/Accounts.framework/Versions/A/Support/accountsd
+31375     1  12848 435395776 /System/Library/CoreServices/audioaccessoryd
+31469     1  14976 435393744 /usr/libexec/trustd --agent
+31474     1  47040 435470384 /usr/libexec/duetexpertd
+31492     1  20128 435417920 /System/Library/PrivateFrameworks/CoreDuetContext.framework/Resources/ContextStoreAgent
+31502     1   7232 435392688 /System/Library/CoreServices/TimeMachine/backupd
+31515     1  16880 435593808 /System/Library/PrivateFrameworks/SoftwareUpdate.framework/Resources/SoftwareUpdateNotificationManager.app/Contents/MacOS/SoftwareUpdateNotificationManager
+31557     1   8480 435403024 /usr/libexec/sandboxd
+31558     1   6464 435357744 /usr/sbin/cfprefsd agent
+31559     1  19072 435610752 /System/Library/PrivateFrameworks/UniversalAccess.framework/Versions/A/Resources/AXVisualSupportAgent.app/Contents/MacOS/AXVisualSupportAgent launchd -s
+31595     1   6608 435389616 /usr/libexec/nehelper
+31605     1  31728 435412160 /System/Library/PrivateFrameworks/AssistantServices.framework/Versions/A/Support/assistantd
+31612     1  10256 435566832 /System/Library/CoreServices/CoreLocationAgent.app/Contents/MacOS/CoreLocationAgent
+31614     1   7456 435392048 /usr/sbin/WirelessRadioManagerd
+31616     1  14416 435404800 /usr/libexec/gamepolicyd
+31628     1  14096 435407264 /System/Library/PrivateFrameworks/TCC.framework/Support/tccd system
+32190     1 187168 436160864 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder
+35392     1  35280 435682176 /System/Applications/Weather.app/Contents/PlugIns/WeatherWidget.appex/Contents/MacOS/WeatherWidget -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUud2VhdGhlci53aWRnZXQifQ==
+39691     1  17904 439899264 /System/Library/CoreServices/Software Update.app/Contents/Resources/softwareupdated
+39707     1   7040 435403808 /usr/sbin/systemsoundserverd
+39801     1   8592 435409568 /System/Library/CoreServices/Keychain Circle Notification.app/Contents/MacOS/Keychain Circle Notification
+39838     1  11776 435404624 /usr/libexec/proactived
+39884     1   7232 435390208 /System/Library/PrivateFrameworks/Synapse.framework/Support/contentlinkingd
+39890     1  17056 435446944 /System/Library/PrivateFrameworks/TelephonyUtilities.framework/callservicesd
+39894     1  13680 435464352 /System/Library/CoreServices/TextInputSwitcher.app/Contents/MacOS/TextInputSwitcher
+39898     1  26336 435548448 /System/Library/PrivateFrameworks/CoreSuggestions.framework/Versions/A/Support/suggestd
+39899     1  18448 435412560 /usr/libexec/coreduetd
+39900     1  22928 435872752 /System/Cryptexes/App/usr/libexec/AuthenticationServicesAgent
+39903     1  17344 435404512 /System/Library/PrivateFrameworks/IntelligencePlatformCompute.framework/Versions/A/XPCServices/IntelligencePlatformComputeService.xpc/Contents/MacOS/IntelligencePlatformComputeService
+39914     1   4224 435354880 /System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/HIServices.framework/Versions/A/XPCServices/com.apple.hiservices-xpcservice.xpc/Contents/MacOS/com.apple.hiservices-xpcservice
+39921     1  12032 435567184 /System/Library/PrivateFrameworks/WorkflowKit.framework/XPCServices/ShortcutsViewService.xpc/Contents/MacOS/ShortcutsViewService
+40116     1  18912 435611456 /System/Library/CoreServices/CoreServicesUIAgent.app/Contents/MacOS/CoreServicesUIAgent
+40189     1  11648 435376128 /System/Library/CoreServices/talagentd
+40320     1  41024 435960240 /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+40328     1  12048 435636672 /System/Library/PrivateFrameworks/AccessibilitySupport.framework/Versions/A/Resources/AccessibilityVisualsAgent.app/Contents/MacOS/AccessibilityVisualsAgent
+47317 18528 143456 1953247712 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=31999 --launch-time-ticks=1297291248665 --shared-files --metrics-shmem-handle=1752395122,r,17082885640232363062,7870996339774600516,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190738970713997645 --seatbelt-client=135
+48338     1   9216 435409872 /System/Library/PrivateFrameworks/BackgroundTaskManagement.framework/Support/BackgroundTaskManagementAgent.app/Contents/MacOS/BackgroundTaskManagementAgent
+50625 18528 725312 1953511456 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=40896 --launch-time-ticks=1517207282784 --shared-files --metrics-shmem-handle=1752395122,r,3898924945374498809,3036969740727855,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190747307575328198 --seatbelt-client=308
+51102 18528  57264 1951263296 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --extension-process --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=32375 --launch-time-ticks=1305281015325 --shared-files --metrics-shmem-handle=1752395122,r,12841055343659418109,2385881415510728136,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190739323041732869 --seatbelt-client=205
+51181 18528  60112 1951259760 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --extension-process --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=32384 --launch-time-ticks=1305391273727 --shared-files --metrics-shmem-handle=1752395122,r,16987718053392772855,13690993168711116420,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190739331475109510 --seatbelt-client=255
+52938     1   8592 435401904 /System/Library/PrivateFrameworks/IntlPreferences.framework/Support/localizationswitcherd
+52940     1   9792 435395536 /usr/libexec/milod
+52941     1   5488 435389232 /System/Library/PrivateFrameworks/AppleCredentialManager.framework/AppleCredentialManagerDaemon
+52942     1  12288 435565968 /System/Library/PrivateFrameworks/AppSSO.framework/Support/AppSSOAgent.app/Contents/MacOS/AppSSOAgent -l
+52947     1  10928 435409616 /System/Library/PrivateFrameworks/AppSSO.framework/Support/AppSSODaemon
+53097     1   7168 435390944 /System/Library/CoreServices/mapspushd
+53152     1   8832 435401136 /System/Library/Frameworks/ManagedAppDistribution.framework/Support/managedappdistributionagent
+53275     1    496 435355872 /System/Library/CoreServices/Setup Assistant.app/Contents/Resources/mbuseragent
+53357     1   7888 435411904 /usr/libexec/fskitd
+53358     1  19904 435402864 /System/Library/PrivateFrameworks/CacheDelete.framework/deleted
+53361     1   3888 435355008 /System/Library/PrivateFrameworks/CacheDelete.framework/deleted_helper
+53393     1   7984 435397280 /System/Library/Frameworks/ManagedAppDistribution.framework/Support/managedappdistributiond
+53491     1   6704 435391632 /usr/libexec/trustd --agent
+53509     1   7008 435391472 /System/Library/PrivateFrameworks/BackgroundTaskManagement.framework/Resources/backgroundtaskmanagementd -daemon
+53955     1   7168 435489344 /System/Library/PrivateFrameworks/ContextKit.framework/Versions/A/XPCServices/ContextService.xpc/Contents/MacOS/ContextService
+54198     1   4816 435355376 /usr/libexec/keychainsharingmessagingd
+54219     1   9216 435394224 /System/Library/PrivateFrameworks/AvatarPersistence.framework/Support/avatarsd
+54220     1  10544 435396880 /System/Library/PrivateFrameworks/ContactsDonation.framework/Versions/A/Support/contactsdonationagent
+54246     1  17888 435580240 /System/Library/PrivateFrameworks/PhotoAnalysis.framework/Versions/A/Support/photoanalysisd
+54840     1   9968 435318832 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService
+54891     1   3760 435353600 /usr/libexec/hidd
+54901     1   4928 435389856 /System/Library/PrivateFrameworks/CoreAnalytics.framework/Support/analyticsagent
+54902     1   6880 435391120 /System/Library/PrivateFrameworks/CommerceKit.framework/Versions/A/Resources/commerce
+54905     1   4992 435355760 /usr/libexec/gamecontrollerd
+54906     1   5520 435355168 /usr/libexec/gamecontrolleragentd
+55002     1   4480 435390464 /System/Library/PrivateFrameworks/IMDPersistence.framework/IMAutomaticHistoryDeletionAgent.app/Contents/MacOS/IMAutomaticHistoryDeletionAgent
+55049     1  10304 435390160 /usr/libexec/audioanalyticsd
+55050     1   9696 435403040 /System/Library/PrivateFrameworks/Categories.framework/Versions/A/XPCServices/CategoriesService.xpc/Contents/MacOS/CategoriesService
+55058     1   4944 435389424 /System/Library/PrivateFrameworks/XprotectFramework.framework/Versions/A/XPCServices/XprotectService.xpc/Contents/MacOS/XprotectService
+55059     1   2256 435351232 /System/Library/CoreServices/ReportCrash daemon
+55061     1   2704 435354832 /System/Library/PrivateFrameworks/CoreSymbolication.framework/coresymbolicationd
+55082     1   8448 435395296 /System/Library/PrivateFrameworks/GenerativeExperiencesRuntime.framework/Versions/A/generativeexperiencesd
+55084     1  14912 435390480 /System/Library/PrivateFrameworks/ModelCatalogRuntime.framework/Versions/A/ModelCatalogAgent
+55267     1   7632 435354016 /usr/libexec/keybagd -t 15
+55777     1  12880 435407248 /usr/libexec/tipsd
+55938     1   8944 435389456 /usr/libexec/PowerUIAgent
+55958     1   4432 435392464 /System/Library/PrivateFrameworks/MobileSoftwareUpdate.framework/Support/softwareupdated
+55962     1   3328 435391104 /System/Library/PrivateFrameworks/MobileSoftwareUpdate.framework/Versions/A/XPCServices/com.apple.MobileSoftwareUpdate.CleanupPreparePathService.xpc/Contents/MacOS/com.apple.MobileSoftwareUpdate.CleanupPreparePathService
+55965     1   2640 435416272 /System/Library/Frameworks/NetFS.framework/Versions/A/XPCServices/PlugInLibraryService.xpc/Contents/MacOS/PlugInLibraryService
+56019     1  11904 435438512 /usr/libexec/replayd
+56407     1   8272 435390640 /System/Library/PrivateFrameworks/DeviceCheckInternal.framework/devicecheckd
+56460     1   5808 435389760 /System/Library/PrivateFrameworks/CoreRecents.framework/Versions/A/Support/recentsd
+56480     1  11264 435397856 /System/Library/PrivateFrameworks/IMDPersistence.framework/XPCServices/IMDPersistenceAgent.xpc/Contents/MacOS/IMDPersistenceAgent
+56662     1   7824 435391952 /usr/libexec/nfcd
+56696     1   5664 435394336 /usr/libexec/keyboardservicesd
+56697     1   3904 435354208 /usr/libexec/usermanagerd -t 15
+57014     1   9584 435389648 /System/Library/CoreServices/osanalyticshelper server-init
+57128     1   1456 435353968 /System/Library/PrivateFrameworks/DiskImages.framework/Resources/hdiejectd
+57170     1   2912 435354704 /System/Library/CoreServices/liquiddetectiond.app/liquiddetectiond
+57204     1  23056 435427632 /System/Library/Frameworks/Metal.framework/Versions/A/XPCServices/MTLCompilerService.xpc/Contents/MacOS/MTLCompilerService
+57212     1   5888 435353952 /System/Library/PrivateFrameworks/CoreFollowUp.framework/Versions/A/Support/followupd
+57214     1   9792 435389392 /System/Library/PrivateFrameworks/CoreCDP.framework/Versions/A/Resources/cdpd
+57216     1   7232 435389664 /usr/libexec/inputanalyticsd
+57226     1   6592 435393600 /usr/libexec/symptomsd-diag
+57227     1   3552 435395456 /usr/libexec/dprivacyd
+57229     1  14464 435403408 /System/Library/PrivateFrameworks/CloudKitDaemon.framework/Support/cloudd --system
+57230     1   6176 435346640 /System/Library/PrivateFrameworks/CloudTelemetry.framework/Versions/A/XPCServices/CloudTelemetryService.xpc/Contents/MacOS/CloudTelemetryService
+57249     1   3072 435390528 /usr/libexec/aneuserd
+57304     1   6160 435346880 /System/Library/PrivateFrameworks/CloudTelemetry.framework/Versions/A/XPCServices/CloudTelemetryService.xpc/Contents/MacOS/CloudTelemetryService
+57305     1   9200 435342576 /System/Library/PrivateFrameworks/XprotectFramework.framework/Versions/A/XPCServices/XProtectBridgeService.xpc/Contents/MacOS/XProtectBridgeService
+57369     1   6304 435393616 /System/Library/PrivateFrameworks/MobileTimer.framework/Executables/mobiletimerd
+57384     1   3488 435389888 /System/Library/PrivateFrameworks/SystemAdministration.framework/XPCServices/writeconfig.xpc/Contents/MacOS/writeconfig
+57404     1   3712 435354704 /usr/libexec/smd
+57407     1   7760 435393744 /System/Library/PrivateFrameworks/iCloudNotification.framework/iCloudNotificationAgent
+57416     1   7888 435393776 /usr/libexec/findmydeviced
+57417     1   2976 435343888 /usr/libexec/containermanagerd_system --runmode=privileged --user-container-mode=current --bundle-container-mode=global --bundle-container-owner=_appinstalld --system-container-mode=none
+57418     1   4336 435354768 /usr/libexec/findmydevice-user-agent
+57419     1   6688 435397584 /usr/libexec/storagekitd
+57420     1   2864 435309888 /System/Library/PrivateFrameworks/PowerLog.framework/Versions/A/XPCServices/PerfPowerTelemetryClientRegistrationService.xpc/Contents/MacOS/PerfPowerTelemetryClientRegistrationService
+57432     1   3696 435354144 /System/Library/PrivateFrameworks/RecoveryOS.framework/Versions/A/XPCServices/recoveryos_lockout_service.xpc/Contents/MacOS/recoveryos_lockout_service
+57453     1  13584 435401616 /usr/libexec/pkd
+57477     1  19584 435407552 /System/Library/PrivateFrameworks/HomeKitDaemon.framework/Support/homed
+57499     1   2576 435301968 /usr/libexec/seputil --daemonize-reseed
+57513     1   4352 435390736 /usr/libexec/countryd
+57516     1   6736 435390080 /System/Library/PrivateFrameworks/ModelCatalogRuntime.framework/Versions/A/modelcatalogd
+57620     1   9136 435421088 /System/Library/Frameworks/QuickLookUI.framework/Versions/A/PlugIns/QLPreviewGenerationExtension.appex/Contents/MacOS/QLPreviewGenerationExtension -AppleLanguages ("en-US", "ru-DE")
+57744     1  59648 439851968 /System/Library/PrivateFrameworks/AppleMediaServicesUI.framework/amsengagementd
+57745     1   5264 435394384 /usr/libexec/dmd
+57746     1   4784 435356160 /System/Library/Frameworks/ManagedSettings.framework/Versions/A/ManagedSettingsAgent
+57926     1   7120 435391664 /System/Library/PrivateFrameworks/GeoAnalytics.framework/geoanalyticsd
+57933     1  16368 435393808 /System/Library/PrivateFrameworks/GeoServices.framework/Versions/A/XPCServices/com.apple.geod.xpc/Contents/MacOS/com.apple.geod
+57934     1   9104 435392336 /System/Library/PrivateFrameworks/GeoServices.framework/Versions/A/XPCServices/com.apple.geod.xpc/Contents/MacOS/com.apple.geod
+57935     1   9088 435391680 /System/Library/PrivateFrameworks/GeoServices.framework/Versions/A/XPCServices/com.apple.geod.xpc/Contents/MacOS/com.apple.geod
+57938     1   6896 435391744 /usr/libexec/trustd --agent
+57997     1   8960 436066864 /usr/sbin/spindump
+57999     1  12656 435390112 /usr/libexec/triald_system
+58282     1      0        0 /Applications/Falcon.app/Contents/PlugIns/InstalledBrowserExtensionPlugin.bundle/Contents/XPCServices/InstalledBrowserExtensionService.xpc/Contents/MacOS/InstalledBrowserExtensionService
+58659     1   9088 435395408 /System/Library/PrivateFrameworks/MapsSync.framework/mapssyncd
+58721     1   1376 435353792 aslmanager
+58722     1   2256 435304624 /Library/Apple/System/Library/CoreServices/XProtect.app/Contents/MacOS/XProtect
+58724     1   2256 435305312 /Library/Apple/System/Library/CoreServices/XProtect.app/Contents/MacOS/XProtect
+58725     1   3712 435390208 /Library/Apple/System/Library/CoreServices/XProtect.app/Contents/XPCServices/XProtectPluginService.xpc/Contents/MacOS/XProtectPluginService
+58728     1   3728 435390448 /Library/Apple/System/Library/CoreServices/XProtect.app/Contents/XPCServices/XProtectPluginService.xpc/Contents/MacOS/XProtectPluginService
+58943     1   8752 435392368 /usr/libexec/adprivacyd
+58954     1   9840 435398096 /usr/libexec/promotedcontentd
+59408     1  13744 435400016 /System/Library/PrivateFrameworks/DataAccess.framework/Support/dataaccessd
+59880     1  45488 435805696 Contents/MacOS/Proton Drive
+59935     1   4112 435391072 /usr/libexec/captiveagent
+60453     1   6640 435354960 /System/Library/PrivateFrameworks/CloudSubscriptionFeatures.framework/FeatureAccessAgent
+61062     1   8528 435395248 /System/Library/PrivateFrameworks/PackageKit.framework/Resources/installd
+61066     1   4112 435393008 /System/Library/PrivateFrameworks/HelpData.framework/Versions/A/Resources/helpd
+61074     1  10624 435392816 /System/Library/PrivateFrameworks/OnDeviceStorage.framework/Support/amsondevicestoraged
+61075     1   6576 435390672 /usr/libexec/MTLAssetUpgraderD
+61076     1   3632 435305216 /System/Library/Frameworks/MediaExtension.framework/Versions/A/Helpers/MENotificationAgent
+61105     1  49856 435439648 /System/Library/PrivateFrameworks/CoreEmbeddedSpeechRecognition.framework/Versions/A/XPCServices/com.apple.siri.embeddedspeech.xpc/Contents/MacOS/com.apple.siri.embeddedspeech
+61120     1  14800 435393376 /usr/libexec/triald
+61122     1   8320 435393504 /System/Library/PrivateFrameworks/TrialServer.framework/Versions/A/XPCServices/TrialArchivingService.xpc/Contents/MacOS/TrialArchivingService
+61167     1   8688 435444768 /System/Library/CoreServices/ReportCrash agent
+61254     1   9952 435363424 /System/Library/PrivateFrameworks/SiriAnalytics.framework/Versions/A/XPCServices/SAExtensionOrchestrator.xpc/Contents/MacOS/SAExtensionOrchestrator
+61255     1  10592 435400912 /System/Library/Frameworks/ExtensionFoundation.framework/Versions/A/XPCServices/extensionkitservice.xpc/Contents/MacOS/extensionkitservice
+61256     1   9136 435402096 /System/Library/ExtensionKit/Extensions/BiomeSELFIngestor.appex/Contents/MacOS/BiomeSELFIngestor -LaunchArguments eyJ0eXBlIjoxLCJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS5saWdodGhvdXNlLkJpb21lU0VMRkluZ2VzdG9yIiwiZW5oYW5jZWRTZWN1cml0eSI6ZmFsc2V9
+61257     1   8656 435402144 /System/Library/ExtensionKit/Extensions/IFTelemetrySELFIngestor.appex/Contents/MacOS/IFTelemetrySELFIngestor -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUubGlnaHRob3VzZS5JRlRlbGVtZXRyeVNFTEZJbmdlc3RvciJ9
+61258     1   9088 435401680 /System/Library/ExtensionKit/Extensions/IFTranscriptSELFIngestor.appex/Contents/MacOS/IFTranscriptSELFIngestor -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUubGlnaHRob3VzZS5JRlRyYW5zY3JpcHRTRUxGSW5nZXN0b3IifQ==
+61259     1   9408 435402128 /System/Library/ExtensionKit/Extensions/GMSSELFIngestor.appex/Contents/MacOS/GMSSELFIngestor -LaunchArguments eyJ0eXBlIjoxLCJzZXJ2aWNlTmFtZSI6ImNvbS5hcHBsZS5zaXJpLkdNU1NFTEZJbmdlc3RvciIsImVuaGFuY2VkU2VjdXJpdHkiOmZhbHNlfQ==
+63592     1  24528 440122576 /System/Library/CoreServices/GameOverlayUI.app/Contents/MacOS/GameOverlayUI
+64050     1  27408 435445424 /System/Library/PrivateFrameworks/AppStoreDaemon.framework/Support/appstoreagent
+64051     1  19392 439869200 /System/Library/PrivateFrameworks/AppStoreDaemon.framework/Support/appstored
+64052     1   4128 435354400 /System/Library/PrivateFrameworks/InstallCoordination.framework/Support/installcoordinationd
+64608     1   9552 435392368 /System/Library/PrivateFrameworks/MobileAccessoryUpdater.framework/Support/accessoryupdaterd 120
+67792     1  27632 440058464 /System/Library/PrivateFrameworks/UIFoundation.framework/Versions/A/XPCServices/nsattributedstringagent.xpc/Contents/MacOS/nsattributedstringagent
+68806 18528 215888 1949556096 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=47444 --launch-time-ticks=1734825959392 --shared-files --metrics-shmem-handle=1752395122,r,13133229729551690340,1393218112983005178,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190753443325355450 --seatbelt-client=821
+70030     1   9408 435390672 /System/Library/CoreServices/EscrowSecurityAlert.app/Contents/MacOS/EscrowSecurityAlert
+70033     1  11600 435400304 /System/Library/Frameworks/Security.framework/Versions/A/XPCServices/TrustedPeersHelper.xpc/Contents/MacOS/TrustedPeersHelper
+70034     1  12304 435392304 /System/Library/PrivateFrameworks/CloudServices.framework/Helpers/com.apple.sbd
+72847     1   2496 435305568 /System/Library/PrivateFrameworks/FindMyDevice.framework/XPCServices/FindMyDeviceSharedConfigurationXPCService.xpc/Contents/MacOS/FindMyDeviceSharedConfigurationXPCService
+72860     1   1744 435415824 /System/Library/Frameworks/NetFS.framework/Versions/A/XPCServices/PlugInLibraryService.xpc/Contents/MacOS/PlugInLibraryService
+72862     1   6704 435394512 /System/Library/PrivateFrameworks/AuthKit.framework/Versions/A/Support/akd
+72887     1   7616 435346752 /System/Library/PrivateFrameworks/MobileAccessoryUpdater.framework/XPCServices/UARPUpdaterServiceUSBPD.xpc/Contents/MacOS/UARPUpdaterServiceUSBPD
+72894     1   7632 435390608 /usr/libexec/assetsubscriptiond
+72895     1  29696 435469168 /System/Library/PrivateFrameworks/SiriInference.framework/Versions/A/siriinferenced
+72903     1   9920 435392960 /System/Library/PrivateFrameworks/IntelligencePlatformCore.framework/Versions/A/intelligenceplatformd
+72907     1   5024 435390576 /System/Library/CoreServices/ScopedBookmarkAgent
+72909     1   7344 435304992 /System/Library/PrivateFrameworks/AppleAccountTransparency.framework/Versions/A/Resources/appleaccounttransparencyd
+72913     1   7392 435366256 /System/Library/PrivateFrameworks/SiriSuggestionsSupport.framework/Versions/A/XPCServices/SiriSuggestionsBookkeepingService.xpc/Contents/MacOS/SiriSuggestionsBookkeepingService
+72919     1  11344 435393984 /System/Library/PrivateFrameworks/iTunesCloud.framework/Support/itunescloudd
+72920     1  10144 435392336 /System/Library/PrivateFrameworks/GeoServices.framework/Versions/A/XPCServices/com.apple.geod.xpc/Contents/MacOS/com.apple.geod
+72922     1   9184 435392240 /usr/libexec/trustd --agent
+72923     1   2912 435388720 /usr/libexec/containermanagerd --runmode=agent --user-container-mode=current --bundle-container-mode=proxy --system-container-mode=none
+72926     1   7072 435393408 cloudphotod
+72932     1   5712 435389104 /usr/libexec/filevaultd
+72933     1   5216 435390688 /System/Library/PrivateFrameworks/BusinessChatService.framework/businessservicesd
+72934     1    784 435392320 /System/Library/PrivateFrameworks/MessagesBlastDoorSupport.framework/Versions/A/XPCServices/MessagesBlastDoorService.xpc/Contents/MacOS/MessagesBlastDoorService
+72941     1   2640 435355040 /usr/libexec/microstackshot
+72942     1   5328 435389840 /usr/libexec/mmaintenanced
+72943     1   9536 435398448 /System/Library/PrivateFrameworks/CallHistory.framework/Support/CallHistorySyncHelper
+72946     1   5376 435396288 /System/Library/PrivateFrameworks/Stickers.framework/Support/stickersd
+72947     1   4912 435390144 /usr/libexec/proactiveeventtrackerd
+72955     1   5072 435356224 /usr/libexec/seserviced
+72962     1   3664 435389200 /usr/libexec/mobilerepaird
+72966     1   5456 435355872 /usr/libexec/ASPCarryLog
+72967     1   5232 435390496 /usr/libexec/betaenrollmentagent
+72968     1   3936 435354608 /usr/libexec/betaenrollmentd
+72969     1   3568 435389360 /System/Library/PrivateFrameworks/MobileAccessoryUpdater.framework/XPCServices/UARPUpdaterServiceLegacyAudio.xpc/Contents/MacOS/UARPUpdaterServiceLegacyAudio
+72970     1   3888 435396608 /System/Library/PrivateFrameworks/MobileAccessoryUpdater.framework/XPCServices/UARPUpdaterServiceDisplay.xpc/Contents/MacOS/UARPUpdaterServiceDisplay
+72972     1   6768 435819072 /System/Library/PrivateFrameworks/SiriTTSService.framework/sirittsd
+72978     1   8704 435417408 /System/Library/PrivateFrameworks/AssistantServices.framework/Versions/A/XPCServices/media-indexer.xpc/Contents/MacOS/media-indexer
+72979     1  18176 435432544 /System/Library/PrivateFrameworks/AMPLibrary.framework/Versions/A/Support/AMPLibraryAgent --launchd
+72980     1   4448 435391056 /System/Library/PrivateFrameworks/PodcastServices.framework/XPCServices/PodcastContentService.xpc/Contents/MacOS/PodcastContentService
+72981     1   5328 435402720 /System/Library/PrivateFrameworks/BookKit.framework/Versions/A/XPCServices/com.apple.BKAgentService.xpc/Contents/MacOS/com.apple.BKAgentService
+72982     1   1744 435416128 /System/Library/Frameworks/NetFS.framework/Versions/A/XPCServices/PlugInLibraryService.xpc/Contents/MacOS/PlugInLibraryService
+72983     1   3072 435354560 /System/Library/Frameworks/AudioToolbox.framework/AudioComponentRegistrar -daemon
+72984     1   7776 435419408 /System/Library/Frameworks/AudioToolbox.framework/XPCServices/com.apple.audio.SandboxHelper.xpc/Contents/MacOS/com.apple.audio.SandboxHelper
+72985     1   1744 435415648 /System/Library/Frameworks/NetFS.framework/Versions/A/XPCServices/PlugInLibraryService.xpc/Contents/MacOS/PlugInLibraryService
+72986     1   4336 435396144 /System/Library/PrivateFrameworks/AMPLibrary.framework/Versions/A/Support/AMPArtworkAgent --launchd
+72992     1   5600 435392576 /usr/libexec/AssetCache/AssetCache
+72993     1   5248 435390544 /usr/libexec/sysdiagnosed
+72994     1   2528 435362240 /System/Library/PrivateFrameworks/AssetCacheServicesExtensions.framework/XPCServices/AssetCacheTetheratorService.xpc/Contents/MacOS/AssetCacheTetheratorService
+73001     1   3632 435354768 /System/Library/PrivateFrameworks/GeoServices.framework/geodMachServiceBridge
+73002     1   4736 435354288 /System/Library/PrivateFrameworks/PackageKit.framework/Resources/system_installd
+73006     1   2112 435354480 /usr/libexec/DataDetectorsSourceAccess
+73063     1   4640 435389568 /usr/sbin/netbiosd
+73105     1  10480 435391392 /usr/libexec/frauddefensed
+73113     1   5648 435390576 /System/Library/PrivateFrameworks/AssetCacheServices.framework/Versions/A/XPCServices/AssetCacheLocatorService.xpc/Contents/MacOS/AssetCacheLocatorService -a
+73143     1   8944 435393184 /usr/libexec/swtransparencyd
+73144     1   6288 435346720 /System/Library/PrivateFrameworks/CloudTelemetry.framework/Versions/A/XPCServices/CloudTelemetryService.xpc/Contents/MacOS/CloudTelemetryService
+73145     1   8192 435396256 /System/Library/PrivateFrameworks/TextToSpeechVoiceBankingSupport.framework/Support/voicebankingd
+73146     1    672 435354448 /usr/libexec/tzlinkd
+73162     1  12320 435397104 /System/Library/PrivateFrameworks/RemoteManagement.framework/remotemanagementd
+73163     1   4160 435341088 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/SoftwareUpdateSubscriber.xpc/Contents/MacOS/SoftwareUpdateSubscriber
+73164     1   2976 435305376 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/SecuritySubscriber.xpc/Contents/MacOS/SecuritySubscriber
+73165     1   4864 435306272 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/InteractiveLegacyProfilesSubscriber.xpc/Contents/MacOS/InteractiveLegacyProfilesSubscriber
+73166     1   3008 435305536 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/PowerSubscriber.xpc/Contents/MacOS/PowerSubscriber
+73167     1   3824 435306000 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/ScreenSharingSubscriber.xpc/Contents/MacOS/ScreenSharingSubscriber
+73168     1   3152 435305360 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/ManagedAppsSubscriber.xpc/Contents/MacOS/ManagedAppsSubscriber
+73169     1   4864 435306096 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/LegacyProfilesSubscriber.xpc/Contents/MacOS/LegacyProfilesSubscriber
+73170     1   4864 435305408 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/PasscodeSettingsSubscriber.xpc/Contents/MacOS/PasscodeSettingsSubscriber
+73171     1   2864 435305872 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/DiskManagementSubscriber.xpc/Contents/MacOS/DiskManagementSubscriber
+73172     1   5040 435306784 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/ManagedPreferencesSubscriber.xpc/Contents/MacOS/ManagedPreferencesSubscriber
+73173     1   3872 435305984 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/MigrationSubscriber.xpc/Contents/MacOS/MigrationSubscriber
+73174     1   6800 435401232 /System/Library/PrivateFrameworks/SystemMigration.framework/Resources/systemmigrationd
+73175     1   3440 435389984 /System/Library/CoreServices/iconservicesagent runAsRoot
+73176     1   4432 435389920 /System/Library/CoreServices/iconservicesd
+73179     1   2896 435305920 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/ManagementTestSubscriber.xpc/Contents/MacOS/ManagementTestSubscriber
+73182     1   3168 435305920 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/ManagedConfigurationFilesSubscriber.xpc/Contents/MacOS/ManagedConfigurationFilesSubscriber
+73188     1  12288 435397488 /System/Library/PrivateFrameworks/RemoteManagement.framework/RemoteManagementAgent
+73189     1   3184 435305328 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/ManagedAppsSubscriber.xpc/Contents/MacOS/ManagedAppsSubscriber
+73190     1   3904 435341424 /System/Library/PrivateFrameworks/SafariFoundation.framework/Versions/A/XPCServices/SafariConfigurationSubscriber.xpc/Contents/MacOS/SafariConfigurationSubscriber
+73192     1   3056 435305344 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/SecuritySubscriber.xpc/Contents/MacOS/SecuritySubscriber
+73193     1   4864 435305712 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/InteractiveLegacyProfilesSubscriber.xpc/Contents/MacOS/InteractiveLegacyProfilesSubscriber
+73194     1   3792 435305984 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/ScreenSharingSubscriber.xpc/Contents/MacOS/ScreenSharingSubscriber
+73195     1   4864 435305904 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/LegacyProfilesSubscriber.xpc/Contents/MacOS/LegacyProfilesSubscriber
+73196     1   4864 435305472 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/PasscodeSettingsSubscriber.xpc/Contents/MacOS/PasscodeSettingsSubscriber
+73197     1   4928 435305184 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/AccountSubscriber.xpc/Contents/MacOS/AccountSubscriber
+73198     1   2992 435305248 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/ManagementTestSubscriber.xpc/Contents/MacOS/ManagementTestSubscriber
+73199     1   4224 435341008 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/ASConfigurationSubscriber.xpc/Contents/MacOS/ASConfigurationSubscriber
+73200     1   3344 435306832 /System/Library/PrivateFrameworks/RemoteManagement.framework/XPCServices/ManagedSettingsSubscriber.xpc/Contents/MacOS/ManagedSettingsSubscriber
+73207     1   6192 435392128 /System/Library/PrivateFrameworks/PrivateCloudCompute.framework/privatecloudcomputed.app/Contents/MacOS/privatecloudcomputed
+73208     1   5056 435391392 /System/Library/PrivateFrameworks/HomeKitEvents.framework/Support/homeeventsd
+73210     1   3824 435312016 /System/Library/PrivateFrameworks/CloudTelemetry.framework/Versions/A/XPCServices/CloudTelemetryService.xpc/Contents/MacOS/CloudTelemetryService
+73227     1   3888 435311472 /System/Library/PrivateFrameworks/CloudTelemetry.framework/Versions/A/XPCServices/CloudTelemetryService.xpc/Contents/MacOS/CloudTelemetryService
+73232     1   4176 435393648 /System/Library/PrivateFrameworks/AppleIntelligenceReportingProcessing.framework/Versions/A/XPCServices/AppleIntelligenceReportingProcessingService.xpc/Contents/MacOS/AppleIntelligenceReportingProcessingService
+73242     1   5792 435390976 /System/Library/PrivateFrameworks/AssetCacheServices.framework/Versions/A/XPCServices/AssetCacheLocatorService.xpc/Contents/MacOS/AssetCacheLocatorService -d
+73249     1   7648 435390240 /System/Library/PrivateFrameworks/ProtectedCloudStorage.framework/Helpers/ProtectedCloudKeySyncing
+73255     1   4448 435354752 /System/Library/Frameworks/ColorSync.framework/Support/colorsync.useragent
+73257     1   1888 435350736 /System/Library/Frameworks/ColorSync.framework/Versions/A/XPCServices/com.apple.ColorSyncXPCAgent.xpc/Contents/MacOS/com.apple.ColorSyncXPCAgent
+73258     1   3344 435354096 /usr/libexec/colorsyncd
+73263     1  12976 435390672 /System/Library/PrivateFrameworks/ContinuousDialogManagerService.framework/assistant_cdmd
+73268     1   3520 435354976 /System/Library/Frameworks/MediaAccessibility.framework/Versions/A/XPCServices/com.apple.accessibility.mediaaccessibilityd.xpc/Contents/MacOS/com.apple.accessibility.mediaaccessibilityd
+73269     1   4656 435354896 /System/Library/Frameworks/AudioToolbox.framework/AudioComponentRegistrar
+73271     1   3824 435390064 /System/Library/PrivateFrameworks/EcosystemAnalytics.framework/Support/ecosystemanalyticsd
+73272     1   5104 435356384 /System/Library/PrivateFrameworks/Ecosystem.framework/Support/ecosystemd
+73273     1   1792 435415792 /System/Library/Frameworks/NetFS.framework/Versions/A/XPCServices/PlugInLibraryService.xpc/Contents/MacOS/PlugInLibraryService
+73274     1   3904 435354048 /System/Library/PrivateFrameworks/IASUtilities.framework/Versions/A/Resources/installerauthagent
+73276     1   7200 435392208 /usr/libexec/NRDUpdated
+73277     1   7136 435393376 /System/Library/AssetsV2/com_apple_MobileAsset_RecoveryOSUpdateBrain/28f9b40aedc0bda53bdc29e31682c998de89e5cb.asset/AssetData/com.apple.NRD.UpdateBrainService.xpc/Contents/MacOS/com.apple.NRD.UpdateBrainService
+73284     1  25440 440043712 /System/Library/PrivateFrameworks/UIFoundation.framework/Versions/A/XPCServices/nsattributedstringagent.xpc/Contents/MacOS/nsattributedstringagent
+73285     1   2992 435354672 /System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/HIServices.framework/Versions/A/XPCServices/com.apple.hiservices-xpcservice.xpc/Contents/MacOS/com.apple.hiservices-xpcservice
+73296     1   3232 435354832 /System/Library/Frameworks/MediaAccessibility.framework/Versions/A/XPCServices/com.apple.accessibility.mediaaccessibilityd.xpc/Contents/MacOS/com.apple.accessibility.mediaaccessibilityd
+73355     1   3776 435353600 /System/Library/PrivateFrameworks/PackageKit.framework/Versions/A/XPCServices/package_script_service.xpc/Contents/MacOS/package_script_service
+73660     1   3600 435351168 /usr/libexec/spindump_agent
+73664     1  14864 435665488 /System/Cryptexes/App/usr/libexec/SafariLaunchAgent
+73671     1  15728 435680368 /System/Library/CoreServices/iconservicesagent
+73672     1   6368 435390128 /System/Library/Frameworks/ExtensionFoundation.framework/Versions/A/XPCServices/extensionkitservice.xpc/Contents/MacOS/extensionkitservice
+73673     1   5328 435390304 /System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/SpeechSynthesis.framework/Versions/A/XPCServices/SpeechSynthesisServerXPC.xpc/Contents/MacOS/SpeechSynthesisServerXPC
+73696     1   5280 435390192 /System/Library/PrivateFrameworks/XprotectFramework.framework/Versions/A/XPCServices/XProtectUpdateService.xpc/Contents/MacOS/XProtectUpdateService
+73756     1   3776 435390768 /System/Library/Frameworks/SystemExtensions.framework/Versions/A/Helpers/sysextd
+73834     1   3024 435349872 /usr/libexec/tzd
+73835     1   3760 435354064 /System/Library/PrivateFrameworks/CoreKDL.framework/Support/corekdld
+73998     1   3584 435344928 /System/Library/PrivateFrameworks/GameControllerFoundation.framework/Versions/A/XPCServices/GameControllerConfigService.xpc/Contents/MacOS/GameControllerConfigService
+73999     1   3536 435388432 /System/Library/PrivateFrameworks/MobileAccessoryUpdater.framework/XPCServices/EAUpdaterService.xpc/Contents/MacOS/EAUpdaterService
+74015     1   5616 435392272 /System/Library/PrivateFrameworks/MobileAssetDaemon.framework/Versions/A/XPCServices/com.apple.MobileAsset.DownloadService.Builtin.xpc/Contents/MacOS/com.apple.MobileAsset.DownloadService.Builtin
+74017     1   2656 435305408 /System/Library/PrivateFrameworks/StreamingZip.framework/Versions/A/XPCServices/com.apple.StreamingUnzipService.privileged.xpc/Contents/MacOS/com.apple.StreamingUnzipService.privileged
+74112     1   6032 435416800 /usr/libexec/naturallanguaged
+74948     1   6240 435390720 /System/Library/PrivateFrameworks/CloudPhotoServices.framework/Versions/A/XPCServices/com.apple.CloudPhotosConfiguration.xpc/Contents/MacOS/com.apple.CloudPhotosConfiguration
+74951     1   5616 435392400 /System/Library/Frameworks/ClassKit.framework/Versions/A/progressd
+74963     1   1744 435305920 /System/Library/Frameworks/Metal.framework/Versions/A/XPCServices/MTLCompilerService.xpc/Contents/MacOS/MTLCompilerService
+74964     1   2752 435395456 /System/Library/Frameworks/Metal.framework/Versions/A/XPCServices/MTLCompilerService.xpc/Contents/MacOS/MTLCompilerService
+77599     1   2736 435415904 /System/Library/Frameworks/NetFS.framework/Versions/A/XPCServices/PlugInLibraryService.xpc/Contents/MacOS/PlugInLibraryService
+77613     1   2736 435416032 /System/Library/Frameworks/NetFS.framework/Versions/A/XPCServices/PlugInLibraryService.xpc/Contents/MacOS/PlugInLibraryService
+77665     1   2560 435354864 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/CarbonCore.framework/Versions/A/XPCServices/csnameddatad.xpc/Contents/MacOS/csnameddatad
+77943     1  25952 435427552 /System/Library/Frameworks/Metal.framework/Versions/A/XPCServices/MTLCompilerService.xpc/Contents/MacOS/MTLCompilerService
+77944     1  10624 435399616 /System/Library/Frameworks/Metal.framework/Versions/A/XPCServices/MTLCompilerService.xpc/Contents/MacOS/MTLCompilerService
+77945     1   4208 435418208 /System/Library/PrivateFrameworks/AppleNeuralEngine.framework/XPCServices/ANECompilerService.xpc/Contents/MacOS/ANECompilerService
+77947     1   3888 435418544 /System/Library/Frameworks/CoreGraphics.framework/Versions/A/XPCServices/CGPDFService.xpc/Contents/MacOS/CGPDFService
+77948     1  14368 435335536 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService
+78111     1      0        0 /Library/SystemExtensions/AD68CE8C-1235-4153-AFEA-7A3E53E52E8A/com.crowdstrike.falcon.Agent.systemextension/Contents/MacOS/com.crowdstrike.falcon.Agent
+78131     1      0        0 /Applications/Falcon.app/Contents/Library/LaunchServices/Falcon Notifications.app/Contents/MacOS/Falcon Notifications
+78217     1   2816 435416432 /System/Library/Frameworks/NetFS.framework/Versions/A/XPCServices/PlugInLibraryService.xpc/Contents/MacOS/PlugInLibraryService
+78665 18528 303648 1949607168 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=34432 --launch-time-ticks=1353010539222 --shared-files --metrics-shmem-handle=1752395122,r,1487205311773180188,11352972210213998188,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190741250536816262 --seatbelt-client=456
+78706 18528  47200 1949439696 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=34459 --launch-time-ticks=1353053746477 --shared-files --metrics-shmem-handle=1752395122,r,6092425215376224093,6858017752629591688,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190741275836946185 --seatbelt-client=82
+79550     1 106976 436048000 /System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+79968     1  16832 435394480 /System/Library/PrivateFrameworks/CoreParsec.framework/parsecd
+79969     1  14160 435422992 /System/Library/PrivateFrameworks/IntelligenceFlowContextRuntime.framework/Versions/A/intelligencecontextd
+79971     1  11536 436695856 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/managedcorespotlightd
+80102     1   2752 435398736 /System/Library/Frameworks/Metal.framework/Versions/A/XPCServices/MTLCompilerService.xpc/Contents/MacOS/MTLCompilerService
+81522     1  16864 435400272 /System/Library/PrivateFrameworks/AppleMediaServices.framework/Resources/amsaccountsd
+81795     1  24640 435491392 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService
+85115     1   3296 435587440 /System/Applications/Utilities/Print Center.app/Contents/PlugIns/PrintCenterWidgetExtension.macOS.appex/Contents/MacOS/PrintCenterWidgetExtension.macOS -LaunchArguments eyJlbmhhbmNlZFNlY3VyaXR5IjpmYWxzZSwidHlwZSI6MSwic2VydmljZU5hbWUiOiJjb20uYXBwbGUucHJpbnRjZW50ZXIuUHJpbnRDZW50ZXJXaWRnZXQifQ==
+85117     1   1024 435354928 /usr/sbin/distnoted agent
+86665     1 328144 1951883264 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT
+86667     1   6976 485633472 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/157.0.8103.39/Helpers/browser_crashpad_handler --monitor-self --monitor-self-annotation=ptype=crashpad-handler --database=/Users/do/Library/Application Support/Codex/Crashpad --annotation=plat=OS X --annotation=prod=ChatGPT_Mac --annotation=ver=157.0.8103.39 --handshake-fd=5
+86669     1   6976 485632720 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/157.0.8103.39/Helpers/browser_crashpad_handler --no-periodic-tasks --monitor-self-annotation=ptype=crashpad-handler --database=/Users/do/Library/Application Support/Codex/Crashpad --annotation=plat=OS X --annotation=prod=ChatGPT_Mac --annotation=ver=157.0.8103.39 --handshake-fd=4
+86676 86665  72016 486536544 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/157.0.8103.39/Helpers/Codex (Aperitif).app/Contents/MacOS/Codex (Aperitif) --type=gpu-process --gpu-recent-crash-count=0 --user-data-dir=/Users/do/Library/Application Support/Codex --start-stack-profiler --gpu-preferences=WAAAAAAAAACgAAACAAAAAAAAAAAAAGAAQAAAAAAAAAADAAAAAAAAADgAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAoAAAAAAAAAAgAAAAAAAAADAAAAAEAAAAAAAAAAAAAAAgAAAAAAAAACAAAAAAAAAA= --shared-files --metrics-shmem-handle=1752395122,r,962358273334784977,7249590504076079037,262144 --field-trial-handle=1718379636,r,14600132185012234012,712894725127973039,262144 --enable-features=DevToolsWebMCPSupport,DocumentPolicyIncludeJSCallStacksInCrashReports,ReportStuckThrottle --disable-features=DropInputEventsWhilePaintHolding,OwlNativeCaret,WebUIOmniboxAimPopup,WebUIOmniboxPopup --variations-seed-version --pseudonymization-salt-handle=1935764596,r,18036449500684876398,17037648254241864762,4 --trace-process-track-uuid=3190708988185955192 --seatbelt-client=43
+86677 86665  64592 486212176 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/157.0.8103.39/Helpers/Codex (Aperitif).app/Contents/MacOS/Codex (Aperitif) --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=network --owl-scoped-user-agent-additional-hosts=openai.com,chatgpt.com,chatgpt.site,chatgpt-team.site --owl-scoped-user-agent-prefix=CodexBrowser --user-data-dir=/Users/do/Library/Application Support/Codex --standard-schemes=app,codex-sandbox --service-worker-schemes=codex-sandbox --secure-schemes=app,codex-sandbox --fetch-schemes=app,codex-sandbox --cors-schemes=codex-sandbox --streaming-schemes=app,codex-sandbox --start-stack-profiler --shared-files --metrics-shmem-handle=1752395122,r,9551343791990456545,1579508607442520860,524288 --field-trial-handle=1718379636,r,14600132185012234012,712894725127973039,262144 --enable-features=DevToolsWebMCPSupport,DocumentPolicyIncludeJSCallStacksInCrashReports,ReportStuckThrottle --disable-features=DropInputEventsWhilePaintHolding,OwlNativeCaret,WebUIOmniboxAimPopup,WebUIOmniboxPopup --variations-seed-version --pseudonymization-salt-handle=1935764596,r,18036449500684876398,17037648254241864762,4 --trace-process-track-uuid=3190708989122997041 --seatbelt-client=43
+86728 86665  30640 486185040 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/157.0.8103.39/Helpers/Codex (Aperitif).app/Contents/MacOS/Codex (Aperitif) --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=service --user-data-dir=/Users/do/Library/Application Support/Codex --standard-schemes=app,codex-sandbox --service-worker-schemes=codex-sandbox --secure-schemes=app,codex-sandbox --fetch-schemes=app,codex-sandbox --cors-schemes=codex-sandbox --streaming-schemes=app,codex-sandbox --shared-files --metrics-shmem-handle=1752395122,r,3522957250562978900,8297079987352048868,524288 --field-trial-handle=1718379636,r,14600132185012234012,712894725127973039,262144 --enable-features=DevToolsWebMCPSupport,DocumentPolicyIncludeJSCallStacksInCrashReports,ReportStuckThrottle --disable-features=DropInputEventsWhilePaintHolding,OwlNativeCaret,WebUIOmniboxAimPopup,WebUIOmniboxPopup --variations-seed-version --pseudonymization-salt-handle=1935764596,r,18036449500684876398,17037648254241864762,4 --trace-process-track-uuid=3190708990060038890 --seatbelt-client=61
+86742 86665  19648 435482864 /Applications/ChatGPT.app/Contents/Resources/native/bare-modifier-monitor --key DoubleCommand --immediate
+86745 86665 227440 436033408 /Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex -c features.code_mode_host=true app-server --analytics-default-enabled -c plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true
+86746 86665  66608 1953260160 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/157.0.8103.39/Helpers/Codex (Aperitif Renderer).app/Contents/MacOS/Codex (Aperitif Renderer) --type=renderer --user-data-dir=/Users/do/Library/Application Support/Codex --standard-schemes=app,codex-sandbox --service-worker-schemes=codex-sandbox --secure-schemes=app,codex-sandbox --fetch-schemes=app,codex-sandbox --cors-schemes=codex-sandbox --streaming-schemes=app,codex-sandbox --owl-scoped-user-agent-additional-hosts=openai.com,chatgpt.com,chatgpt.site,chatgpt-team.site --owl-scoped-user-agent-prefix=CodexBrowser --start-stack-profiler --enable-blink-features=WebMCP --disable-blink-features=ReplacedNormalFlowStackingInlinePaint --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=6 --launch-time-ticks=1719738263380 --shared-files --metrics-shmem-handle=1752395122,r,11847223504809888235,12144336983919507312,1572864 --field-trial-handle=1718379636,r,14600132185012234012,712894725127973039,262144 --enable-features=DevToolsWebMCPSupport,DocumentPolicyIncludeJSCallStacksInCrashReports,ReportStuckThrottle --disable-features=DropInputEventsWhilePaintHolding,OwlNativeCaret,WebUIOmniboxAimPopup,WebUIOmniboxPopup --variations-seed-version --pseudonymization-salt-handle=1935764596,r,18036449500684876398,17037648254241864762,4 --trace-process-track-uuid=3190708991934122588 --seatbelt-client=131
+86749 86665  67760 1949309200 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/157.0.8103.39/Helpers/Codex (Aperitif).app/Contents/MacOS/Codex (Aperitif) --type=utility --utility-sub-type=node.mojom.NodeService --lang=en-US --service-sandbox-type=none --user-data-dir=/Users/do/Library/Application Support/Codex --standard-schemes=app,codex-sandbox --service-worker-schemes=codex-sandbox --secure-schemes=app,codex-sandbox --fetch-schemes=app,codex-sandbox --cors-schemes=codex-sandbox --streaming-schemes=app,codex-sandbox --shared-files --metrics-shmem-handle=1752395122,r,2194013481930282320,4643137372359557009,524288 --field-trial-handle=1718379636,r,14600132185012234012,712894725127973039,262144 --enable-features=DevToolsWebMCPSupport,DocumentPolicyIncludeJSCallStacksInCrashReports,ReportStuckThrottle --disable-features=DropInputEventsWhilePaintHolding,OwlNativeCaret,WebUIOmniboxAimPopup,WebUIOmniboxPopup --variations-seed-version --pseudonymization-salt-handle=1935764596,r,18036449500684876398,17037648254241864762,4 --trace-process-track-uuid=3190708992871164437
+86755 86665  27216 486177680 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/157.0.8103.39/Helpers/Codex (Aperitif).app/Contents/MacOS/Codex (Aperitif) --type=utility --utility-sub-type=audio.mojom.AudioService --lang=en-US --service-sandbox-type=audio --message-loop-type-ui --user-data-dir=/Users/do/Library/Application Support/Codex --standard-schemes=app,codex-sandbox --service-worker-schemes=codex-sandbox --secure-schemes=app,codex-sandbox --fetch-schemes=app,codex-sandbox --cors-schemes=codex-sandbox --streaming-schemes=app,codex-sandbox --shared-files --metrics-shmem-handle=1752395122,r,17595142871576966658,6552938795005377063,524288 --field-trial-handle=1718379636,r,14600132185012234012,712894725127973039,262144 --enable-features=DevToolsWebMCPSupport,DocumentPolicyIncludeJSCallStacksInCrashReports,ReportStuckThrottle --disable-features=DropInputEventsWhilePaintHolding,OwlNativeCaret,WebUIOmniboxAimPopup,WebUIOmniboxPopup --variations-seed-version --pseudonymization-salt-handle=1935764596,r,18036449500684876398,17037648254241864762,4 --trace-process-track-uuid=3190708993808206286 --seatbelt-client=162
+86758 86665 509344 1959216240 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/157.0.8103.39/Helpers/Codex (Aperitif Renderer).app/Contents/MacOS/Codex (Aperitif Renderer) --type=renderer --user-data-dir=/Users/do/Library/Application Support/Codex --standard-schemes=app,codex-sandbox --service-worker-schemes=codex-sandbox --secure-schemes=app,codex-sandbox --fetch-schemes=app,codex-sandbox --cors-schemes=codex-sandbox --streaming-schemes=app,codex-sandbox --owl-scoped-user-agent-additional-hosts=openai.com,chatgpt.com,chatgpt.site,chatgpt-team.site --owl-scoped-user-agent-prefix=CodexBrowser --enable-blink-features=WebMCP --disable-blink-features=ReplacedNormalFlowStackingInlinePaint --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=10 --launch-time-ticks=1719744361749 --shared-files --metrics-shmem-handle=1752395122,r,7704721086556896979,5917008602064598613,1572864 --field-trial-handle=1718379636,r,14600132185012234012,712894725127973039,262144 --enable-features=DevToolsWebMCPSupport,DocumentPolicyIncludeJSCallStacksInCrashReports,ReportStuckThrottle --disable-features=DropInputEventsWhilePaintHolding,OwlNativeCaret,WebUIOmniboxAimPopup,WebUIOmniboxPopup --variations-seed-version --pseudonymization-salt-handle=1935764596,r,18036449500684876398,17037648254241864762,4 --trace-process-track-uuid=3190708995682289984 --seatbelt-client=162 --force-fieldtrials=WebRTC-Sctp-Snap/Enabled/WebRTC-IceHandshakeDtls/Enabled/WebRTC-ForceDtls13/Enabled/
+86800 86665  38512 435758960 /Users/do/.codex/computer-use/Codex Computer Use.app/Contents/MacOS/SkyComputerUseService
+86831     1  17168 435474752 /System/Library/PrivateFrameworks/SafariPlatformSupport.framework/Versions/A/XPCServices/com.apple.SafariPlatformSupport.Helper.xpc/Contents/MacOS/com.apple.SafariPlatformSupport.Helper
+86833 86665  86816 1949310848 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/157.0.8103.39/Helpers/Codex (Aperitif Renderer).app/Contents/MacOS/Codex (Aperitif Renderer) --type=renderer --user-data-dir=/Users/do/Library/Application Support/Codex --standard-schemes=app,codex-sandbox --service-worker-schemes=codex-sandbox --secure-schemes=app,codex-sandbox --fetch-schemes=app,codex-sandbox --cors-schemes=codex-sandbox --streaming-schemes=app,codex-sandbox --owl-scoped-user-agent-additional-hosts=openai.com,chatgpt.com,chatgpt.site,chatgpt-team.site --owl-scoped-user-agent-prefix=CodexBrowser --enable-blink-features=WebMCP --disable-blink-features=ReplacedNormalFlowStackingInlinePaint --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=12 --launch-time-ticks=1719749437212 --shared-files --metrics-shmem-handle=1752395122,r,673813034513659499,542673567536110777,1572864 --field-trial-handle=1718379636,r,14600132185012234012,712894725127973039,262144 --enable-features=DevToolsWebMCPSupport,DocumentPolicyIncludeJSCallStacksInCrashReports,ReportStuckThrottle --disable-features=DropInputEventsWhilePaintHolding,OwlNativeCaret,WebUIOmniboxAimPopup,WebUIOmniboxPopup --variations-seed-version --pseudonymization-salt-handle=1935764596,r,18036449500684876398,17037648254241864762,4 --trace-process-track-uuid=3190708997556373682 --seatbelt-client=174 --force-fieldtrials=WebRTC-Sctp-Snap/Enabled/WebRTC-IceHandshakeDtls/Enabled/WebRTC-ForceDtls13/Enabled/
+86840 86665  29296 436234576 /Users/do/Library/Application Support/Codex/artifact-sessions/runtime-generations/generation-w6paBx/runtime/bin/node /Users/do/Library/Application Support/Codex/artifact-sessions/runtime-generations/generation-w6paBx/runtime/node_modules/@oai/artifact-tool/dist/artifact-session/host-daemon.mjs
+86965 86665 166176 1951316624 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/157.0.8103.39/Helpers/Codex (Aperitif Renderer).app/Contents/MacOS/Codex (Aperitif Renderer) --type=renderer --user-data-dir=/Users/do/Library/Application Support/Codex --standard-schemes=app,codex-sandbox --service-worker-schemes=codex-sandbox --secure-schemes=app,codex-sandbox --fetch-schemes=app,codex-sandbox --cors-schemes=codex-sandbox --streaming-schemes=app,codex-sandbox --owl-scoped-user-agent-additional-hosts=openai.com,chatgpt.com,chatgpt.site,chatgpt-team.site --owl-scoped-user-agent-prefix=CodexBrowser --enable-blink-features=WebMCP --disable-blink-features=ReplacedNormalFlowStackingInlinePaint --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=13 --launch-time-ticks=1719752645015 --shared-files --metrics-shmem-handle=1752395122,r,15403173310694825519,7478643165931519221,1572864 --field-trial-handle=1718379636,r,14600132185012234012,712894725127973039,262144 --enable-features=DevToolsWebMCPSupport,DocumentPolicyIncludeJSCallStacksInCrashReports,ReportStuckThrottle --disable-features=DropInputEventsWhilePaintHolding,OwlNativeCaret,WebUIOmniboxAimPopup,WebUIOmniboxPopup --variations-seed-version --pseudonymization-salt-handle=1935764596,r,18036449500684876398,17037648254241864762,4 --trace-process-track-uuid=3190708998493415531 --seatbelt-client=185 --force-fieldtrials=WebRTC-Sctp-Snap/Enabled/WebRTC-IceHandshakeDtls/Enabled/WebRTC-ForceDtls13/Enabled/
+86974 86665  65296 1949311008 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/157.0.8103.39/Helpers/Codex (Aperitif Renderer).app/Contents/MacOS/Codex (Aperitif Renderer) --type=renderer --user-data-dir=/Users/do/Library/Application Support/Codex --standard-schemes=app,codex-sandbox --service-worker-schemes=codex-sandbox --secure-schemes=app,codex-sandbox --fetch-schemes=app,codex-sandbox --cors-schemes=codex-sandbox --streaming-schemes=app,codex-sandbox --owl-scoped-user-agent-additional-hosts=openai.com,chatgpt.com,chatgpt.site,chatgpt-team.site --owl-scoped-user-agent-prefix=CodexBrowser --enable-blink-features=WebMCP --disable-blink-features=ReplacedNormalFlowStackingInlinePaint --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=16 --launch-time-ticks=1719752999810 --shared-files --metrics-shmem-handle=1752395122,r,7657863823567888810,3961943258309723264,1572864 --field-trial-handle=1718379636,r,14600132185012234012,712894725127973039,262144 --enable-features=DevToolsWebMCPSupport,DocumentPolicyIncludeJSCallStacksInCrashReports,ReportStuckThrottle --disable-features=DropInputEventsWhilePaintHolding,OwlNativeCaret,WebUIOmniboxAimPopup,WebUIOmniboxPopup --variations-seed-version --pseudonymization-salt-handle=1935764596,r,18036449500684876398,17037648254241864762,4 --trace-process-track-uuid=3190709001304541078 --seatbelt-client=182
+86979 86665 259424 1949583376 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/157.0.8103.39/Helpers/Codex (Aperitif Renderer).app/Contents/MacOS/Codex (Aperitif Renderer) --type=renderer --user-data-dir=/Users/do/Library/Application Support/Codex --standard-schemes=app,codex-sandbox --service-worker-schemes=codex-sandbox --secure-schemes=app,codex-sandbox --fetch-schemes=app,codex-sandbox --cors-schemes=codex-sandbox --streaming-schemes=app,codex-sandbox --owl-scoped-user-agent-additional-hosts=openai.com,chatgpt.com,chatgpt.site,chatgpt-team.site --owl-scoped-user-agent-prefix=CodexBrowser --enable-blink-features=WebMCP --disable-blink-features=ReplacedNormalFlowStackingInlinePaint --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=20 --launch-time-ticks=1719753241639 --shared-files --metrics-shmem-handle=1752395122,r,8402399580327914650,10763658415382710977,1572864 --field-trial-handle=1718379636,r,14600132185012234012,712894725127973039,262144 --enable-features=DevToolsWebMCPSupport,DocumentPolicyIncludeJSCallStacksInCrashReports,ReportStuckThrottle --disable-features=DropInputEventsWhilePaintHolding,OwlNativeCaret,WebUIOmniboxAimPopup,WebUIOmniboxPopup --variations-seed-version --pseudonymization-salt-handle=1935764596,r,18036449500684876398,17037648254241864762,4 --trace-process-track-uuid=3190709005052708474 --seatbelt-client=189
+87293 86745  19344 1879667360 /Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex-code-mode-host
+87315 86665  36672 1949219072 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/157.0.8103.39/Helpers/Codex (Aperitif Renderer).app/Contents/MacOS/Codex (Aperitif Renderer) --type=renderer --user-data-dir=/Users/do/Library/Application Support/Codex --standard-schemes=app,codex-sandbox --service-worker-schemes=codex-sandbox --secure-schemes=app,codex-sandbox --fetch-schemes=app,codex-sandbox --cors-schemes=codex-sandbox --streaming-schemes=app,codex-sandbox --owl-scoped-user-agent-additional-hosts=openai.com,chatgpt.com,chatgpt.site,chatgpt-team.site --owl-scoped-user-agent-prefix=CodexBrowser --enable-blink-features=WebMCP --disable-blink-features=ReplacedNormalFlowStackingInlinePaint --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=23 --launch-time-ticks=1719767254010 --shared-files --metrics-shmem-handle=1752395122,r,16150175974094143790,8868515000988715784,1572864 --field-trial-handle=1718379636,r,14600132185012234012,712894725127973039,262144 --enable-features=DevToolsWebMCPSupport,DocumentPolicyIncludeJSCallStacksInCrashReports,ReportStuckThrottle --disable-features=DropInputEventsWhilePaintHolding,OwlNativeCaret,WebUIOmniboxAimPopup,WebUIOmniboxPopup --variations-seed-version --pseudonymization-salt-handle=1935764596,r,18036449500684876398,17037648254241864762,4 --trace-process-track-uuid=3190709007863834021 --seatbelt-client=192
+88521     1  13984 435435680 /System/Library/Frameworks/Metal.framework/Versions/A/XPCServices/MTLCompilerService.xpc/Contents/MacOS/MTLCompilerService
+88522     1  13936 435435936 /System/Library/Frameworks/Metal.framework/Versions/A/XPCServices/MTLCompilerService.xpc/Contents/MacOS/MTLCompilerService
+88639     1  28176 435626944 /Applications/BrightIntosh.app/Contents/MacOS/BrightIntosh
+90053     1   1648 435360992 /usr/sbin/appleh16camerad
+90813     1  13408 435449648 /usr/libexec/studentd
+91965     1   3920 435355152 /System/Library/CoreServices/diagnosticservicesd
+92602     1   5584 435390960 /System/Library/PrivateFrameworks/JetCore.framework/Support/jetpackassetd
+92603     1   2752 435354176 /usr/libexec/uarpassetmanagerd
+92604     1   2944 435305136 /System/Library/PrivateFrameworks/UARPAssetManager.framework/XPCServices/UARPAssetManagerServiceMobileAsset.xpc/Contents/MacOS/UARPAssetManagerServiceMobileAsset
+92613     1   3184 435350560 /usr/libexec/griddatad
+92615     1   4656 435391120 /usr/libexec/ciphermld
+92628     1  14928 435417552 /usr/libexec/gamed
+92629     1   3520 435394464 /usr/libexec/dprivacyd
+92643     1  20880 435833088 /System/Cryptexes/App/usr/libexec/SafariBookmarksSyncAgent
+92646     1   5456 435355680 /System/Library/PrivateFrameworks/SocialLayer.framework/sociallayerd.app/Contents/MacOS/sociallayerd
+92650     1   2656 435350784 /System/Library/PrivateFrameworks/AppleNeuralEngine.framework/XPCServices/ANEStorageMaintainer.xpc/Contents/MacOS/ANEStorageMaintainer
+92651     1   3744 435391232 /usr/libexec/metrickitd
+92652     1  28848 435408864 /usr/libexec/PerfPowerServices
+92657     1   2160 435350688 /System/Library/PrivateFrameworks/AppleNeuralEngine.framework/XPCServices/ANEStorageMaintainer.xpc/Contents/MacOS/ANEStorageMaintainer
+92796     1   8784 435394768 /usr/libexec/intelligentroutingd
+92797     1  14160 435349984 /System/Library/CoreServices/UIKitSystem.app/Contents/MacOS/UIKitSystem system_app_start
+92848     1   4624 435345760 /System/Library/PrivateFrameworks/FileProviderDaemon.framework/XPCServices/FPCKService.xpc/Contents/MacOS/FPCKService
+92992     1  14688 435393040 /System/Library/Frameworks/ShazamKit.framework/shazamd
+93058     1   5792 435423600 /usr/libexec/textunderstandingd
+93137     1   2528 435353952 /System/Library/CryptoTokenKit/com.apple.ifdreader.slotd/Contents/MacOS/com.apple.ifdreader
+93239     1  19808 435418784 /System/Library/Frameworks/Translation.framework/translationd
+93315     1   1232 435307696 keyboxd --homedir /Users/do/.gnupg --daemon
+93778     1  43760 435506480 /System/Library/PrivateFrameworks/MediaAnalysis.framework/Versions/A/mediaanalysisd
+93820     1   2384 435350544 /System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/SpeechSynthesis.framework/Versions/A/XPCServices/SpeechSynthesisServerXPC.xpc/Contents/MacOS/SpeechSynthesisServerXPC
+94417 86745  12048 435411728 /Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl
+94418 86745  41680 436149744 /Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node ./server.mjs
+94419 86745  13232 435416288 /Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl
+94420 86745  12128 435407808 /Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl
+96379 18528 205584 1951265760 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --extension-process --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=47677 --launch-time-ticks=1741198024765 --shared-files --metrics-shmem-handle=1752395122,r,6339159424977219362,15719355889172511034,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190753661656106267 --seatbelt-client=148
+96676     1   3216 435455328 /System/Cryptexes/App/usr/libexec/PasswordBreachAgent
+97355     1    416 435349824 /usr/libexec/dirhelper
+97766 18528 144320 1951269264 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --extension-process --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=47723 --launch-time-ticks=1742939280502 --shared-files --metrics-shmem-handle=1752395122,r,6892312584986539730,10791621789548311928,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190753704760031321 --seatbelt-client=188
+97773 18528 144384 1951266704 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/155.0.8059.40/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer) --type=renderer --extension-process --origin-trial-disabled-features=CanvasTextNg|WebAssemblyCustomDescriptors --force-color-profile=srgb --lang=en-US --num-raster-threads=4 --enable-zero-copy --enable-gpu-memory-buffer-compositor-resources --enable-main-frame-before-activation --renderer-client-id=47724 --launch-time-ticks=1742940010943 --shared-files --metrics-shmem-handle=1752395122,r,14609189359530352761,8750250369658619569,1572864 --field-trial-handle=1718379636,r,3920639078775553794,6053437311149156283,262144 --disable-features=Glic --variations-seed-version=20261008-010031.548000-production --pseudonymization-salt-handle=1935764596,r,14435143086953515321,1579907356660089893,4 --trace-process-track-uuid=3190753705697073170 --seatbelt-client=158
+97808     1 106256 412911760 /Applications/BetterTouchTool.app/Contents/MacOS/BetterTouchTool
+97812     1   7840 410630608 /Applications/BetterTouchTool.app/Contents/XPCServices/BetterTouchToolAppleScriptRunner.xpc/Contents/MacOS/BetterTouchToolAppleScriptRunner
+97813     1   7552 410630608 /Applications/BetterTouchTool.app/Contents/XPCServices/BetterTouchToolAppleScriptRunner2.xpc/Contents/MacOS/BetterTouchToolAppleScriptRunner2
+97814     1   7936 410631632 /Applications/BetterTouchTool.app/Contents/XPCServices/BetterTouchToolAppleScriptRunner3.xpc/Contents/MacOS/BetterTouchToolAppleScriptRunner3
+97815     1   7600 410621392 /Applications/BetterTouchTool.app/Contents/XPCServices/BetterTouchToolAppleScriptRunner4.xpc/Contents/MacOS/BetterTouchToolAppleScriptRunner4
+97816     1   4960 410612144 /Applications/BetterTouchTool.app/Contents/XPCServices/BetterTouchToolShellScriptRunner.xpc/Contents/MacOS/BetterTouchToolShellScriptRunner
+97820     1  56400 411595744 /Applications/BetterTouchTool.app/Contents/Resources/BTTRelaunch.app/Contents/MacOS/BTTRelaunch -bttPath /Applications/BetterTouchTool.app
+99619     1   5680 435389904 /System/Library/PrivateFrameworks/ManagedBackgroundAssets.framework/Versions/A/XPCServices/Managed Background Assets Helper Service.xpc/Contents/MacOS/Managed Background Assets Helper Service
+99782     1   7024 435567232 /System/Library/PrivateFrameworks/CommerceKit.framework/Versions/A/Resources/storeuid.app/Contents/MacOS/storeuid
+79552 79550   6816 435308400 login -pf do
+79553 79552   1328 435309040 -zsh
+79604 79553    656 435314352 tmux new-session -As main
+  957 79605 157424 437189936 /opt/homebrew/Cellar/python@3.13/3.13.16_1/Frameworks/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python -m server.server /Users/do/Library/Application Support/Splash/models/.resolved/bddecda3abbdbfe69e0840a0452a50d5bbe750ca7f479a08b54bd7c38eeade73 --model ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M --binary build/t015-corrected/splash --port 18973 --pause-on-battery --max-memory 24G --max-context 32K
+  962   957 2573104 466254416 build/t015-corrected/splash serve-native /Users/do/Library/Application Support/Splash/models/.resolved/bddecda3abbdbfe69e0840a0452a50d5bbe750ca7f479a08b54bd7c38eeade73 32768 25769803776 --pause-on-battery
+ 1432 79605   2448 435309472 -zsh
+11859  1432   1216 435299520 sleep 0.2
+11860 79605   2464 435309504 -zsh
+11861 11860  15984 435267344 (Python)
+11866 11860   1888 435300016 ps -axo pid,ppid,rss,vsz,command
+79605  2419  12832 435313008 -zsh

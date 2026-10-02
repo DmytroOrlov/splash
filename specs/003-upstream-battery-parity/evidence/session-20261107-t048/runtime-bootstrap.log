@@ -1,0 +1,3 @@
+PASS CompletionEnvelope/RecoveryCandidate are move-only
+PASS CompletionChannel publishes exactly one and claims it once
+native bootstrap tests failed: runtime bootstrap failed [resource_assembly/backend_creation]: Metal device unavailable

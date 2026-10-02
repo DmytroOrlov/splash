@@ -1,0 +1,85 @@
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+23:44:06 Loading · ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M
+[transformers] You are using a model of type `qwen4_exp` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[transformers] The tokenizer you are loading from '/Users/do/Library/Application Support/Splash/models/.resolved/bddecda3abbdbfe69e0840a0452a50d5bbe750ca7f479a08b54bd7c38eeade73/tokenizer' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+23:44:07 Chat template · patched to render later system messages in place (the original template rejects them), generation prompt 5-7 tokens
+23:44:21 Weights loaded in 14.19 s.
+23:44:21 Table per_layer_token_embd.weight streams from its file: 27465 MiB stay on the SSD; row cache of 4427535 rows in 511 MiB, all that --ple-memory auto leaves it beside the floors and the KV kept resident; 32 readers.
+23:44:21 Routed experts load with their layers: memory holds their 24608 MiB (--expert-memory auto).
+23:44:21 Decode cycles verify the rows the verify budget chooses (--verify-rows auto, as ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M is a MoE target): greedy and seeded outputs can differ from run to run.
+23:44:21 SSD cache: up to 3.9 GiB of temporary files in /var/folders/yg/jt10cw_114z0fdrh_bmbzlsh0000gn/T/ (a quarter of the 15.7 GiB its volume has beyond the 10.0 GiB it keeps free); KV pages of 416 KiB and states of 113 MiB, a state's write staging through 113 MiB of the memory plan; --max-cache-disk 0 turns it off.
+23:44:21 Kernel policy for GPU family 9 with 20 cores.
+23:44:21 Long requests keep their KV on the SSD cache: 262144 tokens of context (bound: model; window 262144, resident 262144, spilled 262144, disk 262144); a request whose KV fits 4351 MiB stays in memory; hot block cache 390 MiB (floor 390 MiB); history staging in 1 buffers; SSD room for active KV 15.7 GiB.
+23:44:22 Waiting for sufficient available memory to start; the macOS reserve remains protected...
+23:44:35 Weights loaded in 12.73 s.
+23:44:36 Table per_layer_token_embd.weight streams from its file: 27465 MiB stay on the SSD; row cache of 4427535 rows in 511 MiB, all that --ple-memory auto leaves it beside the floors and the KV kept resident; 32 readers.
+23:44:36 Routed experts load with their layers: memory holds their 24608 MiB (--expert-memory auto).
+23:44:36 Decode cycles verify the rows the verify budget chooses (--verify-rows auto, as ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M is a MoE target): greedy and seeded outputs can differ from run to run.
+23:44:36 SSD cache: up to 3.9 GiB of temporary files in /var/folders/yg/jt10cw_114z0fdrh_bmbzlsh0000gn/T/ (a quarter of the 15.7 GiB its volume has beyond the 10.0 GiB it keeps free); KV pages of 416 KiB and states of 113 MiB, a state's write staging through 113 MiB of the memory plan; --max-cache-disk 0 turns it off.
+23:44:36 Kernel policy for GPU family 9 with 20 cores.
+23:44:36 Long requests keep their KV on the SSD cache: 262144 tokens of context (bound: model; window 262144, resident 262144, spilled 262144, disk 262144); a request whose KV fits 4351 MiB stays in memory; hot block cache 390 MiB (floor 390 MiB); history staging in 1 buffers; SSD room for active KV 15.7 GiB.
+23:44:50 Weights loaded in 12.66 s.
+23:44:50 Table per_layer_token_embd.weight streams from its file: 27465 MiB stay on the SSD; row cache of 4427535 rows in 511 MiB, all that --ple-memory auto leaves it beside the floors and the KV kept resident; 32 readers.
+23:44:50 Routed experts load with their layers: memory holds their 24608 MiB (--expert-memory auto).
+23:44:50 Decode cycles verify the rows the verify budget chooses (--verify-rows auto, as ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M is a MoE target): greedy and seeded outputs can differ from run to run.
+23:44:50 SSD cache: up to 3.9 GiB of temporary files in /var/folders/yg/jt10cw_114z0fdrh_bmbzlsh0000gn/T/ (a quarter of the 15.7 GiB its volume has beyond the 10.0 GiB it keeps free); KV pages of 416 KiB and states of 113 MiB, a state's write staging through 113 MiB of the memory plan; --max-cache-disk 0 turns it off.
+23:44:50 Kernel policy for GPU family 9 with 20 cores.
+23:44:50 Long requests keep their KV on the SSD cache: 262144 tokens of context (bound: model; window 262144, resident 262144, spilled 262144, disk 262144); a request whose KV fits 4351 MiB stays in memory; hot block cache 390 MiB (floor 390 MiB); history staging in 1 buffers; SSD room for active KV 15.7 GiB.
+23:44:51 Stopping · releasing engine resources
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+23:55:08 Loading · ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M
+[transformers] You are using a model of type `qwen4_exp` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[transformers] The tokenizer you are loading from '/Users/do/Library/Application Support/Splash/models/.resolved/bddecda3abbdbfe69e0840a0452a50d5bbe750ca7f479a08b54bd7c38eeade73/tokenizer' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+23:55:08 Chat template · patched to render later system messages in place (the original template rejects them), generation prompt 5-7 tokens
+23:55:12 Weights loaded in 3.31 s.
+23:55:14 Weights loaded again in 2.43 s.
+23:55:14 Table per_layer_token_embd.weight streams from its file: 27465 MiB stay on the SSD; row cache of 4427535 rows in 511 MiB, all that --ple-memory auto leaves it beside the floors and the KV kept resident; 32 readers.
+23:55:14 Routed experts stream from their files: 7209 slots for 12288 experts (58%) in 14497 MiB, a store of 15081 MiB in 12 chunks, all that --expert-memory auto leaves it beside the floors and the KV kept resident; while memory is short it gives chunks back down to its floor, 12962 MiB, 85% of its slots.
+23:55:14 Decode cycles verify the rows the verify budget chooses (--verify-rows auto, as ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M is a MoE target): greedy and seeded outputs can differ from run to run.
+23:55:14 SSD cache: up to 3.9 GiB of temporary files in /var/folders/yg/jt10cw_114z0fdrh_bmbzlsh0000gn/T/ (a quarter of the 15.8 GiB its volume has beyond the 10.0 GiB it keeps free); KV pages of 416 KiB and states of 113 MiB, a state's write staging through 113 MiB of the memory plan; --max-cache-disk 0 turns it off.
+23:55:14 Kernel policy for GPU family 9 with 20 cores.
+23:55:14 Long requests keep their KV on the SSD cache: 262144 tokens of context (bound: model; window 262144, resident 114681, spilled 262144, disk 262144); a request whose KV fits 1139 MiB stays in memory; hot block cache 390 MiB (floor 390 MiB); history staging in 1 buffers; SSD room for active KV 15.8 GiB.
+23:57:06 Ready · ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M · context 16K · text only · http://127.0.0.1:18973
+23:58:54 Stopping · releasing engine resources
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+00:03:17 Loading · ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M
+[transformers] You are using a model of type `qwen4_exp` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[transformers] The tokenizer you are loading from '/Users/do/Library/Application Support/Splash/models/.resolved/bddecda3abbdbfe69e0840a0452a50d5bbe750ca7f479a08b54bd7c38eeade73/tokenizer' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+00:03:18 Chat template · patched to render later system messages in place (the original template rejects them), generation prompt 5-7 tokens
+00:03:20 Weights loaded in 2.23 s.
+00:03:23 Weights loaded again in 2.47 s.
+00:03:23 Table per_layer_token_embd.weight streams from its file: 27465 MiB stay on the SSD; row cache of 4427535 rows in 511 MiB, all that --ple-memory auto leaves it beside the floors and the KV kept resident; 32 readers.
+00:03:23 Routed experts stream from their files: 7209 slots for 12288 experts (58%) in 14497 MiB, a store of 15081 MiB in 12 chunks, all that --expert-memory auto leaves it beside the floors and the KV kept resident; while memory is short it gives chunks back down to its floor, 12962 MiB, 85% of its slots.
+00:03:23 Decode cycles verify the rows the verify budget chooses (--verify-rows auto, as ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M is a MoE target): greedy and seeded outputs can differ from run to run.
+00:03:23 SSD cache: up to 4.1 GiB of temporary files in /var/folders/yg/jt10cw_114z0fdrh_bmbzlsh0000gn/T/ (a quarter of the 16.5 GiB its volume has beyond the 10.0 GiB it keeps free); KV pages of 416 KiB and states of 113 MiB, a state's write staging through 113 MiB of the memory plan; --max-cache-disk 0 turns it off.
+00:03:23 Kernel policy for GPU family 9 with 20 cores.
+00:03:23 Long requests keep their KV on the SSD cache: 262144 tokens of context (bound: model; window 262144, resident 114681, spilled 262144, disk 262144); a request whose KV fits 1139 MiB stays in memory; hot block cache 390 MiB (floor 390 MiB); history staging in 1 buffers; SSD room for active KV 16.5 GiB.
+00:03:31 Ready · ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M · context 16K · text only · http://127.0.0.1:18973
+00:04:23 Stopping · releasing engine resources
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+00:04:36 Loading · ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M
+[transformers] You are using a model of type `qwen4_exp` to instantiate a model of type ``. This may be expected if you are loading a checkpoint that shares a subset of the architecture (e.g., loading a `sam2_video` checkpoint into `Sam2Model`), but is otherwise not supported and can yield errors. Please verify that the checkpoint is compatible with the model you are instantiating.
+[transformers] The tokenizer you are loading from '/Users/do/Library/Application Support/Splash/models/.resolved/bddecda3abbdbfe69e0840a0452a50d5bbe750ca7f479a08b54bd7c38eeade73/tokenizer' with an incorrect regex pattern: https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84#69121093e8b480e709447d5e. This will lead to incorrect tokenization. You should set the `fix_mistral_regex=True` flag when loading this tokenizer to fix this issue.
+00:04:37 Chat template · patched to render later system messages in place (the original template rejects them), generation prompt 5-7 tokens
+00:04:39 Weights loaded in 2.25 s.
+00:04:42 Weights loaded again in 2.45 s.
+00:04:42 Table per_layer_token_embd.weight streams from its file: 27465 MiB stay on the SSD; row cache of 4427535 rows in 511 MiB, all that --ple-memory auto leaves it beside the floors and the KV kept resident; 32 readers.
+00:04:42 Routed experts stream from their files: 7209 slots for 12288 experts (58%) in 14497 MiB, a store of 15081 MiB in 12 chunks, all that --expert-memory auto leaves it beside the floors and the KV kept resident; while memory is short it gives chunks back down to its floor, 12962 MiB, 85% of its slots.
+00:04:42 Decode cycles verify the rows the verify budget chooses (--verify-rows auto, as ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M is a MoE target): greedy and seeded outputs can differ from run to run.
+00:04:42 SSD cache: up to 4.1 GiB of temporary files in /var/folders/yg/jt10cw_114z0fdrh_bmbzlsh0000gn/T/ (a quarter of the 16.4 GiB its volume has beyond the 10.0 GiB it keeps free); KV pages of 416 KiB and states of 113 MiB, a state's write staging through 113 MiB of the memory plan; --max-cache-disk 0 turns it off.
+00:04:42 Kernel policy for GPU family 9 with 20 cores.
+00:04:42 Long requests keep their KV on the SSD cache: 262144 tokens of context (bound: model; window 262144, resident 114681, spilled 262144, disk 262144); a request whose KV fits 1139 MiB stays in memory; hot block cache 390 MiB (floor 390 MiB); history staging in 1 buffers; SSD room for active KV 16.4 GiB.
+00:04:50 Ready · ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M · context 16K · text only · http://127.0.0.1:18973
+00:05:24 Error · context_length_exceeded · POST /v1/chat/completions
+00:05:47 Started · input 13,947 · cached 0 · effort absent · thinking on
+00:06:21 Done · input 13,947 · cached 0 · output 8 · TTFT 33.3s · 12.7 tok/s · 2.7 tok/cycle
+00:07:50 Weights loaded in 2.41 s.
+00:07:52 Weights loaded again in 2.46 s.
+00:07:52 Table per_layer_token_embd.weight streams from its file: 27465 MiB stay on the SSD; row cache of 4427535 rows in 511 MiB, all that --ple-memory auto leaves it beside the floors and the KV kept resident; 32 readers.
+00:07:52 Routed experts stream from their files: 7209 slots for 12288 experts (58%) in 14497 MiB, a store of 15081 MiB in 12 chunks, all that --expert-memory auto leaves it beside the floors and the KV kept resident; while memory is short it gives chunks back down to its floor, 12962 MiB, 85% of its slots.
+00:07:52 Decode cycles verify the rows the verify budget chooses (--verify-rows auto, as ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF:IQ1_M is a MoE target): greedy and seeded outputs can differ from run to run.
+00:07:52 Kernel policy for GPU family 9 with 20 cores.
+00:07:52 Long requests keep their KV on the SSD cache: 262144 tokens of context (bound: model; window 262144, resident 114681, spilled 262144, disk 262144); a request whose KV fits 1139 MiB stays in memory; hot block cache 390 MiB (floor 390 MiB); history staging in 1 buffers; SSD room for active KV 16.4 GiB.
+00:08:22 Started · input 13,947 · cached 13,920 · effort absent · thinking on
+00:08:27 Done · input 13,947 · cached 13,920 · output 8 · TTFT 4.9s · 18.3 tok/s · 3.5 tok/cycle
+00:08:35 Stopping · releasing engine resources

@@ -1,0 +1,1 @@
+NOT COLLECTED: operator explicitly declined sudo/privileged powermetrics. No powermetrics values are inferred. OS power observations were recorded using unprivileged pmset -g batt; see power.*.txt.

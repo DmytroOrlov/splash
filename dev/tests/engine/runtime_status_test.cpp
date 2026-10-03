@@ -24,6 +24,253 @@ void require(bool value, const char *message) {
     throw std::runtime_error(message);
 }
 
+LifecycleStatusSnapshot liveLifecycle(uint32_t effectiveContext,
+                                      bool inferenceReady = false) {
+  LifecycleStatusSnapshot lifecycle;
+  lifecycle.power = LifecyclePower::AC;
+  lifecycle.state = inferenceReady ? LifecycleState::Ready
+                                   : LifecycleState::Recovering;
+  lifecycle.revision = 4;
+  lifecycle.controlReady = true;
+  lifecycle.inferenceReady = inferenceReady;
+  lifecycle.modelResident = true;
+  lifecycle.configuredContextCeiling = 131072;
+  lifecycle.effectiveContextTokens = effectiveContext;
+  return lifecycle;
+}
+
+void testDetachedLifecycleValues() {
+  LifecycleStatusSnapshot status;
+  status.power = LifecyclePower::Unknown;
+  status.state = LifecycleState::RecoveryFailed;
+  status.revision = 7;
+  status.controlReady = true;
+  status.configuredContextCeiling = 131072;
+  require(validLifecycleStatus(status),
+          "unknown power must remain representable while failing closed");
+  require(!status.inferenceReady && !status.effectiveContextTokens,
+          "model-less lifecycle status advertised inference context/readiness");
+  require(std::string(lifecyclePowerName(status.power)) == "unknown" &&
+              std::string(lifecycleStateName(status.state)) ==
+                  "recovery_failed",
+          "detached lifecycle enum serialization changed its wire names");
+  for (LifecyclePower power : {LifecyclePower::Unknown, LifecyclePower::AC,
+                               LifecyclePower::Battery})
+    require(validLifecyclePower(power), "legal lifecycle power was rejected");
+  for (LifecycleState state : {
+           LifecycleState::Ready, LifecycleState::Draining,
+           LifecycleState::Suspended, LifecycleState::Recovering,
+           LifecycleState::RecoveryFailed, LifecycleState::Shutdown})
+    require(validLifecycleState(state), "legal lifecycle state was rejected");
+  require(!validLifecyclePower(static_cast<LifecyclePower>(255)) &&
+              !validLifecycleState(static_cast<LifecycleState>(255)),
+          "unknown lifecycle enum value was accepted");
+
+  status.power = LifecyclePower::AC;
+  status.state = LifecycleState::Ready;
+  status.inferenceReady = true;
+  status.modelResident = true;
+  status.effectiveContextTokens = 102400;
+  require(validLifecycleStatus(status), "valid serving lifecycle was rejected");
+
+  auto unsafeContext = status;
+  unsafeContext.effectiveContextTokens = status.configuredContextCeiling + 1;
+  require(!validLifecycleStatus(unsafeContext),
+          "effective context above configured ceiling was accepted");
+  auto unreadyUnknownPower = status;
+  unreadyUnknownPower.power = LifecyclePower::Unknown;
+  require(!validLifecycleStatus(unreadyUnknownPower),
+          "unknown power source authorized inference readiness");
+  auto missingContext = status;
+  missingContext.effectiveContextTokens.reset();
+  require(!validLifecycleStatus(missingContext),
+          "inference readiness without effective context was accepted");
+  auto readyButClosed = status;
+  readyButClosed.inferenceReady = false;
+  require(!validLifecycleStatus(readyButClosed),
+          "ready lifecycle state was accepted with admission closed");
+  auto invalidState = status;
+  invalidState.state = static_cast<LifecycleState>(255);
+  require(!validLifecycleStatus(invalidState),
+          "unknown lifecycle state was accepted");
+
+  ResourceSnapshot modelLess;
+  modelLess.lifecycle = LifecycleStatusSnapshot{
+      .power = LifecyclePower::Battery,
+      .state = LifecycleState::Suspended,
+      .revision = 8,
+      .controlReady = true,
+      .inferenceReady = false,
+      .modelResident = false,
+      .configuredContextCeiling = 131072,
+  };
+  modelLess.backendAllocatedBytes = 4096;
+  modelLess.retainedCacheBytes = 2048;
+  modelLess.retainedKvBytes = 1024;
+  modelLess.retainedStateBytes = 512;
+  require(validResourceSnapshot(modelLess),
+          "model-less retained resource snapshot was rejected");
+  require(!modelLess.modelTelemetryAvailable &&
+              !modelLess.modelPackageResident && !modelLess.runtimeResident,
+          "model-less snapshot retained residency telemetry");
+  auto staleTelemetry = modelLess;
+  staleTelemetry.modelTelemetryAvailable = true;
+  require(!validResourceSnapshot(staleTelemetry),
+          "model-less snapshot advertised stale model telemetry");
+
+  auto recovering = modelLess;
+  recovering.lifecycle.state = LifecycleState::Recovering;
+  recovering.modelPackageResident = true;
+  recovering.modelPackageResidentBytes = 8192;
+  require(validResourceSnapshot(recovering),
+          "private recovery package allocation was treated as published residency");
+  require(!recovering.lifecycle.modelResident &&
+              !recovering.lifecycle.inferenceReady &&
+              !recovering.modelTelemetryAvailable,
+          "private recovery candidate appeared as published/live telemetry");
+
+  recovering.runtimeResident = true;
+  recovering.runtimeResidentBytes = 4096;
+  require(validResourceSnapshot(recovering),
+          "private recovery runtime allocation was rejected before publication");
+
+  auto runtimeWithoutPackage = recovering;
+  runtimeWithoutPackage.modelPackageResident = false;
+  runtimeWithoutPackage.modelPackageResidentBytes.reset();
+  require(!validResourceSnapshot(runtimeWithoutPackage),
+          "runtime residency without its package dependency was accepted");
+
+  auto publishedWithoutRuntime = recovering;
+  publishedWithoutRuntime.lifecycle.state = LifecycleState::Ready;
+  publishedWithoutRuntime.lifecycle.power = LifecyclePower::AC;
+  publishedWithoutRuntime.lifecycle.inferenceReady = true;
+  publishedWithoutRuntime.lifecycle.modelResident = true;
+  publishedWithoutRuntime.lifecycle.effectiveContextTokens = 102400;
+  publishedWithoutRuntime.runtimeResident = false;
+  publishedWithoutRuntime.runtimeResidentBytes.reset();
+  publishedWithoutRuntime.modelTelemetryAvailable = true;
+  require(!validResourceSnapshot(publishedWithoutRuntime),
+          "published model residency without package/runtime was accepted");
+
+  modelLess.lifecycle.effectiveContextTokens = 102400;
+  require(validResourceSnapshot(modelLess),
+          "resolved effective context was forgotten while model-less");
+  require(!modelLess.lifecycle.inferenceReady &&
+              !modelLess.lifecycle.modelResident &&
+              !modelLess.modelTelemetryAvailable,
+          "retained detached effective context implied published residency");
+
+  auto unsafeDetachedContext = modelLess;
+  unsafeDetachedContext.lifecycle.effectiveContextTokens =
+      unsafeDetachedContext.lifecycle.configuredContextCeiling + 1;
+  require(!validResourceSnapshot(unsafeDetachedContext),
+          "model-less effective context above its configured ceiling was accepted");
+}
+
+void testControlReadyStatusCanBeModelLess() {
+  ResourceSnapshot snapshot;
+  snapshot.lifecycle = LifecycleStatusSnapshot{
+      .power = LifecyclePower::Battery,
+      .state = LifecycleState::Suspended,
+      .revision = 9,
+      .controlReady = true,
+      .inferenceReady = false,
+      .modelResident = false,
+      .configuredContextCeiling = 131072,
+  };
+  snapshot.backendAllocatedBytes = 4096;
+  snapshot.retainedCacheBytes = 2048;
+  require(validResourceSnapshot(snapshot) &&
+              snapshot.lifecycle.controlReady &&
+              !snapshot.lifecycle.inferenceReady &&
+              !snapshot.lifecycle.modelResident &&
+              !snapshot.lifecycle.effectiveContextTokens &&
+              !snapshot.modelTelemetryAvailable,
+          "model-less lifecycle status conflated control and inference readiness");
+}
+
+void testDetachedStatusKeepsControlDiagnosticsAndMetrics() {
+  ResourceSnapshot resources;
+  resources.lifecycle.power = LifecyclePower::Battery;
+  resources.lifecycle.state = LifecycleState::Suspended;
+  resources.lifecycle.revision = 19;
+  resources.lifecycle.controlReady = true;
+  resources.lifecycle.configuredContextCeiling = 131072;
+  resources.backendAllocatedBytes = 4096;
+  resources.retainedCacheBytes = 2048;
+  resources.retainedKvBytes = 1024;
+  resources.retainedStateBytes = 512;
+
+  RuntimeMetricsSnapshot metrics;
+  metrics.prefillInputTokens = 77;
+  metrics.decodeOutputTokens = 9;
+  metrics.capacityFailures = 2;
+  ResourceWaitSnapshot waits{.memory = 1, .concurrency = 2,
+                             .suspended = 1,
+                             .oldestWaitMilliseconds = 250.0};
+  const std::string status = runtimeStatusJson(
+      resources, metrics, MemoryPressure::Warning, {}, waits);
+  require(status.find("\"ready\":false") != std::string::npos &&
+              status.find("\"control_ready\":true") != std::string::npos &&
+              status.find("\"inference_ready\":false") != std::string::npos &&
+              status.find("\"state\":\"suspended\"") !=
+                  std::string::npos &&
+              status.find("\"model_resident\":false") !=
+                  std::string::npos &&
+              status.find("\"inference_ready\":true") ==
+                  std::string::npos,
+          "detached status did not distinguish control and inference readiness");
+  require(status.find("\"maximum_context_tokens\":131072") !=
+                  std::string::npos &&
+              status.find("\"effective_context_tokens\":null") !=
+                  std::string::npos &&
+              status.find("\"revision\":19") != std::string::npos &&
+              status.find("\"power\":\"battery\"") != std::string::npos,
+          "detached status lost static context or lifecycle diagnostics");
+  require(status.find("\"backend_allocated_bytes\":4096") !=
+                  std::string::npos &&
+              status.find("\"retained_cache_bytes\":2048") !=
+                  std::string::npos &&
+              status.find("\"retained_kv_bytes\":1024") !=
+                  std::string::npos &&
+              status.find("\"retained_state_bytes\":512") !=
+                  std::string::npos &&
+              status.find("\"memory_pressure\":\"warning\"") !=
+                  std::string::npos &&
+              status.find("\"waiting\":3") != std::string::npos,
+          "detached status lost retained-resource or pressure diagnostics");
+  require(status.find("\"prefill_input_tokens\":77") !=
+                  std::string::npos &&
+              status.find("\"decode_output_tokens\":9") !=
+                  std::string::npos &&
+              status.find("\"capacity_failures\":2") !=
+                  std::string::npos,
+          "detached status did not serve native metrics");
+  require(status.find("\"model_telemetry_available\":false") !=
+                  std::string::npos &&
+              status.find("\"model_timing\":null") != std::string::npos &&
+              status.find("\"scheduler\":null") != std::string::npos &&
+              status.find("\"memory_plan\":null") != std::string::npos,
+          "detached status invented model/Engine-only observations");
+
+  resources.lifecycle.modelResident = true;
+  resources.lifecycle.state = LifecycleState::Ready;
+  resources.lifecycle.power = LifecyclePower::AC;
+  resources.lifecycle.inferenceReady = true;
+  resources.lifecycle.effectiveContextTokens = 65536;
+  resources.modelPackageResident = true;
+  resources.runtimeResident = true;
+  resources.modelTelemetryAvailable = true;
+  bool rejectedPublishedModel = false;
+  try {
+    (void)runtimeStatusJson(resources, metrics, MemoryPressure::Normal);
+  } catch (const std::invalid_argument &) {
+    rejectedPublishedModel = true;
+  }
+  require(rejectedPublishedModel,
+          "detached status accepted a published model without an Engine snapshot");
+}
+
 EngineMemoryPlan plan() {
   DeviceCapabilities device;
   device.deviceName = "test";
@@ -183,7 +430,8 @@ void testCleanRuntimeStatus() {
   executorTelemetry.imageEncodes = 3;
   executorTelemetry.imageEmbeddingReuses = 4;
   const std::string json =
-      runtimeStatusJson(memoryPlan, engine, metal, warmup, audit(memoryPlan),
+      runtimeStatusJson(liveLifecycle(engine.maximumContextTokens, true),
+                        memoryPlan, engine, metal, warmup, audit(memoryPlan),
                         metrics, executorTelemetry, identity, governor, true);
   require(json.find("\"kv_disk_hit_tokens\":96") != std::string::npos &&
               json.find("\"kv_restores\":3") != std::string::npos,
@@ -199,18 +447,31 @@ void testCleanRuntimeStatus() {
           "INT8 status lost its generic or legacy identity");
   auto bf16Identity = identity;
   bf16Identity.kvLayout = kv::makeLayoutGuard({16, 4, 256, kv::Format::BFloat16}, {});
-  const auto bf16Status = runtimeStatusJson(memoryPlan, engine, metal, warmup, audit(memoryPlan),
-                        metrics, executorTelemetry, bf16Identity, governor, true);
+  const auto bf16Status = runtimeStatusJson(
+      liveLifecycle(engine.maximumContextTokens, true), memoryPlan, engine,
+      metal, warmup, audit(memoryPlan), metrics, executorTelemetry,
+      bf16Identity, governor, true);
   require(bf16Status.find("\"format\":\"bf16\"") != std::string::npos &&
               bf16Status.find("\"scale_type\":\"none\"") != std::string::npos &&
               bf16Status.find("\"q8\":") == std::string::npos,
           "BF16 cache identity advertised INT8 storage");
   require(json.find("\"schema_version\":5") != std::string::npos &&
-              json.find("\"ready\":true") != std::string::npos,
+              json.find("\"ready\":true") != std::string::npos &&
+              json.find("\"control_ready\":true") != std::string::npos &&
+              json.find("\"inference_ready\":true") != std::string::npos,
           "status readiness/schema is wrong");
-  require(json.find("\"ready\":true,\"maximum_context_tokens\":102400,") !=
+  require(json.find("\"ready\":true,\"control_ready\":true,"
+                    "\"inference_ready\":true,\"maximum_context_tokens\":102400,") !=
               std::string::npos,
           "status advertised model capacity instead of the active engine limit");
+  require(json.find("\"configured_context_ceiling\":131072") !=
+                  std::string::npos &&
+              json.find("\"effective_context_tokens\":102400") !=
+                  std::string::npos &&
+              json.find("\"lifecycle\":{\"power\":\"ac\",\"state\":\"ready\","
+                        "\"revision\":4,\"model_resident\":true,") !=
+                  std::string::npos,
+          "full live status omitted or contradicted authoritative lifecycle context");
   require(json.find("\"images\":{\"encodes\":3,\"embedding_reuses\":4}") !=
               std::string::npos,
           "image telemetry is missing from status");
@@ -223,7 +484,8 @@ void testCleanRuntimeStatus() {
           "status lost model GPU/wall timing, scope, or milliseconds units");
 
   const std::string unmeasured =
-      runtimeStatusJson(memoryPlan, engine, metal, warmup, audit(memoryPlan),
+      runtimeStatusJson(liveLifecycle(engine.maximumContextTokens, true),
+                        memoryPlan, engine, metal, warmup, audit(memoryPlan),
                         metrics, {}, identity, governor, true);
   require(unmeasured.find("\"model_timing\":{\"scope\":\"model_lifetime\","
                           "\"prefill\":{\"last_gpu_ms\":0,\"last_wall_ms\":0,"
@@ -268,7 +530,8 @@ void testCleanRuntimeStatus() {
   auto idleEngine = engine;
   idleEngine.scheduler = {};
   const auto idleJson = runtimeStatusJson(
-      memoryPlan, idleEngine, metal, warmup, audit(memoryPlan), metrics,
+      liveLifecycle(idleEngine.maximumContextTokens, true), memoryPlan,
+      idleEngine, metal, warmup, audit(memoryPlan), metrics,
       executorTelemetry, identity, governor, true);
   require(idleJson.find("\"decode_mixed_greedy_sampling_batches\":0}") !=
               std::string::npos,
@@ -297,11 +560,72 @@ void testCleanRuntimeStatus() {
       "elastic KV-first status is incomplete");
 
   warmup.decodeBatches[2] = WarmupStepStatus::Pending;
-  const std::string incomplete =
-      runtimeStatusJson(memoryPlan, engine, metal, warmup, audit(memoryPlan),
-                        metrics, executorTelemetry, identity, governor, true);
-  require(incomplete.find("\"ready\":false") != std::string::npos,
-          "missing native B3 warmup did not fail readiness");
+  bool unsafeReadyRejected = false;
+  try {
+    (void)runtimeStatusJson(liveLifecycle(engine.maximumContextTokens, true),
+                            memoryPlan, engine, metal, warmup,
+                            audit(memoryPlan), metrics, executorTelemetry,
+                            identity, governor, true);
+  } catch (const std::invalid_argument &) {
+    unsafeReadyRejected = true;
+  }
+  require(unsafeReadyRejected,
+          "missing native B3 warmup was serialized as lifecycle Ready");
+}
+
+void testFullStatusLifecycleAuthorityAndContextValidation() {
+  const EngineMemoryPlan memoryPlan = plan();
+  engine::EngineSnapshot core;
+  core.maximumContextTokens = 102400;
+  WarmupReport warmup;
+  warmup.maximumPrefill = WarmupStepStatus::Complete;
+  warmup.decodeBatches.fill(WarmupStepStatus::Complete);
+  warmup.draftVerifyCommit = WarmupStepStatus::Complete;
+  warmup.compositeStateRestore = WarmupStepStatus::Complete;
+  warmup.memoryBudgetValidated = true;
+  MemoryGovernorSnapshot governor;
+  governor.hostMeasurementValid = true;
+  governor.hostAvailableBytes = 8 * kGiB;
+  governor.hostReserveBytes = 2 * kGiB;
+
+  const LifecycleStatusSnapshot recovering =
+      liveLifecycle(core.maximumContextTokens, false);
+  const std::string closed = runtimeStatusJson(
+      recovering, memoryPlan, core, {}, warmup, audit(memoryPlan), {}, {}, {},
+      governor, true);
+  require(closed.find("\"ready\":false") != std::string::npos &&
+              closed.find("\"inference_ready\":false") !=
+                  std::string::npos &&
+              closed.find("\"model_resident\":true") !=
+                  std::string::npos &&
+              closed.find("\"effective_context_tokens\":102400") !=
+                  std::string::npos,
+          "historically ready warmup opened inference behind Recovering lifecycle");
+
+  auto requireRejected = [&](LifecycleStatusSnapshot lifecycle,
+                             const char *message) {
+    bool rejected = false;
+    try {
+      (void)runtimeStatusJson(lifecycle, memoryPlan, core, {}, warmup,
+                              audit(memoryPlan), {}, {}, {}, governor, true);
+    } catch (const std::invalid_argument &) {
+      rejected = true;
+    }
+    require(rejected, message);
+  };
+
+  auto drift = liveLifecycle(100000, true);
+  requireRejected(drift,
+                  "Ready status accepted effective context different from Engine");
+  auto aboveCeiling = liveLifecycle(core.maximumContextTokens, false);
+  aboveCeiling.effectiveContextTokens =
+      aboveCeiling.configuredContextCeiling + 1;
+  requireRejected(aboveCeiling,
+                  "live status accepted effective context above configured ceiling");
+  auto missingContext = liveLifecycle(core.maximumContextTokens, true);
+  missingContext.effectiveContextTokens.reset();
+  requireRejected(missingContext,
+                  "Ready status accepted lifecycle without effective context");
 }
 
 void testCurrentReadinessAndSimultaneousPeak() {
@@ -328,9 +652,14 @@ void testCurrentReadinessAndSimultaneousPeak() {
   memory.peakResidentBytes = 22 * kGiB;
   memory.deviceCurrentAllocatedBytes = 22 * kGiB;
   memory.devicePeakAllocatedBytes = 22 * kGiB;
+  engine::EngineSnapshot liveEngine;
+  liveEngine.maximumContextTokens = 102400;
+  const LifecycleStatusSnapshot readyLifecycle =
+      liveLifecycle(liveEngine.maximumContextTokens, true);
   auto status = [&] {
-    return runtimeStatusJson(memoryPlan, {}, memory, warmup, audit(memoryPlan),
-                             {}, {}, {}, governor, true);
+    return runtimeStatusJson(readyLifecycle, memoryPlan, liveEngine, memory,
+                             warmup, audit(memoryPlan), {}, {}, {}, governor,
+                             true);
   };
   const std::string healthy = status();
   require(healthy.find("\"ready\":true") != std::string::npos &&
@@ -342,8 +671,14 @@ void testCurrentReadinessAndSimultaneousPeak() {
   memory.peakResidentBytes = 24 * kGiB;
   memory.deviceCurrentAllocatedBytes = 24 * kGiB;
   memory.devicePeakAllocatedBytes = 24 * kGiB;
-  require(status().find("\"ready\":false") != std::string::npos,
-          "current over-budget allocation was marked ready");
+  bool overBudgetReadyRejected = false;
+  try {
+    static_cast<void>(status());
+  } catch (const std::invalid_argument &) {
+    overBudgetReadyRejected = true;
+  }
+  require(overBudgetReadyRejected,
+          "current over-budget allocation was serialized as lifecycle Ready");
   memory.allocatedBytes = 18 * kGiB;
   memory.deviceCurrentAllocatedBytes = 22 * kGiB;
   const std::string recovered = status();
@@ -362,8 +697,14 @@ void testCurrentReadinessAndSimultaneousPeak() {
           "reaching the host reserve under warning marked the server not ready");
   governor.hostAvailableBytes = 1 * kGiB;
   governor.pressure = MemoryPressure::Critical;
-  require(status().find("\"ready\":false") != std::string::npos,
-          "critical memory pressure was marked ready");
+  bool criticalReadyRejected = false;
+  try {
+    static_cast<void>(status());
+  } catch (const std::invalid_argument &) {
+    criticalReadyRejected = true;
+  }
+  require(criticalReadyRejected,
+          "critical memory pressure was serialized as lifecycle Ready");
   governor.hostAvailableBytes = 8 * kGiB;
   governor.pressure = MemoryPressure::Normal;
   governor.growthAllowed = true;
@@ -396,8 +737,9 @@ void testWarmupStatesPreserveReadinessAndMeasurementTruth() {
   governor.hostAvailableBytes = 8 * kGiB;
   governor.hostReserveBytes = 2 * kGiB;
   auto status = [&] {
-    return runtimeStatusJson(memoryPlan, {}, {}, warmup, audit(memoryPlan),
-                             {}, {}, {}, governor, true);
+    return runtimeStatusJson(liveLifecycle(102400), memoryPlan, {}, {},
+                             warmup, audit(memoryPlan), {}, {}, {}, governor,
+                             true);
   };
   require(status().find("\"memory_limited_steps\":[]") != std::string::npos,
           "fully measured warmup listed a memory-limited step");
@@ -425,11 +767,13 @@ void testWarmupStatesPreserveReadinessAndMeasurementTruth() {
     *step.state = WarmupStepStatus::MemoryLimited;
     const std::string limited = status();
     require(warmup.ready() &&
-                limited.find("\"ready\":true") != std::string::npos &&
+                limited.find("\"ready\":false") != std::string::npos &&
+                limited.find("\"inference_ready\":false") !=
+                    std::string::npos &&
                 limited.find(key + "false") != std::string::npos &&
                 limited.find(std::string("\"memory_limited_steps\":[\"") +
                              step.name + "\"]") != std::string::npos,
-            "memory-limited warmup did not preserve readiness and measurement truth");
+            "historical warmup independently opened lifecycle readiness");
 
     *step.state = WarmupStepStatus::Complete;
     require(status().find(key + "true") != std::string::npos,
@@ -444,6 +788,10 @@ void testWarmupStatesPreserveReadinessAndMeasurementTruth() {
                   std::string::npos &&
               limited.find("\"decode_b1\":true") != std::string::npos,
           "single-lane readiness omitted or mislabeled memory-limited steps");
+  require(limited.find("\"ready\":false") != std::string::npos &&
+              limited.find("\"inference_ready\":false") !=
+                  std::string::npos,
+          "historical warmup independently opened lifecycle readiness");
   warmup.memoryBudgetValidated = false;
   require(!warmup.ready(), "memory-limited warmup bypassed the memory audit");
   warmup.memoryBudgetValidated = true;
@@ -462,7 +810,8 @@ void testMemoryPressureTelemetry() {
   governor.pressure = MemoryPressure::Critical;
   governor.growthAllowed = false;
   auto status = [&] {
-    return runtimeStatusJson(memoryPlan, {}, {}, {}, {}, {}, {}, {}, governor, true);
+    return runtimeStatusJson(liveLifecycle(102400), memoryPlan, {}, {}, {},
+                             {}, {}, {}, {}, governor, true);
   };
   const std::string hostLimited = status();
   require(hostLimited.find("\"memory_pressure\":\"critical\"") !=
@@ -490,7 +839,8 @@ void testResourceWaitDiagnostics() {
                             .oldestWaitMilliseconds = 1250.0, .draining = true};
   const auto memoryPlan = plan();
   const std::string json = runtimeStatusJson(
-      memoryPlan, {}, {}, {}, {}, {}, {}, {}, {}, true, {}, wait);
+      liveLifecycle(102400), memoryPlan, {}, {}, {}, {}, {}, {}, {}, {}, true,
+      {}, wait);
   require(json.find("\"admission\":{\"waiting\":3,\"waiting_memory\":2,"
                     "\"waiting_concurrency\":1,\"suspended\":1,\"draining\":true,"
                     "\"oldest_wait_ms\":1250}") != std::string::npos,
@@ -542,7 +892,11 @@ void testStderrLinesStayWhole() {
 
 int main() {
   try {
+    testDetachedLifecycleValues();
+    testControlReadyStatusCanBeModelLess();
+    testDetachedStatusKeepsControlDiagnosticsAndMetrics();
     testCleanRuntimeStatus();
+    testFullStatusLifecycleAuthorityAndContextValidation();
     testCurrentReadinessAndSimultaneousPeak();
     testWarmupStatesPreserveReadinessAndMeasurementTruth();
     testMemoryPressureTelemetry();

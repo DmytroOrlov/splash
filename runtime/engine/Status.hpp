@@ -25,6 +25,114 @@ namespace splash::engine {
 
 struct RuntimeCacheIdentity;
 
+// Lifecycle status is copied into detached snapshots so it remains readable
+// while the inference residency (and therefore Engine) is absent.
+enum class LifecyclePower { Unknown, AC, Battery };
+enum class LifecycleState {
+  Ready,
+  Draining,
+  Suspended,
+  Recovering,
+  RecoveryFailed,
+  Shutdown,
+};
+
+[[nodiscard]] inline const char *lifecyclePowerName(
+    LifecyclePower power) noexcept {
+  switch (power) {
+  case LifecyclePower::Unknown: return "unknown";
+  case LifecyclePower::AC: return "ac";
+  case LifecyclePower::Battery: return "battery";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] inline const char *lifecycleStateName(
+    LifecycleState state) noexcept {
+  switch (state) {
+  case LifecycleState::Ready: return "ready";
+  case LifecycleState::Draining: return "draining";
+  case LifecycleState::Suspended: return "suspended";
+  case LifecycleState::Recovering: return "recovering";
+  case LifecycleState::RecoveryFailed: return "recovery_failed";
+  case LifecycleState::Shutdown: return "shutdown";
+  }
+  return "shutdown";
+}
+
+[[nodiscard]] inline bool validLifecyclePower(LifecyclePower power) noexcept {
+  return power == LifecyclePower::Unknown || power == LifecyclePower::AC ||
+         power == LifecyclePower::Battery;
+}
+
+[[nodiscard]] inline bool validLifecycleState(LifecycleState state) noexcept {
+  return state == LifecycleState::Ready || state == LifecycleState::Draining ||
+         state == LifecycleState::Suspended ||
+         state == LifecycleState::Recovering ||
+         state == LifecycleState::RecoveryFailed ||
+         state == LifecycleState::Shutdown;
+}
+
+struct LifecycleStatusSnapshot {
+  LifecyclePower power = LifecyclePower::Unknown;
+  LifecycleState state = LifecycleState::RecoveryFailed;
+  uint64_t revision = 0;
+  bool controlReady = false;
+  bool inferenceReady = false;
+  bool modelResident = false;
+  uint32_t configuredContextCeiling = 0;
+  std::optional<uint32_t> effectiveContextTokens;
+  std::string lastError;
+};
+
+// This value contains no owning or borrowed runtime pointers. An unknown power
+// source is representable, but can never authorize inference readiness.
+[[nodiscard]] inline bool validLifecycleStatus(
+    const LifecycleStatusSnapshot &status) noexcept {
+  if (!validLifecyclePower(status.power) || !validLifecycleState(status.state) ||
+      !status.configuredContextCeiling)
+    return false;
+  if (status.inferenceReady) {
+    return status.controlReady && status.state == LifecycleState::Ready &&
+           status.power == LifecyclePower::AC && status.modelResident &&
+           status.effectiveContextTokens &&
+           *status.effectiveContextTokens > 0 &&
+           *status.effectiveContextTokens <= status.configuredContextCeiling;
+  }
+  if (status.state == LifecycleState::Ready ||
+      (status.state == LifecycleState::Suspended && status.modelResident)) {
+    return false;
+  }
+  return !status.effectiveContextTokens ||
+         (*status.effectiveContextTokens > 0 &&
+          *status.effectiveContextTokens <= status.configuredContextCeiling);
+}
+
+struct ResourceSnapshot {
+  LifecycleStatusSnapshot lifecycle;
+  uint64_t backendAllocatedBytes = 0;
+  bool modelPackageResident = false;
+  std::optional<uint64_t> modelPackageResidentBytes;
+  bool runtimeResident = false;
+  std::optional<uint64_t> runtimeResidentBytes;
+  uint64_t retainedCacheBytes = 0;
+  uint64_t retainedKvBytes = 0;
+  uint64_t retainedStateBytes = 0;
+  bool modelTelemetryAvailable = false;
+};
+
+[[nodiscard]] inline bool validResourceSnapshot(
+    const ResourceSnapshot &snapshot) noexcept {
+  return validLifecycleStatus(snapshot.lifecycle) &&
+         (!snapshot.lifecycle.modelResident ||
+          (snapshot.modelPackageResident && snapshot.runtimeResident)) &&
+         (!snapshot.runtimeResident || snapshot.modelPackageResident) &&
+         snapshot.modelTelemetryAvailable == snapshot.lifecycle.modelResident &&
+         (snapshot.modelPackageResident ||
+          !snapshot.modelPackageResidentBytes) &&
+         (snapshot.runtimeResident || !snapshot.runtimeResidentBytes);
+}
+
 enum class WarmupStepStatus { Pending, Complete, MemoryLimited };
 
 struct WarmupReport {
@@ -257,6 +365,7 @@ private:
 
 // Single source for /status and native protocol status events.
 [[nodiscard]] std::string runtimeStatusJson(
+    const LifecycleStatusSnapshot &lifecycle,
     const EngineMemoryPlan &plan, const EngineSnapshot &core,
     const metal::MetalMemoryStats &metalMemory, const WarmupReport &warmup,
     const MemoryAuditResult &memoryAudit, const RuntimeMetricsSnapshot &metrics,
@@ -264,6 +373,14 @@ private:
     const RuntimeCacheIdentity &cacheIdentity,
     const MemoryGovernorSnapshot &memoryGovernor, bool metalHealthy,
     std::string metalFailureReason = {},
+    const ResourceWaitSnapshot &resourceWait = {});
+
+// Status for a control generation that has no published Engine. Only detached
+// lifecycle/resource observations and process-local metrics are accepted, so
+// passive status reads cannot keep or reconstruct model residency.
+[[nodiscard]] std::string runtimeStatusJson(
+    const ResourceSnapshot &resources, const RuntimeMetricsSnapshot &metrics,
+    MemoryPressure memoryPressure, std::string failureReason = {},
     const ResourceWaitSnapshot &resourceWait = {});
 
 } // namespace splash::engine

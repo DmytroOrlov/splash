@@ -246,8 +246,11 @@ inline constexpr uint64_t kNativeFeatureBits =
     FeatureMultiplexing;
 
 struct ReadyEvent {
+  // Process/control-generation identity and static pre-residency capability.
+  // Inference readiness and effective context are reported through status.
   uint64_t engineInstanceId = 0;
   uint32_t maxConcurrentRequests = 0;
+  // Configured context ceiling, not a post-load effective serving limit.
   uint32_t maxContextTokens = 0;
   uint64_t featureBits = 0;
 
@@ -337,7 +340,8 @@ struct CapacityExhaustedEvent {
   bool operator==(const CapacityExhaustedEvent &) const = default;
 };
 
-// JSON is deliberately opaque to the transport.  Its independent schema
+// JSON is deliberately opaque to the transport. Status JSON carries detached
+// control/lifecycle readiness alongside diagnostics; its independent schema
 // number is always present, and the frame length carries the exact JSON byte
 // count (including whitespace) without line or C-string assumptions.
 struct StatusJsonEvent {

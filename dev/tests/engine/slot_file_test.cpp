@@ -4,10 +4,13 @@
 #include <future>
 #include <csignal>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
+#include <set>
 #include <vector>
 
 using splash::model::DiskBudget;
@@ -21,6 +24,41 @@ template <typename Exception, typename Call>
 static bool throws(Call call) {
   try { call(); } catch (const Exception &) { return true; }
   return false;
+}
+
+static std::set<int> unlinkedRegularDescriptors() {
+  std::set<int> descriptors;
+  for (int descriptor = 0; descriptor < getdtablesize(); ++descriptor) {
+    struct stat info {};
+    if (fstat(descriptor, &info) == 0 && S_ISREG(info.st_mode) &&
+        info.st_nlink == 0)
+      descriptors.insert(descriptor);
+  }
+  return descriptors;
+}
+
+static void testTruncatedCompletedSlotIsRejected() {
+  constexpr size_t size = SlotFile::kAlignmentBytes;
+  const auto before = unlinkedRegularDescriptors();
+  SlotFile file(size, size);
+  const auto after = unlinkedRegularDescriptors();
+  std::vector<int> added;
+  std::set_difference(after.begin(), after.end(), before.begin(), before.end(),
+                      std::back_inserter(added));
+  require(added.size() == 1,
+          "could not uniquely identify the new unlinked slot descriptor");
+  const int descriptor = added.front();
+
+  auto slot = file.acquire();
+  std::vector<std::byte> source(size, std::byte{0x6d}), restored(size);
+  require(slot && file.write(slot, {source}, {})->wait(),
+          "complete slot write failed before truncation");
+  require(file.read(slot, {restored}, {})->wait() && restored == source,
+          "complete slot was not readable before truncation");
+  require(ftruncate(descriptor, static_cast<off_t>(size - 1)) == 0,
+          "could not truncate the completed slot backing file");
+  require(!file.read(slot, {restored}, {})->wait(),
+          "completed slot remained readable after backing-file truncation");
 }
 
 static void testFailedWriteStopsWriting() {
@@ -70,6 +108,7 @@ static void testFailedWriteStopsWriting() {
 int main() {
   try {
     testFailedWriteStopsWriting();
+    testTruncatedCompletedSlotIsRejected();
     constexpr size_t size = 4 * SlotFile::kAlignmentBytes;
     SlotFile file(size, size * 2 + 1);
     require(file.slotBytes() == size && file.capacityBytes() == size * 2 + 1 &&

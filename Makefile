@@ -282,6 +282,7 @@ ENGINE_MM_SOURCES := \
 	runtime/ops/Vision.mm \
 	runtime/ops/PageStorage.mm \
 	runtime/engine/RuntimeResources.mm \
+	runtime/engine/PowerSource.mm \
 	runtime/engine/Bootstrap.mm
 ENGINE_OBJECTS := \
 	$(patsubst runtime/%.cpp,$(ENGINE_BUILD)/%.o,$(ENGINE_CPP_SOURCES)) \

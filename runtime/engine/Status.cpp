@@ -56,13 +56,25 @@ std::string MemoryStatusReporter::update(const ResourceWaitSnapshot &wait,
 }
 
 std::string runtimeStatusJson(
-    const EngineMemoryPlan &plan, const engine::EngineSnapshot &core,
+    const LifecycleStatusSnapshot &lifecycle,
+    const engine::EngineMemoryPlan &plan, const engine::EngineSnapshot &core,
     const metal::MetalMemoryStats &metalMemory, const WarmupReport &warmup,
     const MemoryAuditResult &memoryAudit, const RuntimeMetricsSnapshot &metrics,
     const model::ModelTelemetry &executorTelemetry,
     const engine::RuntimeCacheIdentity &cacheIdentity,
     const MemoryGovernorSnapshot &memoryGovernor, bool metalHealthy,
     std::string metalFailureReason, const ResourceWaitSnapshot &resourceWait) {
+  if (!validLifecycleStatus(lifecycle) || !lifecycle.modelResident ||
+      !lifecycle.effectiveContextTokens ||
+      *lifecycle.effectiveContextTokens >
+          lifecycle.configuredContextCeiling)
+    throw std::invalid_argument(
+        "live runtime status requires a valid published lifecycle context");
+  if (lifecycle.inferenceReady &&
+      *lifecycle.effectiveContextTokens != core.maximumContextTokens)
+    throw std::invalid_argument(
+        "ready lifecycle effective context disagrees with the live Engine");
+
   const auto &resources = core.resources;
   const auto &scheduler = core.scheduler;
   const auto &pool = resources.pool;
@@ -78,8 +90,13 @@ std::string runtimeStatusJson(
   // Warning pressure pauses growth but permits serving; only the governor's
   // critical verdict makes host pressure a readiness failure.
   const bool hostSafe = memoryGovernor.pressure != MemoryPressure::Critical;
-  const bool ready = warmup.ready() && memoryAudit.valid && metalHealthy &&
-                     hostSafe && currentBytes <= plan.breakdown().hardBudgetBytes;
+  const bool physicalHealthSafe =
+      warmup.ready() && memoryAudit.valid && metalHealthy && hostSafe &&
+      currentBytes <= plan.breakdown().hardBudgetBytes;
+  if (lifecycle.inferenceReady && !physicalHealthSafe)
+    throw std::invalid_argument(
+        "lifecycle claims Ready while live model health is unsafe");
+  const bool ready = lifecycle.inferenceReady;
   const double hitRate =
       core.cacheHits + core.coldMisses
           ? double(core.cacheHits) / double(core.cacheHits + core.coldMisses)
@@ -99,7 +116,21 @@ std::string runtimeStatusJson(
   std::ostringstream out;
   out << std::setprecision(10) << '{' << "\"schema_version\":" << protocol::kStatusSchemaVersion << ','
       << "\"ready\":" << boolean(ready)
+      << ",\"control_ready\":" << boolean(lifecycle.controlReady)
+      << ",\"inference_ready\":" << boolean(lifecycle.inferenceReady)
       << ",\"maximum_context_tokens\":" << core.maximumContextTokens
+      << ",\"configured_context_ceiling\":"
+      << lifecycle.configuredContextCeiling
+      << ",\"effective_context_tokens\":"
+      << *lifecycle.effectiveContextTokens
+      << ",\"lifecycle\":{\"power\":"
+      << json::quote(lifecyclePowerName(lifecycle.power))
+      << ",\"state\":" << json::quote(lifecycleStateName(lifecycle.state))
+      << ",\"revision\":" << lifecycle.revision
+      << ",\"model_resident\":" << boolean(lifecycle.modelResident)
+      << ",\"control_ready\":" << boolean(lifecycle.controlReady)
+      << ",\"inference_ready\":" << boolean(lifecycle.inferenceReady)
+      << ",\"last_error\":" << json::quote(lifecycle.lastError) << '}'
       << ",\"memory_pressure\":"
       << json::quote(memoryPressureName(memoryGovernor.pressure))
       << ",\"admission\":{\"waiting\":"
@@ -338,6 +369,93 @@ std::string runtimeStatusJson(
       << ",\"error\":" << json::quote(warmup.error) << "}"
       << ",\"metal\":{\"healthy\":" << boolean(metalHealthy)
       << ",\"failure_reason\":" << json::quote(metalFailureReason) << "}}";
+  return out.str();
+}
+
+std::string runtimeStatusJson(const ResourceSnapshot &resources,
+                              const RuntimeMetricsSnapshot &metrics,
+                              MemoryPressure memoryPressure,
+                              std::string failureReason,
+                              const ResourceWaitSnapshot &resourceWait) {
+  if (!validResourceSnapshot(resources) ||
+      resources.lifecycle.modelResident || resources.lifecycle.inferenceReady)
+    throw std::invalid_argument(
+        "detached runtime status requires a valid model-less snapshot");
+
+  const LifecycleStatusSnapshot &lifecycle = resources.lifecycle;
+  std::ostringstream out;
+  out << std::setprecision(10) << '{'
+      << "\"schema_version\":" << protocol::kStatusSchemaVersion
+      << ",\"ready\":false"
+      << ",\"control_ready\":" << boolean(lifecycle.controlReady)
+      << ",\"inference_ready\":false"
+      << ",\"maximum_context_tokens\":"
+      << lifecycle.configuredContextCeiling
+      << ",\"configured_context_ceiling\":"
+      << lifecycle.configuredContextCeiling
+      << ",\"effective_context_tokens\":";
+  if (lifecycle.effectiveContextTokens)
+    out << *lifecycle.effectiveContextTokens;
+  else
+    out << "null";
+  out << ",\"lifecycle\":{\"power\":"
+      << json::quote(lifecyclePowerName(lifecycle.power))
+      << ",\"state\":" << json::quote(lifecycleStateName(lifecycle.state))
+      << ",\"revision\":" << lifecycle.revision
+      << ",\"model_resident\":false,\"control_ready\":"
+      << boolean(lifecycle.controlReady)
+      << ",\"inference_ready\":false,\"last_error\":"
+      << json::quote(lifecycle.lastError) << '}'
+      << ",\"memory_pressure\":" << json::quote(memoryPressureName(memoryPressure))
+      << ",\"admission\":{\"waiting\":"
+      << resourceWait.memory + resourceWait.concurrency
+      << ",\"waiting_memory\":" << resourceWait.memory
+      << ",\"waiting_concurrency\":" << resourceWait.concurrency
+      << ",\"suspended\":" << resourceWait.suspended
+      << ",\"draining\":" << boolean(resourceWait.draining)
+      << ",\"oldest_wait_ms\":" << resourceWait.oldestWaitMilliseconds << '}'
+      << ",\"resources\":{\"backend_allocated_bytes\":"
+      << resources.backendAllocatedBytes
+      << ",\"model_package_resident\":false"
+      << ",\"model_package_resident_bytes\":null"
+      << ",\"runtime_resident\":false"
+      << ",\"runtime_resident_bytes\":null"
+      << ",\"retained_cache_bytes\":" << resources.retainedCacheBytes
+      << ",\"retained_kv_bytes\":" << resources.retainedKvBytes
+      << ",\"retained_state_bytes\":" << resources.retainedStateBytes
+      << ",\"model_telemetry_available\":false}"
+      << ",\"failure_reason\":" << json::quote(failureReason)
+      // These values are scoped to a live model/Engine and cannot be inferred
+      // from retained-resource accounting.
+      << ",\"identity\":null,\"memory_plan\":null"
+      << ",\"memory_actual\":null,\"memory_governor\":null"
+      << ",\"memory_audit\":null,\"kv\":null,\"state\":null"
+      << ",\"disk\":null,\"cache\":null,\"draft_context\":null"
+      << ",\"model_timing\":null,\"constraint_masks\":null"
+      << ",\"images\":null,\"scheduler\":null,\"requests\":null"
+      << ",\"warmup\":null,\"metal\":null"
+      << ",\"metrics\":{\"ttft_ms\":{\"p50\":"
+      << metrics.ttftP50Milliseconds << ",\"p95\":"
+      << metrics.ttftP95Milliseconds << ",\"samples\":"
+      << metrics.ttftSamples << "},\"itl_ms\":{\"p50\":"
+      << metrics.itlP50Milliseconds << ",\"p95\":"
+      << metrics.itlP95Milliseconds << ",\"samples\":"
+      << metrics.itlSamples << "},\"prefill_input_tokens\":"
+      << metrics.prefillInputTokens << ",\"prefill_wall_ms\":"
+      << metrics.prefillWallMilliseconds << ",\"prefill_tokens_per_second\":"
+      << metrics.prefillTokensPerSecond << ",\"decode_output_tokens\":"
+      << metrics.decodeOutputTokens << ",\"decode_wall_ms\":"
+      << metrics.decodeWallMilliseconds << ",\"decode_tokens_per_second\":"
+      << metrics.decodeTokensPerSecond << ",\"drafted_tokens\":"
+      << metrics.draftedTokens << ",\"accepted_draft_tokens\":"
+      << metrics.acceptedDraftTokens << ",\"draft_acceptance_rate\":"
+      << metrics.draftAcceptanceRate << ",\"capacity_failures\":"
+      << metrics.capacityFailures << ",\"metal_failures\":"
+      << metrics.metalFailures << ",\"current_prefill_batch\":";
+  appendBatch(out, metrics.currentPrefillBatch);
+  out << ",\"current_decode_batch\":";
+  appendBatch(out, metrics.currentDecodeBatch);
+  out << "}}";
   return out.str();
 }
 

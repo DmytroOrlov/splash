@@ -1114,6 +1114,46 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.last_status, status)
         self.assertTrue(runtime.ready)
 
+    def test_model_less_status_is_ready_without_relaunch_or_second_handshake(self):
+        readiness = [False]
+
+        def handler(process, message):
+            if isinstance(message, wire.StatusRequestFrame):
+                value = "true" if readiness[0] else "false"
+                process.send(
+                    wire.StatusJsonEvent(
+                        message.correlation_id,
+                        wire.STATUS_SCHEMA_VERSION,
+                        ("{\"schema_version\":5,\"ready\":false,"
+                         "\"control_ready\":true,\"inference_ready\":"
+                         + value + "}").encode(),
+                    )
+                )
+
+        factory = FakeFactory(handler)
+        runtime = engine_runtime.MultiplexedRuntime(process_factory=factory)
+        self.addCleanup(runtime.close)
+        generation = runtime._generation
+        announced = runtime.readiness
+        self.assertIsNotNone(announced)
+        self.assertTrue(runtime.wait_ready(0.2))
+        cold = runtime.status(timeout=0.2)
+        self.assertIn(b'"control_ready":true', cold.json)
+        self.assertIn(b'"inference_ready":false', cold.json)
+        self.assertTrue(runtime.ready)
+
+        readiness[0] = True
+        serving = runtime.status(timeout=0.2)
+        self.assertIn(b'"inference_ready":true', serving.json)
+        readiness[0] = False
+        suspended = runtime.status(timeout=0.2)
+        self.assertIn(b'"inference_ready":false', suspended.json)
+        self.assertTrue(runtime.ready)
+        self.assertEqual(runtime._generation, generation)
+        self.assertEqual(runtime.restart_count, 0)
+        self.assertEqual(len(factory.processes), 1)
+        self.assertEqual(runtime.readiness, announced)
+
     def test_request_and_capacity_failures_are_scoped(self):
         factory = FakeFactory()
         runtime = engine_runtime.MultiplexedRuntime(process_factory=factory)

@@ -207,7 +207,8 @@ RuntimeResourcesError::RuntimeResourcesError(RuntimeResourceStage stage,
       budgetDescription_(std::move(budgetDescription)) {}
 
 RuntimeResources::RuntimeResources(
-    std::unique_ptr<metal::MetalBackend> backend, model::ModelPackage model,
+    std::unique_ptr<metal::MetalBackend> backend,
+    std::unique_ptr<ModelPackageResidency> modelResidency,
     ops::ExecutionPlans operators,
     EngineMemoryPlan memoryPlan, model::ModelMemoryPlan modelMemoryPlan,
     RuntimeCacheIdentity cacheIdentity,
@@ -217,7 +218,8 @@ RuntimeResources::RuntimeResources(
     std::unique_ptr<model::KvPageTier> kvTier,
     std::unique_ptr<KvPool> kvPool, std::unique_ptr<engine::Cache> cache,
     uint32_t maximumImagePatches, std::optional<uint64_t> hostAvailableAtStart)
-    : backend_(std::move(backend)), model_(std::move(model)),
+    : backend_(std::move(backend)),
+      modelResidency_(std::move(modelResidency)),
       operators_(std::move(operators)),
       memoryPlan_(std::move(memoryPlan)),
       modelMemoryPlan_(std::move(modelMemoryPlan)),
@@ -528,7 +530,9 @@ RuntimeResources::create(const RuntimeResourcesConfig &config) {
     }
 
     auto result = std::unique_ptr<RuntimeResources>(new RuntimeResources(
-        std::move(backend), std::move(package), std::move(operators),
+        std::move(backend),
+        std::make_unique<ModelPackageResidency>(std::move(package)),
+        std::move(operators),
         std::move(memoryPlan),
         std::move(modelMemoryPlan), std::move(cacheIdentity),
         std::move(memoryGovernor), std::move(kvPages), std::move(stateStorage),
@@ -547,12 +551,13 @@ RuntimeResources::create(const RuntimeResourcesConfig &config) {
   }
 }
 
-model::RuntimeContext RuntimeResources::modelContext() noexcept {
+model::RuntimeContext RuntimeResources::modelContext(
+    ModelPackageResidency &residency) noexcept {
   const EngineMemoryBreakdown &budget = memoryPlan_.breakdown();
   return {
       *backend_,
       memoryGovernor_->allocationAdmission(),
-      model_,
+      residency.package(),
       *kvPages_,
       *stateStorage_,
       operators_,
@@ -564,12 +569,14 @@ model::RuntimeContext RuntimeResources::modelContext() noexcept {
 }
 
 ActualMemoryReport RuntimeResources::actualMemoryReport(
+    const ModelPackageResidency &residency,
     const model::ModelMemoryActual &modelMemory,
     uint64_t estimatedWarmupPeakBytes) const {
   ActualMemoryReport report;
-  report.targetWeightsBytes = model_.targetActualAllocatedBytes();
-  report.draftWeightsBytes = model_.draft.actualAllocatedBytes;
-  report.visionWeightsBytes = model_.vision.actualAllocatedBytes;
+  const model::ModelPackage &package = residency.package();
+  report.targetWeightsBytes = package.targetActualAllocatedBytes();
+  report.draftWeightsBytes = package.draft.actualAllocatedBytes;
+  report.visionWeightsBytes = package.vision.actualAllocatedBytes;
   report.stateResidentBytes = modelMemory.stateActualAllocatedBytes;
   report.sharedPrefillBytes = modelMemory.sharedPrefillActualAllocatedBytes;
   report.sharedDecodeBytes = modelMemory.sharedDecodeActualAllocatedBytes;

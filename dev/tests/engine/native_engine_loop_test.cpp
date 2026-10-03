@@ -62,9 +62,46 @@ private:
   std::shared_ptr<bool> ready_;
 };
 
+class HeldRestoreTicket final : public StateRestore {
+public:
+  HeldRestoreTicket(std::shared_ptr<bool> ready,
+                    std::function<void()> finish,
+                    std::function<void()> cancelled)
+      : ready_(std::move(ready)), finish_(std::move(finish)),
+        onCancelled_(std::move(cancelled)) {}
+  bool ready() const noexcept override { return *ready_; }
+  bool finish() override {
+    if (!ready() || cancelled_)
+      return false;
+    finish_();
+    return true;
+  }
+  void cancel() noexcept override {
+    if (cancelled_)
+      return;
+    cancelled_ = true;
+    onCancelled_();
+  }
+  std::shared_ptr<const CompositeState> snapshot() override { return {}; }
+
+private:
+  std::shared_ptr<bool> ready_;
+  std::function<void()> finish_;
+  std::function<void()> onCancelled_;
+  bool cancelled_ = false;
+};
+
+class RestoreState final : public CompositeState {
+public:
+  uint64_t bytes() const noexcept override { return 64; }
+};
+
 class Executor final : public model::Model {
 public:
   std::shared_ptr<bool> ticketReady;
+  std::shared_ptr<bool> restoreTicketReady;
+  uint32_t restoreStarts = 0;
+  uint32_t restoreCancellations = 0;
   std::function<void()> onSubmit;
   std::function<void()> onHealthCheck;
   bool pendingHealth = false;
@@ -108,6 +145,22 @@ public:
     if (!state)
       throw std::runtime_error("missing composite state");
     restored_ += length;
+  }
+  std::unique_ptr<StateRestore>
+  beginRestore(uint64_t id, uint32_t boundary,
+               std::shared_ptr<const CompositeState> state, bool restoreDraft,
+               std::function<void()>) override {
+    ++restoreStarts;
+    if (!restoreTicketReady) {
+      restore(id, boundary, std::move(state), restoreDraft);
+      return {};
+    }
+    return std::make_unique<HeldRestoreTicket>(
+        restoreTicketReady,
+        [this, id, boundary, state = std::move(state), restoreDraft] {
+          restore(id, boundary, state, restoreDraft);
+        },
+        [this] { ++restoreCancellations; });
   }
   void setDraftContextPlan(uint64_t, DraftContextPlan) override {}
   std::vector<ModelStepResult>
@@ -499,7 +552,8 @@ void testFatalFramingClosesConnection() {
       [&](std::span<const uint8_t> bytes) {
         output.insert(output.end(), bytes.begin(), bytes.end());
       },
-      [] { return std::string("{}"); });
+      [] { return std::string("{}"); },
+      {[] { return uint64_t{1'000'000}; }, [] { return 100.0; }});
   const std::array<uint8_t, 24> invalid{};
   require(!loop.receive(invalid), "bad frame did not close connection");
   require(loop.connectionMustClose() && loop.engineHealthy(),
@@ -651,6 +705,16 @@ void testCommandWatchdogAndPendingHealthWake() {
     const auto wire = protocol::serializeMessage(protocol::Message{input});
     require(wire && loop.receive(*wire.value) && loop.tick(),
             "watchdog fixture did not submit its command");
+    require(loop.commandInFlight() && !loop.idle() && executor.holdsSlot(1),
+            "held ModelBatchTicket did not retain its admitted model lane");
+    bool destroyWithBatchTicketRejected = false;
+    try {
+      loop.destroyEngine();
+    } catch (const std::logic_error &) {
+      destroyWithBatchTicketRejected = true;
+    }
+    require(destroyWithBatchTicketRejected,
+            "Engine was destroyable while ModelBatchTicket was pending");
     const auto cancel = protocol::serializeMessage(
         protocol::Message{protocol::CancelFrame{1}});
     require(cancel && loop.receive(*cancel.value) &&
@@ -668,6 +732,11 @@ void testCommandWatchdogAndPendingHealthWake() {
               "a model-side wait was mistaken for a pending GPU command");
       *executor.ticketReady = true;
       require(loop.tick() && loop.idle(), "completed GPU ownership did not drain");
+      require(!executor.holdsSlot(1),
+              "terminal ModelBatchTicket retained the request lane");
+      loop.destroyEngine();
+      require(!loop.hasEngine(),
+              "Engine remained published after ModelBatchTicket drain");
     } else {
       uint32_t errors = 0;
       for (const auto &message : decodeMessages(output)) {
@@ -737,6 +806,233 @@ void testDuplicateLiveRequestClosesWithoutAmbiguousError() {
     }
     require(errors == 1, "duplicate id produced multiple terminal errors");
   }
+}
+
+void testLifecycleAdmissionGateIsFinalNativeBoundary() {
+  Backing backing(64);
+  KvPool pool(backing);
+  engine::Cache resources(pool, CacheNamespace{});
+  Executor executor;
+  std::vector<uint8_t> output;
+  auto gate = std::make_shared<engine::NativeAdmissionGate>();
+  engine::NativeLoopConfig config;
+  config.engine.maxContext = 8192;
+  config.admissionGate = gate;
+  engine::NativeRuntime loop(
+      config, resources, executor,
+      [&](std::span<const uint8_t> bytes) {
+        output.insert(output.end(), bytes.begin(), bytes.end());
+      },
+      [] { return std::string("{}"); },
+      {[] { return uint64_t{1'000'000}; }, [] { return 100.0; }});
+  loop.announceReady();
+
+  const auto sendRequest = [&](uint64_t id) {
+    auto encoded = protocol::serializeMessage(protocol::Message{request(id)});
+    require(encoded && loop.receive(*encoded.value),
+            "lifecycle admission request closed the protocol connection");
+  };
+  sendRequest(91);
+  require(loop.snapshot().submitted == 0,
+          "closed lifecycle gate admitted inference work");
+  auto messages = decodeMessages(output);
+  require(std::any_of(messages.begin(), messages.end(), [](const auto &message) {
+            const auto *error = std::get_if<protocol::ErrorEvent>(&message);
+            return error && error->requestId == 91 &&
+                   error->code == "inference_unavailable";
+          }),
+          "closed lifecycle gate did not return unavailable to the request");
+
+  {
+    std::lock_guard lock(gate->mutex);
+    gate->inferenceReady = true;
+  }
+  sendRequest(92);
+  require(loop.snapshot().submitted == 1,
+          "open lifecycle gate did not admit inference work");
+  {
+    std::lock_guard lock(gate->mutex);
+    gate->inferenceReady = false;
+  }
+  sendRequest(93);
+  require(loop.snapshot().submitted == 1,
+          "closed lifecycle gate allowed a later frame through");
+  const auto updated = decodeMessages(output);
+  require(std::any_of(updated.begin(), updated.end(), [](const auto &message) {
+            const auto *error = std::get_if<protocol::ErrorEvent>(&message);
+            return error && error->requestId == 93 &&
+                   error->code == "inference_unavailable";
+          }),
+          "post-close request lacked an unavailable response");
+}
+
+void testCancelledRestoreRetainsEngineUntilTicketDrains() {
+  Backing backing(64);
+  KvPool pool(backing);
+  engine::Cache resources(pool, CacheNamespace{});
+  Executor executor;
+  executor.restoreTicketReady = std::make_shared<bool>(false);
+  constexpr uint64_t seedRequestId = 800;
+  std::vector<uint32_t> prompt(65);
+  for (uint32_t i = 0; i < prompt.size(); ++i)
+    prompt[i] = i + 1;
+  resources.beginRequest(seedRequestId);
+  require(resources.ensureTokens(seedRequestId, 64).granted(),
+          "restore fixture could not allocate its cached prefix");
+  const uint64_t prefix =
+      resources.publishCommittedBlocks(seedRequestId, prompt, 64);
+  resources.publishCompositeState(prefix, std::make_shared<RestoreState>());
+  resources.endRequest(seedRequestId);
+
+  std::vector<uint8_t> output;
+  engine::NativeLoopConfig config;
+  config.engine.maxContext = 8192;
+  engine::NativeRuntime loop(
+      config, resources, executor,
+      [&](std::span<const uint8_t> bytes) {
+        output.insert(output.end(), bytes.begin(), bytes.end());
+      },
+      [] { return std::string("{}"); },
+      {[] { return uint64_t{1'000'000}; }, [] { return 100.0; }});
+  loop.announceReady();
+
+  auto encoded = protocol::serializeMessage(protocol::Message{request(801)});
+  require(encoded && loop.receive(*encoded.value) && loop.tick(),
+          "cached request did not begin its asynchronous restore");
+  require(executor.restoreStarts == 1 && executor.holdsSlot(801) &&
+              !loop.idle() && !loop.commandInFlight(),
+          "restore ticket did not retain the admitted model lane");
+  bool destroyWhileRestoringRejected = false;
+  try {
+    loop.destroyEngine();
+  } catch (const std::logic_error &) {
+    destroyWhileRestoringRejected = true;
+  }
+  require(destroyWhileRestoringRejected,
+          "Engine was destroyable while its restore ticket was pending");
+
+  auto cancel = protocol::serializeMessage(
+      protocol::Message{protocol::CancelFrame{801}});
+  require(cancel && loop.receive(*cancel.value) && !loop.tick() &&
+              executor.restoreCancellations == 1 && !loop.idle() &&
+              executor.holdsSlot(801),
+          "cancelled restore released its lane before IO became quiescent");
+  *executor.restoreTicketReady = true;
+  require(loop.tick() && loop.idle() && !executor.holdsSlot(801),
+          "ready restore ticket did not release the cancelled request lane");
+  loop.destroyEngine();
+  require(!loop.hasEngine(),
+          "Engine remained published after restore-ticket drain");
+}
+
+void testAdmissionCloseRejectsLaterRequestWhileAdmittedRestoreDrains() {
+  Backing backing(64);
+  KvPool pool(backing);
+  engine::Cache resources(pool, CacheNamespace{});
+  Executor executor;
+  executor.restoreTicketReady = std::make_shared<bool>(false);
+  constexpr uint64_t seedRequestId = 800;
+  std::vector<uint32_t> prompt(65);
+  for (uint32_t i = 0; i < prompt.size(); ++i)
+    prompt[i] = i + 1;
+  resources.beginRequest(seedRequestId);
+  require(resources.ensureTokens(seedRequestId, 64).granted(),
+          "admission-close fixture could not allocate its cached prefix");
+  const uint64_t prefix =
+      resources.publishCommittedBlocks(seedRequestId, prompt, 64);
+  resources.publishCompositeState(prefix, std::make_shared<RestoreState>());
+  resources.endRequest(seedRequestId);
+
+  std::vector<uint8_t> output;
+  auto gate = std::make_shared<engine::NativeAdmissionGate>();
+  engine::NativeLoopConfig config;
+  config.admissionGate = gate;
+  config.engine.maxContext = 8192;
+  engine::NativeRuntime loop(
+      config, resources, executor,
+      [&](std::span<const uint8_t> bytes) {
+        output.insert(output.end(), bytes.begin(), bytes.end());
+      },
+      [] { return std::string("{}"); },
+      {[] { return uint64_t{1'000'000}; }, [] { return 100.0; }});
+  loop.announceReady();
+  {
+    std::lock_guard lock(gate->mutex);
+    gate->inferenceReady = true;
+  }
+
+  auto send = [&](protocol::Message message) {
+    auto encoded = protocol::serializeMessage(message);
+    require(encoded && loop.receive(*encoded.value),
+            "request frame closed the native protocol connection");
+  };
+  send(protocol::Message{request(801)});
+  require(loop.tick() && executor.restoreStarts == 1 &&
+              executor.holdsSlot(801) && !loop.idle() &&
+              !loop.commandInFlight(),
+          "request 801 did not start its admitted asynchronous restore");
+  const auto beforeClose = decodeMessages(output);
+  require(std::none_of(beforeClose.begin(), beforeClose.end(),
+                       [](const protocol::Message &message) {
+                         if (const auto *done =
+                                 std::get_if<protocol::DoneEvent>(&message))
+                           return done->requestId == 801;
+                         if (const auto *error =
+                                 std::get_if<protocol::ErrorEvent>(&message))
+                           return error->requestId == 801;
+                         return false;
+                       }),
+          "request 801 completed before its restore ticket became quiescent");
+
+  {
+    std::lock_guard lock(gate->mutex);
+    gate->inferenceReady = false;
+  }
+  send(protocol::Message{request(802)});
+  const auto afterClose = decodeMessages(output);
+  require(std::any_of(afterClose.begin(), afterClose.end(),
+                      [](const protocol::Message &message) {
+                        const auto *error =
+                            std::get_if<protocol::ErrorEvent>(&message);
+                        return error && error->requestId == 802 &&
+                               error->code == "inference_unavailable";
+                      }) &&
+              executor.restoreStarts == 1 && !executor.holdsSlot(802) &&
+              executor.holdsSlot(801) && loop.engineHealthy() &&
+              !loop.connectionMustClose() && !loop.idle(),
+          "post-close request reached the model or disturbed held request 801");
+
+  bool destroyWhileRestoringRejected = false;
+  try {
+    loop.destroyEngine();
+  } catch (const std::logic_error &) {
+    destroyWhileRestoringRejected = true;
+  }
+  require(destroyWhileRestoringRejected,
+          "Engine was destroyable while admitted request 801 held its ticket");
+
+  send(protocol::Message{protocol::CancelFrame{801}});
+  require(!loop.tick() && executor.restoreCancellations == 1 &&
+              executor.holdsSlot(801) && !loop.idle(),
+          "cancel released request 801 before restore IO became quiescent");
+  *executor.restoreTicketReady = true;
+  for (uint32_t step = 0; step < 32 && !loop.idle(); ++step)
+    static_cast<void>(loop.tick());
+  require(loop.idle() && !executor.holdsSlot(801),
+          "request 801 did not release its lane at the ticket boundary");
+  const auto terminal = decodeMessages(output);
+  require(std::any_of(terminal.begin(), terminal.end(),
+                      [](const protocol::Message &message) {
+                        const auto *done =
+                            std::get_if<protocol::DoneEvent>(&message);
+                        return done && done->requestId == 801 &&
+                               done->reason == protocol::FinishReason::Cancelled;
+                      }),
+          "cancelled admitted request 801 did not reach its terminal boundary");
+
+  loop.destroyEngine();
+  require(!loop.hasEngine(),
+          "Engine remained published after the admitted ticket drained");
 }
 
 void testControlFailureUsesExecutionBoundary() {
@@ -1352,6 +1648,9 @@ int main() {
     testRequestErrorKeepsFraming();
     testCommandWatchdogAndPendingHealthWake();
     testDuplicateLiveRequestClosesWithoutAmbiguousError();
+    testLifecycleAdmissionGateIsFinalNativeBoundary();
+    testCancelledRestoreRetainsEngineUntilTicketDrains();
+    testAdmissionCloseRejectsLaterRequestWhileAdmittedRestoreDrains();
     testControlFailureUsesExecutionBoundary();
     testEngineFailureNamesItsReason();
     testInvalidPromptTokensStayRequestScoped();

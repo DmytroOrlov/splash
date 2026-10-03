@@ -19,6 +19,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace splash::engine {
 
@@ -96,6 +97,26 @@ struct RuntimeResourcesConfig {
   std::optional<ops::OperatorChoices> operatorChoices;
 };
 
+// Owns the weight-bearing package as one detachable residency stratum. The
+// base RuntimeResources graph may retain references to the backend and state
+// backing after this object is moved to RuntimeBootstrap and destroyed.
+class ModelPackageResidency final {
+public:
+  explicit ModelPackageResidency(model::ModelPackage package)
+      : package_(std::move(package)) {}
+
+  ModelPackageResidency(const ModelPackageResidency &) = delete;
+  ModelPackageResidency &operator=(const ModelPackageResidency &) = delete;
+
+  [[nodiscard]] model::ModelPackage &package() noexcept { return package_; }
+  [[nodiscard]] const model::ModelPackage &package() const noexcept {
+    return package_;
+  }
+
+private:
+  model::ModelPackage package_;
+};
+
 enum class RuntimeResourceFailure {
   Other,
   HostCapacity,
@@ -143,9 +164,9 @@ private:
   std::string budgetDescription_;
 };
 
-// Owns every process-wide native resource exactly once. Destruction order is
-// Cache -> logical KV pool -> state -> KV backing -> governor ->
-// model package -> Metal backend.
+// Owns the retainable process-wide base graph. The loaded ModelPackage is
+// initially assembled here, then moved to RuntimeBootstrap as a separately
+// owned residency stratum before RuntimeModel construction.
 class RuntimeResources final {
 public:
   [[nodiscard]] static std::unique_ptr<RuntimeResources>
@@ -171,6 +192,10 @@ public:
   [[nodiscard]] engine::Cache &cache() noexcept {
     return *cache_;
   }
+  [[nodiscard]] std::unique_ptr<ModelPackageResidency>
+  takeModelPackageResidency() noexcept {
+    return std::move(modelResidency_);
+  }
   [[nodiscard]] const RuntimeCacheIdentity &cacheIdentity() const noexcept {
     return cacheIdentity_;
   }
@@ -180,9 +205,11 @@ public:
     return hostAvailableAtStart_;
   }
 
-  [[nodiscard]] model::RuntimeContext modelContext() noexcept;
+  [[nodiscard]] model::RuntimeContext
+  modelContext(ModelPackageResidency &residency) noexcept;
   [[nodiscard]] ActualMemoryReport
-  actualMemoryReport(const model::ModelMemoryActual &modelMemory,
+  actualMemoryReport(const ModelPackageResidency &residency,
+                     const model::ModelMemoryActual &modelMemory,
                      uint64_t estimatedWarmupPeakBytes) const;
   // Offline tuning tool only, before any request: swaps between the operator
   // defaults and the choices this instance was created with. Arenas were
@@ -195,7 +222,8 @@ public:
 private:
 
   RuntimeResources(std::unique_ptr<metal::MetalBackend> backend,
-                   model::ModelPackage model, ops::ExecutionPlans operators,
+                   std::unique_ptr<ModelPackageResidency> modelResidency,
+                   ops::ExecutionPlans operators,
                    EngineMemoryPlan memoryPlan,
                    model::ModelMemoryPlan modelMemoryPlan,
                    RuntimeCacheIdentity cacheIdentity,
@@ -209,7 +237,7 @@ private:
                    std::optional<uint64_t> hostAvailableAtStart);
 
   std::unique_ptr<metal::MetalBackend> backend_;
-  model::ModelPackage model_;
+  std::unique_ptr<ModelPackageResidency> modelResidency_;
   ops::ExecutionPlans operators_;
   EngineMemoryPlan memoryPlan_;
   model::ModelMemoryPlan modelMemoryPlan_;

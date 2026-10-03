@@ -270,8 +270,9 @@ class Frontend:
     ):
         if not isinstance(preparation_capacity, int) or preparation_capacity <= 0:
             raise ValueError("frontend preparation capacity must be positive")
-        # Announced by the engine in its Ready event. Without it, message
-        # normalization rejects image and PDF input before any decoding.
+        # Static pre-residency capability from the process ReadyEvent. Frontend
+        # construction does not require a resident model or inference_ready.
+        # Without vision, normalization rejects image/PDF input before decode.
         self.vision = vision
         self.latencies = LatencyMetrics()
         self.tokenizer = tokenizer
@@ -295,7 +296,18 @@ class Frontend:
         ):
             raise ValueError("invalid default_reasoning_effort")
         self.default_reasoning_effort = default_reasoning_effort
+        # ReadyEvent supplies the static pre-residency ceiling. NativeBackend's
+        # existing status refresh updates this one mutable serving limit after
+        # lifecycle status validates a resolved context.
+        self.configured_context_ceiling = max_context
         self.max_context = max_context
+        configure_context_ceiling = getattr(
+            type(backend), "configure_context_ceiling", None
+        )
+        if callable(configure_context_ceiling):
+            configure_context_ceiling(
+                backend, max_context, self._update_serving_context
+            )
         self.request_timeout = request_timeout
         self.constraint_factory = constraint_factory
         self.max_image_pixels = max_image_pixels
@@ -308,6 +320,26 @@ class Frontend:
         self.preparation_waiting = 0
         self.response_store = ResponseStore()
         self.thinking_codec = thinking_codec
+
+    def _update_serving_context(self, context):
+        if (
+            context is None
+            or not isinstance(context, int)
+            or isinstance(context, bool)
+            or not 1 <= context <= self.configured_context_ceiling
+        ):
+            self.max_context = None
+            return
+        self.max_context = context
+
+    def _serving_context(self):
+        if self.max_context is None:
+            raise APIError(
+                503,
+                "native inference context is unavailable",
+                "engine_recovering",
+            )
+        return self.max_context
 
     def accepts_model(self, model):
         return isinstance(model, str) and model in self.model_names
@@ -379,9 +411,10 @@ class Frontend:
         check_context=True,
         image_tokens_only=False,
     ):
-        if check_context and tokens >= self.max_context:
+        max_context = self._serving_context() if check_context else None
+        if check_context and tokens >= max_context:
             raise ContextLengthError(
-                tokens, self.max_context - 1, image_tokens_only=image_tokens_only
+                tokens, max_context - 1, image_tokens_only=image_tokens_only
             )
         frame_bytes = (
             wire.REQUEST_FIXED_BYTES
@@ -652,11 +685,12 @@ class Frontend:
             deadline = self.request_deadline(body)
         priority = self._priority(body)
         with self._preparation(deadline):
+            max_context = self._serving_context()
 
             def admit(prompt_tokens):
                 remaining_request_time(deadline)
-                if prompt_tokens > self.max_context:
-                    raise ContextLengthError(prompt_tokens, self.max_context)
+                if prompt_tokens > max_context:
+                    raise ContextLengthError(prompt_tokens, max_context)
 
             try:
                 tokens, slots, prompt = judgments.encode_prompt(
@@ -718,6 +752,7 @@ class Frontend:
         jobs = []
         total_tokens = 0
         with self._preparation(deadline):
+            max_context = self._serving_context()
             for qid, spec in specs:
                 if spec.deterministic:
                     jobs.append((qid, spec, None))
@@ -738,8 +773,8 @@ class Frontend:
 
                 def admit(prompt_tokens, qid=qid, prepared=total_tokens):
                     remaining_request_time(deadline)
-                    if prompt_tokens > self.max_context:
-                        raise ContextLengthError(prompt_tokens, self.max_context)
+                    if prompt_tokens > max_context:
+                        raise ContextLengthError(prompt_tokens, max_context)
                     if prepared + prompt_tokens > judgments.MAX_SYSTEMONE_TOTAL_TOKENS:
                         raise judgments.SystemOneError(
                             [
@@ -1143,9 +1178,10 @@ class Frontend:
         """The output token budget requested under the API's field name,
         within the context window the prompt leaves. A request that names
         none may use all of that window, as in vLLM and SGLang."""
-        if len(prompt_tokens) >= self.max_context:
-            raise ContextLengthError(len(prompt_tokens), self.max_context - 1)
-        remaining = self.max_context - len(prompt_tokens)
+        max_context = self._serving_context()
+        if len(prompt_tokens) >= max_context:
+            raise ContextLengthError(len(prompt_tokens), max_context - 1)
+        remaining = max_context - len(prompt_tokens)
         max_new = remaining if requested is None else requested
         if not isinstance(max_new, int) or isinstance(max_new, bool) or max_new <= 0:
             raise APIError(400, f"{field} must be a positive integer")
@@ -1154,7 +1190,7 @@ class Frontend:
                 raise APIError(
                     400,
                     f"prompt and {field} exceed the context window: "
-                    f"{len(prompt_tokens)} + {max_new} > {self.max_context} tokens",
+                    f"{len(prompt_tokens)} + {max_new} > {max_context} tokens",
                     "context_length_exceeded",
                 )
             # This API treats the output budget as a ceiling. Generate up to

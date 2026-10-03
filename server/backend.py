@@ -4,6 +4,7 @@ import copy
 import queue
 import threading
 import time
+import weakref
 from dataclasses import dataclass, field
 
 from tokenizers.decoders import DecodeStream
@@ -41,6 +42,7 @@ NATIVE_RECOVERY_GRACE_SECONDS = 2.0
 # Control requests use a short live probe and explicitly label stale snapshots.
 STATUS_REFRESH_TIMEOUT_SECONDS = 0.05
 STATUS_BACKGROUND_TIMEOUT_SECONDS = 30.0
+STATUS_LIFECYCLE_FRESHNESS_SECONDS = 0.25
 
 
 REQUEST_PRIORITIES = {"foreground": 0, "normal": 1, "background": 2}
@@ -279,10 +281,13 @@ class NativeBackend:
         self.lock = threading.RLock()
         self.status_snapshot = None
         self.status_snapshot_at = None
+        self.status_snapshot_generation = None
         self.status_refresh_inflight = False
         self.status_refresh_thread = None
         self.status_refresh_failures = 0
         self.status_refresh_after = 0.0
+        self.configured_context_ceiling = None
+        self.context_limit_updated = None
         # Why the engine cannot serve: its failure or the last failed restart.
         self.engine_error = None
         self.terminals = queue.Queue()
@@ -293,6 +298,128 @@ class NativeBackend:
         )
         self.finalizer.start()
         runtime.on_engine_failure = self._engine_failed
+
+    def configure_context_ceiling(self, ceiling, context_limit_updated):
+        """Bind the ReadyEvent ceiling and Frontend's serving-limit owner."""
+        if (
+            not isinstance(ceiling, int)
+            or isinstance(ceiling, bool)
+            or ceiling <= 0
+        ):
+            raise ValueError("configured context ceiling must be a positive integer")
+        if not callable(context_limit_updated):
+            raise TypeError("context limit update callback must be callable")
+        with self.lock:
+            if (
+                self.configured_context_ceiling is not None
+                and self.configured_context_ceiling != ceiling
+            ):
+                raise ValueError("configured context ceiling cannot change")
+            self.configured_context_ceiling = ceiling
+            self.context_limit_updated = weakref.WeakMethod(context_limit_updated)
+            snapshot = copy.deepcopy(self.status_snapshot)
+            if snapshot is not None:
+                _, context, _ = self._context_status(snapshot, ceiling)
+                context_limit_updated(context)
+
+    @staticmethod
+    def _context_status(snapshot, ceiling):
+        """Return (native inference claim, usable serving context, valid data)."""
+        lifecycle = snapshot.get("lifecycle", {})
+        if not isinstance(lifecycle, dict):
+            inference_claim = snapshot.get("inference_ready") is True
+            return inference_claim, None if inference_claim else ceiling, False
+        sources = (snapshot, lifecycle)
+
+        def values(key):
+            return [source[key] for source in sources if key in source]
+
+        def matching_booleans(key):
+            found = values(key)
+            if not found:
+                return None, True
+            if any(type(value) is not bool for value in found):
+                return None, False
+            return found[0], all(value is found[0] for value in found)
+
+        inference_ready, consistent = matching_booleans("inference_ready")
+        if not consistent:
+            inference_claim = any(
+                value is True for value in values("inference_ready")
+            )
+            return inference_claim, None if inference_claim else ceiling, False
+        inference_ready = inference_ready is True
+
+        control_ready, consistent = matching_booleans("control_ready")
+        if not consistent or (inference_ready and control_ready is False):
+            return inference_ready, None if inference_ready else ceiling, False
+        if inference_ready:
+            resident_values = values("model_resident")
+            if resident_values and any(value is not True for value in resident_values):
+                return True, None, False
+
+        configured_values = values("configured_context_ceiling")
+        if inference_ready and not configured_values:
+            return True, None, False
+        for value in configured_values:
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value != ceiling
+            ):
+                return inference_ready, None if inference_ready else ceiling, False
+
+        effective_values = values("effective_context_tokens")
+        effective = None
+        effective_valid = bool(effective_values)
+        for value in effective_values:
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value <= 0
+                or value > ceiling
+            ):
+                effective_valid = False
+            elif effective is None:
+                effective = value
+            elif value != effective:
+                effective_valid = False
+
+        if inference_ready:
+            if not effective_valid:
+                return True, None, False
+            maximum_values = values("maximum_context_tokens")
+            if not maximum_values:
+                return True, None, False
+            for value in maximum_values:
+                if (
+                    not isinstance(value, int)
+                    or isinstance(value, bool)
+                    or value != effective
+                ):
+                    return True, None, False
+            return True, effective, True
+
+        # Before the first resolution, and while inference is unavailable,
+        # the ReadyEvent ceiling remains sufficient for control-plane work.
+        return False, effective if effective_valid else ceiling, True
+
+    def _snapshot_inference_ready(self, snapshot):
+        with self.lock:
+            ceiling = self.configured_context_ceiling
+        if ceiling is None:
+            return snapshot.get("inference_ready") is True
+        inference_ready, _, valid = self._context_status(snapshot, ceiling)
+        return inference_ready and valid
+
+    def _publish_context_limit(self, snapshot):
+        with self.lock:
+            ceiling = self.configured_context_ceiling
+            callback_ref = self.context_limit_updated
+            callback = callback_ref() if callback_ref is not None else None
+        if ceiling is not None and callback is not None:
+            _, context, _ = self._context_status(snapshot, ceiling)
+            callback(context)
 
     def _engine_unavailable(self, event, error):
         # Clients get the reason with every refusal until a status succeeds.
@@ -312,17 +439,71 @@ class NativeBackend:
         with self.lock:
             if self.closing:
                 return False
-        if not self.runtime.ready:
-            self._ensure_background_status_refresh()
-            return False
-        return True
+        snapshot = self._lifecycle_snapshot()
+        return snapshot is not None and self._snapshot_inference_ready(snapshot)
 
     def is_ready(self):
-        if not self.can_submit():
+        with self.lock:
+            if self.closing:
+                return False
+        snapshot = self._lifecycle_snapshot(require_fresh=True)
+        if snapshot is None or not self._snapshot_inference_ready(snapshot):
             return False
-        snapshot = self.status()
         pressure = snapshot.get("memory_pressure")
-        return snapshot.get("ready") is True and pressure in {"normal", "warning"}
+        return pressure in {"normal", "warning"}
+
+    def _lifecycle_snapshot(self, *, require_fresh=False):
+        """Return only a bounded-fresh native lifecycle sample.
+
+        An expired or absent sample closes Python admission while one passive
+        request/response refresh runs. The native RuntimeBootstrap gate remains
+        authoritative if power changes between this sample and submission.
+        """
+        if not self.runtime.ready:
+            self._ensure_background_status_refresh()
+            return None
+        with self.lock:
+            snapshot = copy.deepcopy(self.status_snapshot)
+            captured_at = self.status_snapshot_at
+            if self.status_snapshot_generation != self.runtime.restart_count:
+                snapshot = None
+                captured_at = None
+            fresh = (
+                snapshot is not None
+                and captured_at is not None
+                and time.monotonic() - captured_at
+                <= STATUS_LIFECYCLE_FRESHNESS_SECONDS
+            )
+        if snapshot is None:
+            # Acquire the first lifecycle value with the existing short probe;
+            # later expired values refresh asynchronously and fail closed.
+            try:
+                snapshot = self.status(timeout=STATUS_REFRESH_TIMEOUT_SECONDS)
+            except Exception:
+                return None
+            with self.lock:
+                captured_at = self.status_snapshot_at
+                cached_generation = self.status_snapshot_generation
+                current_generation = self.runtime.restart_count
+            if cached_generation != current_generation:
+                self._ensure_background_status_refresh()
+                return None
+            fresh = captured_at is not None
+        if not fresh:
+            self._ensure_background_status_refresh()
+        if snapshot is None:
+            return None
+        if snapshot is not None and not self._snapshot_inference_ready(snapshot):
+            # Poll a suspended/recovering generation at the same bounded rate
+            # so AC recovery is discovered without /status traffic.
+            self._ensure_background_status_refresh()
+        transport = snapshot.get("transport")
+        stale = not fresh or (
+            isinstance(transport, dict) and transport.get("status_stale")
+        )
+        if stale and require_fresh:
+            return None
+        return snapshot
 
     @staticmethod
     def _decode_status_event(event):
@@ -335,18 +516,52 @@ class NativeBackend:
             raise ValueError("native status does not match the current schema")
         return snapshot
 
-    def _cache_status(self, snapshot):
+    def _cache_status(self, snapshot, generation=None):
         with self.lock:
             if self.closing:
-                return
+                return copy.deepcopy(snapshot)
+            current_generation = self.runtime.restart_count
+            if generation is None:
+                generation = current_generation
+            if generation != current_generation:
+                return None
+            current = self.status_snapshot
+            same_generation = self.status_snapshot_generation == generation
+            incoming_lifecycle = snapshot.get("lifecycle")
+            current_lifecycle = (
+                current.get("lifecycle") if current and same_generation else None
+            )
+            incoming_revision = (
+                incoming_lifecycle.get("revision")
+                if isinstance(incoming_lifecycle, dict)
+                else None
+            )
+            current_revision = (
+                current_lifecycle.get("revision")
+                if isinstance(current_lifecycle, dict)
+                else None
+            )
+            if (
+                isinstance(incoming_revision, int)
+                and not isinstance(incoming_revision, bool)
+                and isinstance(current_revision, int)
+                and not isinstance(current_revision, bool)
+                and incoming_revision < current_revision
+            ):
+                return copy.deepcopy(current)
             self.status_snapshot = copy.deepcopy(snapshot)
             self.status_snapshot_at = time.monotonic()
+            self.status_snapshot_generation = generation
             self.status_refresh_failures = 0
-            self.status_refresh_after = 0.0
+            self.status_refresh_after = (
+                self.status_snapshot_at + STATUS_LIFECYCLE_FRESHNESS_SECONDS
+            )
             restarted = self.engine_error is not None
             self.engine_error = None
+            self._publish_context_limit(snapshot)
         if restarted:
             print_status("Engine restarted")
+        return copy.deepcopy(snapshot)
 
     def _background_status_refresh(self):
         try:
@@ -356,8 +571,9 @@ class NativeBackend:
                 except Exception as error:
                     self._engine_unavailable("Engine restart failed", error)
                     raise
-            event = self.runtime.status(timeout=STATUS_BACKGROUND_TIMEOUT_SECONDS)
-            self._cache_status(self._decode_status_event(event))
+            generation = self.runtime.restart_count
+            event = self.runtime.status(timeout=STATUS_REFRESH_TIMEOUT_SECONDS)
+            self._cache_status(self._decode_status_event(event), generation)
         except Exception:
             with self.lock:
                 self.status_refresh_failures = min(5, self.status_refresh_failures + 1)
@@ -374,7 +590,10 @@ class NativeBackend:
             if (
                 self.closing
                 or self.status_refresh_inflight
-                or time.monotonic() < self.status_refresh_after
+                or (
+                    (self.runtime.ready or self.status_refresh_failures > 0)
+                    and time.monotonic() < self.status_refresh_after
+                )
             ):
                 return
             thread = threading.Thread(
@@ -401,6 +620,7 @@ class NativeBackend:
         try:
             if refresh_pending:
                 raise TimeoutError("native status refresh is pending")
+            generation = self.runtime.restart_count
             event = self.runtime.status(timeout=timeout)
             snapshot = self._decode_status_event(event)
         except Exception as error:
@@ -408,6 +628,9 @@ class NativeBackend:
             with self.lock:
                 snapshot = copy.deepcopy(self.status_snapshot)
                 captured_at = self.status_snapshot_at
+                if self.status_snapshot_generation != self.runtime.restart_count:
+                    snapshot = None
+                    captured_at = None
             if snapshot is None or captured_at is None:
                 snapshot = {
                     "schema_version": wire.STATUS_SCHEMA_VERSION,
@@ -421,7 +644,18 @@ class NativeBackend:
             if not self.runtime.ready or isinstance(error, TimeoutError):
                 self._ensure_background_status_refresh()
         else:
-            self._cache_status(snapshot)
+            snapshot = self._cache_status(snapshot, generation)
+            if snapshot is None:
+                with self.lock:
+                    if self.status_snapshot_generation == self.runtime.restart_count:
+                        snapshot = copy.deepcopy(self.status_snapshot)
+                    else:
+                        snapshot = None
+                if snapshot is None:
+                    snapshot = {
+                        "schema_version": wire.STATUS_SCHEMA_VERSION,
+                        "ready": False,
+                    }
         with self.lock:
             transport_ready = not self.closing and self.runtime.ready
             engine_error = self.engine_error
@@ -445,6 +679,7 @@ class NativeBackend:
             or snapshot.get("memory_pressure") == "critical"
             or not isinstance(metal, dict)
             or metal.get("healthy") is not True
+            or not self._snapshot_inference_ready(snapshot)
         ):
             snapshot["ready"] = False
         return snapshot

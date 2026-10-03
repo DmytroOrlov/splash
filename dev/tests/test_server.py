@@ -384,6 +384,8 @@ class FakeRuntime:
                 {
                     "schema_version": native_wire.STATUS_SCHEMA_VERSION,
                     "ready": True,
+                    "control_ready": True,
+                    "inference_ready": True,
                     "memory_pressure": "normal",
                     "metal": {"healthy": True},
                     "memory": {
@@ -611,6 +613,24 @@ class Harness:
         **frontend_options,
     ):
         self.tokenizer = tokenizer or FakeTokenizer()
+        status_event = getattr(runtime, "status_event", None)
+        if status_event is not None:
+            status_snapshot = json.loads(status_event.json)
+            if (
+                status_snapshot.get("inference_ready") is True
+                and "effective_context_tokens" not in status_snapshot
+            ):
+                # Ordinary inference-ready fake runtimes resolve at the test
+                # harness ceiling unless a focused test supplies lifecycle
+                # context explicitly.
+                status_snapshot["configured_context_ceiling"] = max_context
+                status_snapshot["effective_context_tokens"] = max_context
+                status_snapshot["maximum_context_tokens"] = max_context
+                runtime.status_event = native_wire.StatusJsonEvent(
+                    status_event.correlation_id,
+                    status_event.schema_version,
+                    json.dumps(status_snapshot, separators=(",", ":")).encode(),
+                )
         runtime.pending_limit = queue_size
         self.backend = backend_api.NativeBackend(
             runtime, self.tokenizer, request_logger=request_logger
@@ -1118,6 +1138,17 @@ class ServerTest(unittest.TestCase):
                 {
                     "schema_version": native_wire.STATUS_SCHEMA_VERSION,
                     "ready": True,
+                    "control_ready": True,
+                    "inference_ready": True,
+                    "maximum_context_tokens": 128,
+                    "configured_context_ceiling": 128,
+                    "effective_context_tokens": 128,
+                    "lifecycle": {
+                        "revision": 0,
+                        "model_resident": True,
+                        "control_ready": True,
+                        "inference_ready": True,
+                    },
                     "memory_pressure": "normal",
                     "metal": {"healthy": True},
                     "requests": {"submitted": 7, "completed": 5},
@@ -3000,6 +3031,50 @@ class ServerTest(unittest.TestCase):
         status, _, payload = harness.request("GET", "/status")
         self.assertFalse(json.loads(payload)["ready"])
 
+    def test_model_less_control_ready_frontend_uses_ready_event_ceiling(self):
+        runtime = FakeRuntime()
+        snapshot = json.loads(runtime.status_event.json)
+        snapshot.update(
+            {
+                "ready": False,
+                "control_ready": True,
+                "inference_ready": False,
+                "configured_context_ceiling": 128,
+                "effective_context_tokens": None,
+                "lifecycle": {
+                    "control_ready": True,
+                    "inference_ready": False,
+                    "model_resident": False,
+                },
+            }
+        )
+        runtime.status_event = native_wire.StatusJsonEvent(
+            1,
+            native_wire.STATUS_SCHEMA_VERSION,
+            json.dumps(snapshot, separators=(",", ":")).encode(),
+        )
+        harness = self.harness(runtime, max_context=128)
+
+        self.assertEqual(harness.app.max_context, 128)
+        status, _, payload = harness.request("GET", "/status")
+        self.assertEqual(status, 200)
+        state = json.loads(payload)
+        self.assertTrue(state["control_ready"])
+        self.assertFalse(state["inference_ready"])
+        self.assertIsNone(state["effective_context_tokens"])
+        self.assertFalse(state["ready"])
+
+        status, _, payload = harness.request("GET", "/ready")
+        self.assertEqual(
+            (status, json.loads(payload)), (503, {"status": "unavailable"})
+        )
+        status, _, payload = harness.request("GET", "/v1/models")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(payload)["data"][0]["max_model_len"], 128)
+        self.assertTrue(runtime.ready)
+        self.assertEqual(runtime.restart_count, 0)
+        self.assertEqual(runtime.requests, [])
+
     def test_status_identifies_the_http_instance_independently_of_readiness(self):
         first = self.harness(FakeRuntime())
         second = self.harness(FakeRuntime())
@@ -3447,6 +3522,18 @@ class ServerTest(unittest.TestCase):
         for line in lines:
             self.assertRegex(line, r"^\d{2}:\d{2}:\d{2} worker \d line \d+$")
 
+    def test_pause_on_battery_help(self):
+        with mock.patch("sys.stdout", io.StringIO()) as output:
+            with self.assertRaises(SystemExit) as exit_info:
+                api.parse_args(["--help"])
+        self.assertEqual(exit_info.exception.code, 0)
+        help_text = " ".join(output.getvalue().split())
+        self.assertIn("--pause-on-battery", help_text)
+        self.assertIn(
+            "release model residency while on battery and recover on AC power",
+            help_text,
+        )
+
     def test_server_requires_explicit_model_and_paths(self):
         model = "community/custom-splash"
         package = api.ROOT / "install/models" / model
@@ -3479,6 +3566,8 @@ class ServerTest(unittest.TestCase):
         self.assertIsNone(args.max_context)
         self.assertIsNone(args.max_memory)
         self.assertEqual(args.max_cache_disk, 0)
+        self.assertFalse(args.pause_on_battery)
+        self.assertNotIn("--pause-on-battery", api._native_command(args))
         disk_args = api.parse_args([*required, "--max-cache-disk", "5G"])
         self.assertEqual(disk_args.max_cache_disk, 5 * 1024**3)
         self.assertEqual(api._native_command(disk_args)[-1], str(5 * 1024**3))
@@ -3511,6 +3600,33 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(
             api._native_command(share_args)[-3:],
             [str(5 * 1024**3), "--decode-share", "0.0"],
+        )
+        battery_args = api.parse_args(
+            [
+                *required,
+                "--max-cache-disk",
+                "5G",
+                "--kv-format",
+                "bf16",
+                "--decode-share",
+                "0",
+                "--pause-on-battery",
+            ]
+        )
+        self.assertTrue(battery_args.pause_on_battery)
+        self.assertEqual(
+            api._native_command(battery_args)[-6:],
+            [
+                str(5 * 1024**3),
+                "--kv-format",
+                "bf16",
+                "--decode-share",
+                "0.0",
+                "--pause-on-battery",
+            ],
+        )
+        self.assertEqual(
+            api._native_command(battery_args).count("--pause-on-battery"), 1
         )
         self.assertEqual(
             api.parse_args([*required, "--max-context", "262144"]).max_context, 262144
@@ -3704,6 +3820,12 @@ class ServerTest(unittest.TestCase):
                     131072,
                     features | (native_wire.ReadyFeature.VISION if vision else 0),
                 )
+                runtime.status.return_value = native_wire.StatusJsonEvent(
+                    1,
+                    native_wire.STATUS_SCHEMA_VERSION,
+                    b'{"schema_version":5,"ready":false,'
+                    b'"control_ready":true,"inference_ready":false}',
+                )
                 with (
                     mock.patch.object(api, "parse_args", return_value=args),
                     mock.patch.object(api, "load_thinking_key", return_value=None),
@@ -3730,6 +3852,12 @@ class ServerTest(unittest.TestCase):
                 ):
                     api.main()
                 self.assertIs(app_type.call_args.kwargs["vision"], vision)
+                self.assertEqual(app_type.call_args.args[3], 131072)
+                # Startup consumes only static ReadyEvent configuration; it
+                # neither waits for inference readiness nor polls status.
+                # This is the one handshake for this native process.
+                runtime.wait_ready.assert_called_once_with()
+                runtime.status.assert_not_called()
                 self.assertIs(
                     app_type.call_args.kwargs["chat_templates"],
                     templates_type.return_value,
@@ -6525,32 +6653,33 @@ class ServerTest(unittest.TestCase):
 
         # The window, not a server default, bounds a request that names no
         # limit; one that names a limit inside the window gets it as is.
-        harness.app.max_context = 262144
+        large_harness = self.harness(FakeRuntime(), max_context=262144)
         for path, body, expected in (
             ("/v1/chat/completions", self.body(), 262142),
             ("/v1/responses", self.responses_body(), 262142),
             ("/v1/chat/completions", self.body(max_tokens=131072), 131072),
         ):
             with self.subTest(path=path, body=body):
-                status, _, payload = harness.request("POST", path, body)
+                status, _, payload = large_harness.request("POST", path, body)
                 self.assertEqual(status, 200, payload)
                 self.assertEqual(
-                    runtime.requests[-1].logical_max_output_tokens, expected
+                    large_harness.backend.runtime.requests[-1].logical_max_output_tokens,
+                    expected,
                 )
 
-        harness.app.max_context = 100000
+        measured_harness = self.harness(FakeRuntime(), max_context=100000)
         for length, expected in ((90000, 10000), (99999, 1)):
             with mock.patch.object(
                 FakeTokenizer, "__call__", return_value={"input_ids": [101] * length}
             ):
-                job, *_ = harness.app.prepare(self.body())
+                job, *_ = measured_harness.app.prepare(self.body())
             self.assertEqual(job.max_new_tokens, expected)
             self.assertEqual(len(job.prompt_tokens), length)
         with mock.patch.object(
             FakeTokenizer, "__call__", return_value={"input_ids": [101] * 100000}
         ):
             with self.assertRaisesRegex(api.APIError, "prompt exceeds") as caught:
-                harness.app.prepare(self.body())
+                measured_harness.app.prepare(self.body())
             self.assertEqual(caught.exception.code, "context_length_exceeded")
 
     def test_preparation_consumes_original_deadline_and_releases_slots(self):
@@ -7458,6 +7587,8 @@ class ServerTest(unittest.TestCase):
                         {
                             "schema_version": native_wire.STATUS_SCHEMA_VERSION,
                             "ready": True,
+                            "control_ready": True,
+                            "inference_ready": True,
                             "memory_pressure": "critical",
                             "metal": {"healthy": True},
                         },

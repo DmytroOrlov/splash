@@ -699,12 +699,11 @@ bool Engine::pollRestores(double now) {
       completeAdmission(active, restore.lookup, std::move(restore.draft));
       continue;
     }
-    // The prefix could not be brought back. What failed is gone from the
-    // cache, so the next attempt matches the prefix that remains.
-    if (!stateRestored) {
-      cache_.discardState(restore.lookup.state->kvBlock(),
-                          restore.lookup.state->state().get());
-    }
+    // A destination restore failure does not prove the immutable source is
+    // bad. Keep it available for later requests, while this request bypasses
+    // the same state on its cold retry.
+    if (!stateRestored)
+      active.skipCache = true;
     restore.ticket.reset();
     restore.lookup = {};
     discardPendingStateBoundaries(active);

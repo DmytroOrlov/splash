@@ -2,6 +2,7 @@
 #include "engine/MemoryPlan.hpp"
 #include "engine/FdTransport.hpp"
 #include "engine/Bootstrap.hpp"
+#include "engine/PowerSource.hpp"
 #include "engine/Status.hpp"
 #include "model/Model.hpp"
 #include "model/ModelDescriptor.hpp"
@@ -19,8 +20,10 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <limits.h>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -54,6 +57,7 @@ struct NativeArguments final {
   uint64_t maxCacheDiskBytes = 0;
   kv::Format kvFormat = kv::Format::Int8;
   double decodeShare = engine::EngineConfig{}.decodeShare;
+  bool pauseOnBattery = false;
 };
 
 // One observer spans bootstrap and serving. The dispatch queue only records
@@ -120,12 +124,38 @@ private:
   dispatch_source_t timer_;
 };
 
+class PowerObservationTeardown final {
+public:
+  PowerObservationTeardown(
+      std::unique_ptr<engine::PowerSource> &powerSource,
+      std::unique_ptr<engine::RuntimeBootstrap> &bootstrap) noexcept
+      : powerSource_(powerSource), bootstrap_(bootstrap) {}
+  PowerObservationTeardown(const PowerObservationTeardown &) = delete;
+  PowerObservationTeardown &operator=(const PowerObservationTeardown &) =
+      delete;
+  ~PowerObservationTeardown() {
+    if (powerSource_)
+      powerSource_->stop();
+    if (bootstrap_) {
+      try {
+        static_cast<void>(bootstrap_->shutdownLifecycle());
+      } catch (...) {
+      }
+    }
+  }
+
+private:
+  std::unique_ptr<engine::PowerSource> &powerSource_;
+  std::unique_ptr<engine::RuntimeBootstrap> &bootstrap_;
+};
+
 void printUsage(std::string_view executable) {
   writeStderrLine(
       "usage: " + std::string(executable) +
       " serve-native TARGET_DIRECTORY DRAFT_DIRECTORY"
       " MAX_CONTEXT|auto MAX_MEMORY_BYTES|auto [MAX_CACHE_DISK_BYTES]"
-      " [--kv-format int8|bf16] [--decode-share SHARE]");
+      " [--kv-format int8|bf16] [--decode-share SHARE]"
+      " [--pause-on-battery]");
 }
 
 template <typename T>
@@ -193,20 +223,21 @@ std::filesystem::path requireModelRoot(std::string_view targetArgument,
   return target.parent_path();
 }
 
-NativeArguments parseArguments(int argc, char **argv) {
-  if (argc < 6 || std::string_view(argv[1]) != "serve-native") {
-    throw UsageError("expected the serve-native command");
-  }
-  NativeArguments result;
-  int next = 6;
+void parseNativeOptions(NativeArguments &result, int argc, char **argv,
+                        int next) {
   if (next < argc && !std::string_view(argv[next]).starts_with("--")) {
     const std::string_view quota(argv[next++]);
     if (quota != "0" && !parsePositive(quota, result.maxCacheDiskBytes))
       throw UsageError("MAX_CACHE_DISK_BYTES must be a nonnegative integer");
   }
   // Options follow as --name value pairs; a missing value fails its check.
-  for (; next < argc; next += 2) {
+  for (; next < argc;) {
     const std::string_view option(argv[next]);
+    if (option == "--pause-on-battery") {
+      result.pauseOnBattery = true;
+      ++next;
+      continue;
+    }
     const std::string_view value(next + 1 < argc ? argv[next + 1] : "");
     if (option == "--kv-format") {
       if (value != "int8" && value != "bf16")
@@ -217,12 +248,63 @@ NativeArguments parseArguments(int argc, char **argv) {
     } else {
       throw UsageError("unexpected argument " + std::string(option));
     }
+    next += 2;
   }
+}
+
+NativeArguments parseArguments(int argc, char **argv) {
+  if (argc < 6 || std::string_view(argv[1]) != "serve-native") {
+    throw UsageError("expected the serve-native command");
+  }
+  NativeArguments result;
+  parseNativeOptions(result, argc, argv, 6);
   result.modelRoot = requireModelRoot(argv[2], argv[3]);
   result.model = model::inspectModelPackage(result.modelRoot);
   result.maxContext = parseMaxContext(argv[4], result.model.capabilities);
   result.maxMemoryBytes = parseMaxMemory(argv[5]);
   return result;
+}
+
+struct BatteryPolicySetup final {
+  std::unique_ptr<engine::PowerSource> powerSource;
+  std::shared_ptr<engine::PendingPowerObservation> pendingPower;
+  std::optional<engine::LifecyclePower> initialPower;
+};
+
+using PowerSourceFactory =
+    std::function<std::unique_ptr<engine::PowerSource>()>;
+
+BatteryPolicySetup setupBatteryPolicy(
+    bool enabled, const PowerSourceFactory &makePowerSource,
+    const std::function<void()> &wake) {
+  BatteryPolicySetup setup;
+  if (!enabled)
+    return setup;
+
+  setup.powerSource = makePowerSource();
+  setup.pendingPower =
+      std::make_shared<engine::PendingPowerObservation>(wake);
+  setup.powerSource->start([pending = setup.pendingPower](
+                               engine::LifecyclePower observation) {
+    pending->record(observation);
+  });
+  // Register notifications first, then take a truthful synchronous sample.
+  // Both this value and later callbacks use the same latest-value handoff.
+  setup.pendingPower->recordInitial(setup.powerSource->current());
+  // Consume the authoritative initial observation before choosing whether to
+  // enter expensive inference bootstrap. A newer observer callback cannot be
+  // overwritten by recordInitial and remains queued for the native safe point.
+  setup.initialPower = setup.pendingPower->take().value_or(
+      engine::LifecyclePower::Unknown);
+  return setup;
+}
+
+bool shouldStartModelLess(
+    bool pauseOnBattery,
+    std::optional<engine::LifecyclePower> initialPower) noexcept {
+  return pauseOnBattery &&
+         initialPower.value_or(engine::LifecyclePower::Unknown) !=
+             engine::LifecyclePower::AC;
 }
 
 std::filesystem::path executablePath() {
@@ -268,6 +350,10 @@ bootstrapConfig(const NativeArguments &arguments) {
   config.nativeLoop.engine.maxContext = arguments.maxContext;
   config.nativeLoop.engine.decodeShare = arguments.decodeShare;
   config.nativeLoop.engineInstanceId = engineInstanceId();
+  config.nativeLoop.configuredContextCeiling =
+      arguments.maxContext ? arguments.maxContext
+                           : capabilities.maximumContextTokens;
+  config.nativeLoop.visionSupported = arguments.model.hasVision();
   config.nativeLoop.maskWordsPerToken = maskWordsPerToken;
   config.protocolLimits.maxTokenBatch =
       model::ExecutionLimits::maximumStepTokens;
@@ -325,17 +411,52 @@ int runNative(const NativeArguments &arguments) {
   MemoryPressureMonitor pressureMonitor(transport.controlNotifier());
   engine::RuntimeMetrics metrics;
   engine::RuntimeBootstrap *published = nullptr;
+  std::unique_ptr<engine::RuntimeBootstrap> bootstrap;
+  BatteryPolicySetup batteryPolicy = setupBatteryPolicy(
+      arguments.pauseOnBattery,
+      [] { return engine::makeSystemPowerSource(); },
+      transport.controlNotifier());
+  auto &powerSource = batteryPolicy.powerSource;
+  auto &pendingPower = batteryPolicy.pendingPower;
+  PowerObservationTeardown observerTeardown(powerSource, bootstrap);
   auto statusProvider = [&]() -> std::string {
+    if (!published) {
+      engine::ResourceSnapshot detached;
+      detached.lifecycle.configuredContextCeiling =
+          arguments.maxContext ? arguments.maxContext
+                               : arguments.model.capabilities.maximumContextTokens;
+      detached.lifecycle.controlReady = published &&
+                                        published->nativeLoop().ready();
+      detached.lifecycle.state = engine::LifecycleState::RecoveryFailed;
+      return engine::runtimeStatusJson(
+          detached, metrics.snapshot(), pressureMonitor.pressure(), {},
+          published ? published->nativeLoop().resourceWaitSnapshot()
+                    : engine::ResourceWaitSnapshot{});
+    }
+    if (!published->hasResources()) {
+      return engine::runtimeStatusJson(
+          published->detachedResourceSnapshot(), metrics.snapshot(),
+          pressureMonitor.pressure(), {},
+          published->nativeLoop().resourceWaitSnapshot());
+    }
+    if (!published->hasModelRuntime()) {
+      return engine::runtimeStatusJson(
+          published->detachedResourceSnapshot(), metrics.snapshot(),
+          pressureMonitor.pressure(), {},
+          published->nativeLoop().resourceWaitSnapshot());
+    }
     engine::RuntimeResources &resources = published->resources();
     // Status can arrive during GPU work; allocation/command boundaries and
     // the safe-point pressure monitor already refresh the cached sample.
     metal::MetalBackend &backend = resources.backend();
     bool healthy = backend.healthy();
     return engine::runtimeStatusJson(
-        resources.memoryPlan(), published->nativeLoop().snapshot(),
+        published->lifecycleStatus(), resources.memoryPlan(),
+        published->nativeLoop().snapshot(),
         backend.memoryStats(), published->report().warmup,
         published->report().memoryAudit, metrics.snapshot(),
-        published->modelRuntime().telemetry(), resources.cacheIdentity(),
+        published->modelRuntime().telemetry(),
+        resources.cacheIdentity(),
         resources.memoryGovernor().snapshot(), healthy,
         healthy ? std::string{} : backend.unhealthyReason(),
         published->nativeLoop().resourceWaitSnapshot());
@@ -343,17 +464,25 @@ int runNative(const NativeArguments &arguments) {
 
   engine::StartupRetryWindow recovery(kStartupMemoryRecoveryTimeout);
   bool reportedRecoveryWait = false;
-  std::unique_ptr<engine::RuntimeBootstrap> bootstrap;
   while (!bootstrap) {
     if (transport.shutdownRequested())
       return static_cast<int>(engine::NativeProcessExit::CleanEof);
     engine::RuntimeBootstrapConfig config = bootstrapConfig(arguments);
+    config.lifecycleWake = transport.controlNotifier();
     config.resources.memoryPressure = [&] { return pressureMonitor.pressure(); };
     config.resources.cancelled = [&] { return transport.shutdownRequested(); };
     config.nativeLoop.metrics = &metrics;
     try {
-      bootstrap = engine::RuntimeBootstrap::start(
-          std::move(config), transport.outputSink(), statusProvider);
+      if (!shouldStartModelLess(arguments.pauseOnBattery,
+                                batteryPolicy.initialPower)) {
+        bootstrap = engine::RuntimeBootstrap::start(
+            std::move(config), transport.outputSink(), statusProvider);
+      } else {
+        // Battery and Unknown both fail closed before any RuntimeResources,
+        // ModelPackage, RuntimeModel, or Engine construction.
+        bootstrap = engine::RuntimeBootstrap::startModelLess(
+            std::move(config), transport.outputSink(), statusProvider);
+      }
     } catch (const engine::RuntimeBootstrapError &error) {
       if (transport.shutdownRequested())
         return static_cast<int>(engine::NativeProcessExit::CleanEof);
@@ -379,11 +508,30 @@ int runNative(const NativeArguments &arguments) {
   if (transport.shutdownRequested())
     return static_cast<int>(engine::NativeProcessExit::CleanEof);
   published = bootstrap.get();
+  if (batteryPolicy.initialPower)
+    static_cast<void>(published->observePower(*batteryPolicy.initialPower));
 
-  transport.setControlHandler([&pressureMonitor, published,
+  transport.setControlHandler([&pressureMonitor, pendingPower, published,
                                memoryReporter = engine::MemoryStatusReporter{},
                                pressurePolicy =
                                    engine::MemoryPressurePolicy{}]() mutable {
+    if (pendingPower) {
+      if (const auto observation = pendingPower->take())
+        static_cast<void>(published->observePower(*observation));
+      static_cast<void>(published->beginSuspend());
+      const engine::SuspendProgress suspendProgress =
+          published->advanceSuspend();
+      const bool suspendNeedsAnotherSafePoint =
+          suspendProgress == engine::SuspendProgress::WaitingForDrain;
+      if (suspendNeedsAnotherSafePoint)
+        return true;
+      const engine::RecoveryProgress recoveryProgress =
+          published->advanceRecovery();
+      if (recoveryProgress == engine::RecoveryProgress::Building)
+        return false;
+    }
+    if (!published->hasResources())
+      return false;
     engine::MemoryPressure pressure = pressureMonitor.pressure();
     engine::RuntimeResources &resources = published->resources();
     engine::MemoryGovernor &governor = resources.memoryGovernor();
@@ -415,6 +563,15 @@ int runNative(const NativeArguments &arguments) {
     return published->nativeLoop().reclaimDeferred() ||
            reclaim.outcome == engine::ReclaimOutcome::Pending;
   });
+  // Resolve the synchronous sample on the native owner thread before the
+  // transport accepts its first queued request. Later changes use the same
+  // control callback and safe-point operations below.
+  if (pendingPower) {
+    if (const auto observation = pendingPower->take())
+      static_cast<void>(published->observePower(*observation));
+    static_cast<void>(published->beginSuspend());
+    static_cast<void>(published->advanceSuspend());
+  }
   const auto exit = transport.run(bootstrap->nativeLoop());
   switch (exit) {
   case engine::NativeProcessExit::CleanEof:
@@ -455,6 +612,7 @@ int checkDevice() {
 } // namespace
 } // namespace splash
 
+#ifndef SPLASH_NATIVE_MAIN_TEST
 int main(int argc, char **argv) {
   @autoreleasepool {
     try {
@@ -482,3 +640,4 @@ int main(int argc, char **argv) {
     }
   }
 }
+#endif

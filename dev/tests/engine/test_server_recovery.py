@@ -20,6 +20,9 @@ from server import runtime as engine_runtime
 from server import server as api
 
 
+_MISSING = object()
+
+
 class RecoveringRuntime(FakeRuntime):
     def __init__(self, failures=()):
         super().__init__()
@@ -47,6 +50,76 @@ class RecoveringRuntime(FakeRuntime):
     def close(self):
         self.startup_release.set()
         super().close()
+
+
+class LifecycleRuntime(FakeRuntime):
+    """Control-ready process with replaceable detached lifecycle snapshots."""
+
+    def __init__(self, *, inference_ready=False, effective_context_tokens=None):
+        super().__init__()
+        self.generation = object()
+        self.process = object()
+        self.readiness = SimpleNamespace(max_context_tokens=128)
+        self.ready_event_count = 1
+        self.wait_ready_calls = 0
+        self.status_calls = 0
+        self.publish_status(
+            inference_ready=inference_ready,
+            effective_context_tokens=effective_context_tokens,
+        )
+
+    def publish_status(
+        self,
+        *,
+        inference_ready,
+        effective_context_tokens=_MISSING,
+        lifecycle_inference_ready=_MISSING,
+        configured_context_ceiling=128,
+        maximum_context_tokens=_MISSING,
+        lifecycle_revision=0,
+    ):
+        snapshot = {
+            "schema_version": wire.STATUS_SCHEMA_VERSION,
+            "ready": inference_ready,
+            "control_ready": True,
+            "inference_ready": inference_ready,
+            "memory_pressure": "normal",
+            "metal": {"healthy": True},
+            "configured_context_ceiling": configured_context_ceiling,
+            "lifecycle": {
+                "state": "ready" if inference_ready else "suspended",
+                "revision": lifecycle_revision,
+                "model_resident": inference_ready,
+                "control_ready": True,
+                "inference_ready": (
+                    inference_ready
+                    if lifecycle_inference_ready is _MISSING
+                    else lifecycle_inference_ready
+                ),
+            },
+        }
+        if effective_context_tokens is not _MISSING:
+            snapshot["effective_context_tokens"] = effective_context_tokens
+        if maximum_context_tokens is _MISSING:
+            maximum_context_tokens = (
+                effective_context_tokens if inference_ready else 128
+            )
+        if maximum_context_tokens is not _MISSING:
+            snapshot["maximum_context_tokens"] = maximum_context_tokens
+        self.status_event = wire.StatusJsonEvent(
+            1,
+            wire.STATUS_SCHEMA_VERSION,
+            json.dumps(snapshot, separators=(",", ":")).encode(),
+        )
+
+    def wait_ready(self):
+        self.wait_ready_calls += 1
+        self.ready = True
+        return True
+
+    def status(self, timeout=5.0):
+        self.status_calls += 1
+        return super().status(timeout)
 
 
 class ServerRecoveryTests(unittest.TestCase):
@@ -77,6 +150,582 @@ class ServerRecoveryTests(unittest.TestCase):
             "max_tokens": 4,
             "reasoning_effort": "none",
         }
+
+    def test_inference_readiness_controls_admission_independent_of_process_ready(self):
+        runtime = FakeRuntime()
+        backend = backend_api.NativeBackend(runtime, NativeTokenizer())
+        self.addCleanup(backend.close)
+
+        for inference_ready in (False, True, False):
+            with self.subTest(inference_ready=inference_ready):
+                snapshot = json.loads(runtime.status_event.json)
+                snapshot["ready"] = inference_ready
+                snapshot["inference_ready"] = inference_ready
+                snapshot["control_ready"] = True
+                runtime.status_event = wire.StatusJsonEvent(
+                    runtime.status_event.correlation_id,
+                    wire.STATUS_SCHEMA_VERSION,
+                    json.dumps(snapshot).encode(),
+                )
+                backend.status()
+                self.assertTrue(runtime.ready)
+                self.assertEqual(backend.can_submit(), inference_ready)
+                self.assertEqual(backend.is_ready(), inference_ready)
+                self.assertTrue(runtime.ready)
+                self.assertEqual(runtime.restart_count, 0)
+                self.assertEqual(runtime.requests, [])
+
+        snapshot = json.loads(runtime.status_event.json)
+        snapshot["inference_ready"] = True
+        snapshot["ready"] = True
+        snapshot["memory_pressure"] = "critical"
+        runtime.status_event = wire.StatusJsonEvent(
+            runtime.status_event.correlation_id,
+            wire.STATUS_SCHEMA_VERSION,
+            json.dumps(snapshot).encode(),
+        )
+        backend.status()
+        self.assertTrue(backend.can_submit())
+        self.assertFalse(backend.is_ready())
+
+    def test_suspended_status_is_passively_refreshed_to_ac_without_status_polling(self):
+        class CountingRuntime(FakeRuntime):
+            def __init__(self):
+                super().__init__()
+                self.status_calls = 0
+
+            def status(self, timeout=5.0):
+                self.status_calls += 1
+                return super().status(timeout)
+
+        runtime = CountingRuntime()
+        initial = json.loads(runtime.status_event.json)
+        initial["ready"] = False
+        initial["inference_ready"] = False
+        initial["memory_pressure"] = "normal"
+        runtime.status_event = wire.StatusJsonEvent(
+            1, wire.STATUS_SCHEMA_VERSION, json.dumps(initial).encode()
+        )
+        backend = backend_api.NativeBackend(runtime, NativeTokenizer())
+        self.addCleanup(backend.close)
+        clock = [100.0]
+        with mock.patch.object(
+            backend_api, "time", SimpleNamespace(monotonic=lambda: clock[0])
+        ):
+            backend.status()  # one initial sample; later checks use the cache
+            self.assertFalse(backend.can_submit())
+            for _ in range(10):
+                self.assertFalse(backend.can_submit())
+            self.assertEqual(runtime.status_calls, 1)
+
+            recovered = json.loads(runtime.status_event.json)
+            recovered["ready"] = True
+            recovered["inference_ready"] = True
+            runtime.status_event = wire.StatusJsonEvent(
+                2, wire.STATUS_SCHEMA_VERSION, json.dumps(recovered).encode()
+            )
+            clock[0] += backend_api.STATUS_LIFECYCLE_FRESHNESS_SECONDS
+            self.assertFalse(backend.is_ready())
+            self.wait_until(lambda: not backend.status_refresh_inflight)
+            self.assertTrue(backend.is_ready())
+            self.assertEqual(runtime.status_calls, 2)
+            self.assertTrue(runtime.ready)
+            self.assertEqual(runtime.restart_count, 0)
+            self.assertEqual(runtime.requests, [])
+
+    def test_first_effective_context_is_adopted_by_bounded_passive_refresh(self):
+        runtime = LifecycleRuntime()
+        harness = self.harness(runtime, max_context=128)
+        app = harness.app
+        backend = harness.backend
+
+        # The first ordinary inference attempt obtains the model-less status
+        # snapshot and is refused. No /status call is needed to start refresh.
+        status, _, _ = harness.request(
+            "POST", "/v1/chat/completions", self.body()
+        )
+        self.assertEqual(status, 503)
+        self.assertEqual(runtime.status_calls, 1)
+        self.assertEqual(app.max_context, 128)
+        self.assertEqual(runtime.requests, [])
+
+        runtime.publish_status(
+            inference_ready=True,
+            effective_context_tokens=72,
+        )
+        with backend.lock:
+            backend.status_snapshot_at -= (
+                backend_api.STATUS_LIFECYCLE_FRESHNESS_SECONDS + 0.01
+            )
+            backend.status_refresh_after = 0.0
+
+        # This second request triggers the existing background status refresh,
+        # but is still refused using the old false snapshot it already read.
+        status, _, _ = harness.request(
+            "POST", "/v1/chat/completions", self.body()
+        )
+        self.assertEqual(status, 503)
+        refresh = backend.status_refresh_thread
+        if refresh is not None:
+            refresh.join(1)
+            self.assertFalse(refresh.is_alive())
+        self.assertEqual(runtime.status_calls, 2)
+        self.assertEqual(app.max_context, 72)
+        self.assertEqual(runtime.requests, [])
+        self.assertTrue(runtime.ready)
+        self.assertEqual(runtime.restart_count, 0)
+        self.assertEqual(runtime.wait_ready_calls, 0)
+
+        # The validated value is the request-preparation limit, not the
+        # static ReadyEvent ceiling.
+        with mock.patch.object(
+            type(harness.tokenizer),
+            "__call__",
+            return_value={"input_ids": [101] * 72},
+        ):
+            status, _, payload = harness.request(
+                "POST", "/v1/chat/completions", self.body()
+            )
+        self.assertEqual(status, 400)
+        self.assertEqual(
+            json.loads(payload)["error"]["code"], "context_length_exceeded"
+        )
+        self.assertEqual(runtime.requests, [])
+        self.assertEqual(
+            harness.request("POST", "/v1/chat/completions", self.body())[0], 200
+        )
+        self.assertEqual(len(runtime.requests), 1)
+        self.assertIs(harness.app, app)
+        self.assertIs(harness.backend.runtime, runtime)
+
+    def test_battery_control_ready_http_recovers_on_ac_without_new_generation(self):
+        runtime = LifecycleRuntime()
+        harness = self.harness(runtime, max_context=128)
+        app = harness.app
+        backend = harness.backend
+        process = runtime.process
+        generation = runtime.generation
+        readiness = runtime.readiness
+
+        # A Battery-started child is control-ready and has one static
+        # capability handshake, while all inference surfaces remain closed.
+        self.assertTrue(runtime.ready)
+        self.assertFalse(backend.can_submit())
+        self.assertEqual(app.max_context, 128)
+        self.assertEqual(runtime.ready_event_count, 1)
+        for method, path in (
+            ("GET", "/health"),
+            ("GET", "/ready"),
+            ("GET", "/status"),
+            ("GET", "/metrics"),
+            ("GET", "/v1/models"),
+        ):
+            with self.subTest(path=path):
+                status, _, payload = harness.request(method, path)
+                self.assertEqual(status, 503 if path == "/ready" else 200)
+                if path == "/status":
+                    snapshot = json.loads(payload)
+                    self.assertTrue(snapshot["control_ready"])
+                    self.assertFalse(snapshot["inference_ready"])
+                if path == "/v1/models":
+                    self.assertEqual(
+                        json.loads(payload)["data"][0]["context_length"], 128
+                    )
+                self.assertTrue(runtime.ready)
+                self.assertEqual(runtime.restart_count, 0)
+                self.assertEqual(runtime.wait_ready_calls, 0)
+                self.assertEqual(runtime.ready_event_count, 1)
+                self.assertEqual(runtime.requests, [])
+                self.assertIs(harness.backend.runtime, runtime)
+
+        status, _, _ = harness.request(
+            "POST", "/v1/chat/completions", self.body()
+        )
+        self.assertEqual(status, 503)
+        self.assertEqual(runtime.requests, [])
+
+        refresh = backend.status_refresh_thread
+        if refresh is not None:
+            refresh.join(1)
+            self.assertFalse(refresh.is_alive())
+
+        # AC completion changes only detached status in this generation. The
+        # normal bounded refresh discovers the actual context before inference
+        # is admitted by Python.
+        runtime.publish_status(
+            inference_ready=True,
+            effective_context_tokens=72,
+            lifecycle_revision=1,
+        )
+        with backend.lock:
+            backend.status_snapshot_at -= (
+                backend_api.STATUS_LIFECYCLE_FRESHNESS_SECONDS + 0.01
+            )
+            backend.status_refresh_after = 0.0
+        self.assertEqual(harness.request("GET", "/ready")[0], 503)
+        refresh = backend.status_refresh_thread
+        if refresh is not None:
+            refresh.join(1)
+            self.assertFalse(refresh.is_alive())
+        self.assertEqual(app.max_context, 72)
+        self.assertEqual(harness.request("GET", "/ready")[0], 200)
+        self.assertEqual(
+            harness.request("POST", "/v1/chat/completions", self.body())[0], 200
+        )
+        self.assertEqual(app.max_context, 72)
+        self.assertIs(harness.app, app)
+        self.assertIs(harness.backend.runtime, runtime)
+        self.assertIs(runtime.process, process)
+        self.assertIs(runtime.generation, generation)
+        self.assertIs(runtime.readiness, readiness)
+        self.assertEqual(runtime.ready_event_count, 1)
+        self.assertEqual(runtime.wait_ready_calls, 0)
+        self.assertEqual(runtime.restart_count, 0)
+
+        # The same control-ready child can close inference again on Battery.
+        # Let the existing bounded status refresh consume the new snapshot.
+        requests_before_battery = len(runtime.requests)
+        runtime.publish_status(
+            inference_ready=False,
+            effective_context_tokens=None,
+            lifecycle_revision=2,
+        )
+        with backend.lock:
+            backend.status_snapshot_at -= (
+                backend_api.STATUS_LIFECYCLE_FRESHNESS_SECONDS + 0.01
+            )
+            backend.status_refresh_after = 0.0
+        harness.request("GET", "/ready")
+        refresh = backend.status_refresh_thread
+        if refresh is not None:
+            refresh.join(1)
+            self.assertFalse(refresh.is_alive())
+
+        self.assertEqual(harness.request("GET", "/ready")[0], 503)
+        self.assertEqual(
+            harness.request("POST", "/v1/chat/completions", self.body())[0],
+            503,
+        )
+        self.assertEqual(len(runtime.requests), requests_before_battery)
+        self.assertIs(harness.app, app)
+        self.assertIs(harness.backend, backend)
+        self.assertIs(backend.runtime, runtime)
+        self.assertIs(runtime.process, process)
+        self.assertIs(runtime.generation, generation)
+        self.assertIs(runtime.readiness, readiness)
+        self.assertEqual(runtime.ready_event_count, 1)
+        self.assertEqual(runtime.restart_count, 0)
+        self.assertEqual(runtime.wait_ready_calls, 0)
+
+        # AC is discovered through the same bounded freshness cache. The
+        # configured /v1/models ceiling stays static while serving context
+        # follows the newly resolved value on this existing Frontend.
+        runtime.publish_status(
+            inference_ready=True,
+            effective_context_tokens=64,
+            lifecycle_revision=3,
+        )
+        with backend.lock:
+            backend.status_snapshot_at -= (
+                backend_api.STATUS_LIFECYCLE_FRESHNESS_SECONDS + 0.01
+            )
+            backend.status_refresh_after = 0.0
+        harness.request("GET", "/ready")
+        refresh = backend.status_refresh_thread
+        if refresh is not None:
+            refresh.join(1)
+            self.assertFalse(refresh.is_alive())
+
+        self.assertEqual(app.max_context, 64)
+        self.assertEqual(harness.request("GET", "/ready")[0], 200)
+        self.assertEqual(
+            harness.request("POST", "/v1/chat/completions", self.body())[0],
+            200,
+        )
+        models_status, _, models_payload = harness.request("GET", "/v1/models")
+        self.assertEqual(models_status, 200)
+        self.assertEqual(
+            json.loads(models_payload)["data"][0]["context_length"], 128
+        )
+        self.assertEqual(app.max_context, 64)
+        self.assertIs(harness.app, app)
+        self.assertIs(harness.backend, backend)
+        self.assertIs(backend.runtime, runtime)
+        self.assertIs(runtime.process, process)
+        self.assertIs(runtime.generation, generation)
+        self.assertIs(runtime.readiness, readiness)
+        self.assertEqual(runtime.ready_event_count, 1)
+        self.assertEqual(runtime.restart_count, 0)
+        self.assertEqual(runtime.wait_ready_calls, 0)
+
+    def test_same_generation_recovery_updates_context_without_new_handshake(self):
+        runtime = LifecycleRuntime(
+            inference_ready=True,
+            effective_context_tokens=72,
+        )
+        harness = self.harness(runtime, max_context=128)
+        app = harness.app
+        backend = harness.backend
+        process = runtime.process
+        generation = runtime.generation
+        readiness = runtime.readiness
+
+        status, _, _ = harness.request(
+            "POST", "/v1/chat/completions", self.body()
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(app.max_context, 72)
+        self.assertEqual(len(runtime.requests), 1)
+
+        # A later recovery in the same child reports a new memory-planned
+        # context. A bounded refresh updates the existing Frontend in place.
+        runtime.publish_status(
+            inference_ready=True,
+            effective_context_tokens=48,
+        )
+        with backend.lock:
+            backend.status_snapshot_at -= (
+                backend_api.STATUS_LIFECYCLE_FRESHNESS_SECONDS + 0.01
+            )
+            backend.status_refresh_after = 0.0
+        status, _, _ = harness.request("GET", "/ready")
+        self.assertEqual(status, 503)
+        refresh = backend.status_refresh_thread
+        if refresh is not None:
+            refresh.join(1)
+            self.assertFalse(refresh.is_alive())
+
+        self.assertEqual(app.max_context, 48)
+        self.assertIs(harness.app, app)
+        self.assertIs(harness.backend.runtime, runtime)
+        self.assertIs(runtime.process, process)
+        self.assertIs(runtime.generation, generation)
+        self.assertIs(runtime.readiness, readiness)
+        self.assertEqual(runtime.ready_event_count, 1)
+        self.assertEqual(runtime.readiness.max_context_tokens, 128)
+        self.assertEqual(runtime.wait_ready_calls, 0)
+        self.assertEqual(runtime.restart_count, 0)
+        self.assertTrue(runtime.ready)
+        self.assertEqual(len(runtime.requests), 1)
+
+    def test_invalid_resolved_context_fails_closed_without_fencing_generation(self):
+        cases = (
+            ("missing", _MISSING, 64, 128, True),
+            ("null", None, 64, 128, True),
+            ("zero", 0, 0, 128, True),
+            ("negative", -1, -1, 128, True),
+            ("float", 64.0, 64, 128, True),
+            ("string", "64", 64, 128, True),
+            ("bool", True, 1, 128, True),
+            ("over ceiling", 129, 129, 128, True),
+            ("ceiling mismatch", 64, 64, 127, True),
+            ("missing ceiling", 64, 64, 128, True),
+            ("missing maximum", 64, 64, 128, True),
+            ("maximum mismatch", 64, 63, 128, True),
+            ("readiness mismatch", 64, 64, 128, False),
+        )
+        for name, context, maximum, ceiling, nested_ready in cases:
+            with self.subTest(context=name):
+                runtime = LifecycleRuntime(
+                    inference_ready=True,
+                    effective_context_tokens=64,
+                )
+                runtime.publish_status(
+                    inference_ready=True,
+                    effective_context_tokens=context,
+                    lifecycle_inference_ready=nested_ready,
+                    configured_context_ceiling=ceiling,
+                    maximum_context_tokens=maximum,
+                )
+                harness = self.harness(runtime, max_context=128)
+                if name == "missing":
+                    snapshot = json.loads(runtime.status_event.json)
+                    snapshot.pop("effective_context_tokens")
+                    runtime.status_event = wire.StatusJsonEvent(
+                        1,
+                        wire.STATUS_SCHEMA_VERSION,
+                        json.dumps(snapshot, separators=(",", ":")).encode(),
+                    )
+                elif name == "missing maximum":
+                    snapshot = json.loads(runtime.status_event.json)
+                    snapshot.pop("maximum_context_tokens")
+                    runtime.status_event = wire.StatusJsonEvent(
+                        1,
+                        wire.STATUS_SCHEMA_VERSION,
+                        json.dumps(snapshot, separators=(",", ":")).encode(),
+                    )
+                elif name == "missing ceiling":
+                    snapshot = json.loads(runtime.status_event.json)
+                    snapshot.pop("configured_context_ceiling")
+                    runtime.status_event = wire.StatusJsonEvent(
+                        1,
+                        wire.STATUS_SCHEMA_VERSION,
+                        json.dumps(snapshot, separators=(",", ":")).encode(),
+                    )
+
+                self.assertEqual(harness.request("GET", "/ready")[0], 503)
+                status, _, payload = harness.request("GET", "/status")
+                self.assertEqual(status, 200)
+                snapshot = json.loads(payload)
+                self.assertTrue(snapshot["control_ready"])
+                self.assertFalse(snapshot["ready"])
+                self.assertTrue(snapshot["inference_ready"])
+                self.assertIsNone(harness.app.max_context)
+                self.assertFalse(harness.backend.can_submit())
+                self.assertTrue(runtime.ready)
+                self.assertEqual(runtime.restart_count, 0)
+                self.assertEqual(runtime.wait_ready_calls, 0)
+                self.assertEqual(runtime.requests, [])
+
+    def test_out_of_order_lifecycle_snapshots_follow_highest_revision(self):
+        runtime = LifecycleRuntime(
+            inference_ready=False,
+            effective_context_tokens=None,
+        )
+        harness = self.harness(runtime, max_context=128)
+        backend = harness.backend
+        app = harness.app
+        captured_backend_runtime = backend.runtime
+        captured_process = runtime.process
+        captured_generation = runtime.generation
+        captured_readiness = runtime.readiness
+        captured_ready_event_count = runtime.ready_event_count
+        captured_restart_count = runtime.restart_count
+        captured_wait_ready_calls = runtime.wait_ready_calls
+
+        # A newer Battery snapshot is model-less and closes Python admission.
+        runtime.publish_status(
+            inference_ready=False,
+            effective_context_tokens=None,
+            lifecycle_revision=2,
+        )
+        current_battery = json.loads(runtime.status_event.json)
+        accepted = backend._cache_status(current_battery)
+        self.assertEqual(accepted["lifecycle"]["revision"], 2)
+        self.assertEqual(backend.status_snapshot["lifecycle"]["revision"], 2)
+        self.assertFalse(backend.can_submit())
+
+        # An older AC-ready completion cannot reopen that newer Battery state.
+        runtime.publish_status(
+            inference_ready=True,
+            effective_context_tokens=72,
+            lifecycle_revision=1,
+        )
+        old_ac_snapshot = json.loads(runtime.status_event.json)
+        accepted = backend._cache_status(old_ac_snapshot)
+        self.assertEqual(accepted["lifecycle"]["revision"], 2)
+        self.assertEqual(backend.status_snapshot["lifecycle"]["revision"], 2)
+        self.assertFalse(backend.can_submit())
+
+        # A newer AC recovery opens admission and installs the effective limit.
+        runtime.publish_status(
+            inference_ready=True,
+            effective_context_tokens=64,
+            lifecycle_revision=3,
+        )
+        current_ac = json.loads(runtime.status_event.json)
+        accepted = backend._cache_status(current_ac)
+        self.assertEqual(accepted["lifecycle"]["revision"], 3)
+        self.assertEqual(backend.status_snapshot["lifecycle"]["revision"], 3)
+        self.assertTrue(backend.can_submit())
+        self.assertEqual(app.max_context, 64)
+
+        # A delayed completion from Battery cannot regress successful AC state.
+        accepted = backend._cache_status(current_battery)
+        self.assertEqual(accepted["lifecycle"]["revision"], 3)
+        self.assertEqual(backend.status_snapshot["lifecycle"]["revision"], 3)
+        self.assertTrue(backend.can_submit())
+        self.assertEqual(app.max_context, 64)
+
+        self.assertIs(harness.app, app)
+        self.assertIs(harness.backend, backend)
+        self.assertIs(backend.runtime, captured_backend_runtime)
+        self.assertIs(backend.runtime, runtime)
+        self.assertIs(runtime.process, captured_process)
+        self.assertIs(runtime.generation, captured_generation)
+        self.assertIs(runtime.readiness, captured_readiness)
+        self.assertEqual(runtime.ready_event_count, captured_ready_event_count)
+        self.assertEqual(runtime.ready_event_count, 1)
+        self.assertEqual(runtime.restart_count, captured_restart_count)
+        self.assertEqual(runtime.restart_count, 0)
+        self.assertEqual(runtime.wait_ready_calls, captured_wait_ready_calls)
+        self.assertEqual(runtime.wait_ready_calls, 0)
+        self.assertEqual(runtime.requests, [])
+        self.assertEqual(backend.active, {})
+
+    def test_child_restart_resets_revision_ordering_for_new_generation(self):
+        runtime = LifecycleRuntime(
+            inference_ready=True,
+            effective_context_tokens=48,
+        )
+        harness = self.harness(runtime, max_context=128)
+        backend = harness.backend
+        app = harness.app
+
+        runtime.publish_status(
+            inference_ready=True,
+            effective_context_tokens=48,
+            lifecycle_revision=9,
+        )
+        previous_generation_snapshot = json.loads(runtime.status_event.json)
+        backend._cache_status(previous_generation_snapshot, generation=0)
+        self.assertEqual(app.max_context, 48)
+
+        # The replacement child owns a fresh native lifecycle whose revision
+        # starts lower than the previous process's final revision.
+        runtime.restart_count = 1
+        runtime.generation = object()
+        runtime.process = object()
+        runtime.publish_status(
+            inference_ready=True,
+            effective_context_tokens=72,
+            lifecycle_revision=1,
+        )
+        snapshot = backend._lifecycle_snapshot()
+        self.assertTrue(backend._snapshot_inference_ready(snapshot))
+        self.assertEqual(app.max_context, 72)
+        self.assertEqual(backend.status_snapshot_generation, 1)
+        self.assertEqual(backend.status_snapshot["lifecycle"]["revision"], 1)
+
+        # A delayed completion from the failed process cannot replace the new
+        # generation's cache or Frontend limit.
+        self.assertIsNone(
+            backend._cache_status(previous_generation_snapshot, generation=0)
+        )
+        self.assertEqual(app.max_context, 72)
+        self.assertEqual(backend.status_snapshot_generation, 1)
+
+    def test_stale_true_is_only_a_prefilter_before_native_admission(self):
+        runtime = FakeRuntime()
+        backend = backend_api.NativeBackend(runtime, NativeTokenizer())
+        self.addCleanup(backend.close)
+        clock = [100.0]
+        with (
+            mock.patch.object(
+                backend_api, "time", SimpleNamespace(monotonic=lambda: clock[0])
+            ),
+        ):
+            backend._cache_status(json.loads(runtime.status_event.json))
+            clock[0] += backend_api.STATUS_LIFECYCLE_FRESHNESS_SECONDS + 0.01
+            current = json.loads(runtime.status_event.json)
+            current["ready"] = False
+            current["inference_ready"] = False
+            runtime.status_event = wire.StatusJsonEvent(
+                2, wire.STATUS_SCHEMA_VERSION, json.dumps(current).encode()
+            )
+            self.assertTrue(backend.can_submit())
+            with mock.patch.object(
+                runtime,
+                "submit",
+                side_effect=engine_runtime.EngineUnhealthy(
+                    "native admission is closed"
+                ),
+            ) as native_submit:
+                with self.assertRaisesRegex(
+                    engine_runtime.EngineUnhealthy, "native admission is closed"
+                ):
+                    runtime.submit(None, on_event=None, on_complete=None)
+            native_submit.assert_called_once()
 
     def test_ready_and_status_start_one_recovery_without_waiting_for_startup(self):
         for first_path in ("/ready", "/status"):
@@ -142,7 +791,11 @@ class ServerRecoveryTests(unittest.TestCase):
             self.assertTrue(backend.can_submit())
             self.assertEqual(runtime.startup_calls, 3)
             self.assertEqual(backend.status_refresh_failures, 0)
-            self.assertEqual(backend.status_refresh_after, 0)
+            self.assertGreater(backend.status_refresh_after, clock[0])
+            self.assertLessEqual(
+                backend.status_refresh_after - clock[0],
+                backend_api.STATUS_LIFECYCLE_FRESHNESS_SECONDS,
+            )
         backend.close()
         self.assertFalse(backend.can_submit())
         self.assertFalse(backend.status()["transport"]["recovering"])
@@ -200,7 +853,10 @@ class ServerRecoveryTests(unittest.TestCase):
             self.assertGreater(backend.status_refresh_after, 100.0)
             self.assertTrue(backend.status()["ready"])
             self.assertEqual(backend.status_refresh_failures, 0)
-            self.assertEqual(backend.status_refresh_after, 0)
+            self.assertEqual(
+                backend.status_refresh_after,
+                100.0 + backend_api.STATUS_LIFECYCLE_FRESHNESS_SECONDS,
+            )
             runtime.ready = False
             self.assertFalse(backend.can_submit())
             self.wait_until(lambda: not backend.status_refresh_inflight)
@@ -278,6 +934,8 @@ class ServerRecoveryTests(unittest.TestCase):
             {
                 "schema_version": wire.STATUS_SCHEMA_VERSION,
                 "ready": True,
+                "control_ready": True,
+                "inference_ready": True,
                 "memory_pressure": "normal",
                 "metal": {"healthy": True},
             }
@@ -313,7 +971,19 @@ class ServerRecoveryTests(unittest.TestCase):
         self.assertEqual(factory.processes[0].stdin.messages(wire.RequestFrame), [])
 
     def test_idle_engine_death_restarts_before_traffic_arrives(self):
-        factory = FakeFactory()
+        def respond(process, message):
+            if isinstance(message, wire.StatusRequestFrame):
+                process.send(
+                    wire.StatusJsonEvent(
+                        message.correlation_id,
+                        wire.STATUS_SCHEMA_VERSION,
+                        b'{"schema_version":5,"ready":true,'
+                        b'"control_ready":true,"inference_ready":true,'
+                        b'"memory_pressure":"normal"}',
+                    )
+                )
+
+        factory = FakeFactory(handler=respond)
         runtime = engine_runtime.MultiplexedRuntime(process_factory=factory)
         backend = backend_api.NativeBackend(runtime, NativeTokenizer())
         self.addCleanup(backend.close)

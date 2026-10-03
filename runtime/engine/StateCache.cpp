@@ -53,7 +53,7 @@ StateCache::acquireDeepest(std::span<const uint64_t> kvChain) {
 
 std::optional<CompositeStateLease> StateCache::acquireBlock(uint64_t kvBlock) {
   auto found = entries_.find(kvBlock);
-  if (found == entries_.end() || found->second.invalid)
+  if (found == entries_.end() || found->second.invalid || writing(kvBlock))
     return std::nullopt;
   Entry &entry = found->second;
   if (!kv_.contains(kvBlock)) {

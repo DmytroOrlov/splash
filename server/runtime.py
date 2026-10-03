@@ -548,11 +548,17 @@ class MultiplexedRuntime:
 
     @property
     def readiness(self) -> wire.ReadyEvent | None:
+        """Static ReadyEvent for the live process/control generation."""
         with self._state_lock:
             return self._ready_message
 
     @property
     def ready(self) -> bool:
+        """Whether the native process is live and completed its one handshake.
+
+        Inference residency may suspend and recover within this generation;
+        callers read that changing state from passive lifecycle status instead.
+        """
         with self._state_lock:
             process = self._process
             return (

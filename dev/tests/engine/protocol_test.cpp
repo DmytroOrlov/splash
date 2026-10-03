@@ -906,6 +906,83 @@ void testBoundedArbitraryStatusJson() {
   }
 }
 
+void testDetachedLifecycleStatusRoundTrip() {
+  constexpr std::string_view test = "detached lifecycle status round trip";
+  const std::string json =
+      "{\"schema_version\":5,\"ready\":false,\"control_ready\":true,"
+      "\"inference_ready\":false,\"lifecycle\":{\"state\":\"suspended\","
+      "\"power\":\"battery\",\"revision\":17,\"model_resident\":false,"
+      "\"configured_context_ceiling\":131072,"
+      "\"effective_context_tokens\":null}}";
+  StatusJsonEvent expected{808, kStatusSchemaVersion, json};
+  StatusJsonEvent decoded = roundTrip(expected);
+  CHECK(test, decoded == expected);
+  CHECK(test, decoded.json.find("\"control_ready\":true") !=
+                 std::string::npos);
+  CHECK(test, decoded.json.find("\"inference_ready\":false") !=
+                 std::string::npos);
+  CHECK(test, decoded.json.find("\"revision\":17") != std::string::npos);
+  CHECK(test, decoded.json.find("\"effective_context_tokens\":null") !=
+                 std::string::npos);
+
+  StatusJsonEvent malformed = expected;
+  malformed.schemaVersion = kStatusSchemaVersion + 1;
+  auto rejected = serializeMessage(Message{malformed});
+  CHECK(test, !rejected);
+  if (rejected.issue)
+    CHECK(test, rejected.issue->code == IssueCode::InvalidStatusSchema);
+}
+
+void testReadyIsOneStaticGenerationHandshake() {
+  constexpr std::string_view test = "static ReadyEvent generation handshake";
+  const ReadyEvent ready{1001, 4, 131072,
+                         kNativeFeatureBits | FeatureVision};
+  const std::vector<Message> generation{
+      Message{ready},
+      Message{StatusJsonEvent{
+          1, kStatusSchemaVersion,
+          "{\"control_ready\":true,\"inference_ready\":false}"}},
+      Message{StatusJsonEvent{
+          2, kStatusSchemaVersion,
+          "{\"control_ready\":true,\"inference_ready\":true}"}},
+      Message{StatusJsonEvent{
+          3, kStatusSchemaVersion,
+          "{\"control_ready\":true,\"inference_ready\":false}"}},
+  };
+  std::vector<uint8_t> bytes;
+  for (const Message &message : generation) {
+    auto encoded = serializeMessage(message);
+    CHECK(test, encoded);
+    if (encoded)
+      bytes.insert(bytes.end(), encoded.value->begin(), encoded.value->end());
+  }
+  const auto frames = parseAll(bytes);
+  size_t readyCount = 0;
+  std::vector<std::string> statuses;
+  for (const Frame &frame : frames) {
+    auto decoded = decodeFrame(frame);
+    CHECK(test, decoded);
+    if (!decoded)
+      continue;
+    if (const auto *event = std::get_if<ReadyEvent>(&*decoded.value)) {
+      ++readyCount;
+      CHECK(test, *event == ready);
+    } else if (const auto *status =
+                   std::get_if<StatusJsonEvent>(&*decoded.value)) {
+      statuses.push_back(status->json);
+    }
+  }
+  CHECK(test, readyCount == 1);
+  CHECK(test, statuses.size() == 3);
+  CHECK(test, statuses.size() == 3 &&
+                 statuses[0].find("\"inference_ready\":false") !=
+                     std::string::npos &&
+                 statuses[1].find("\"inference_ready\":true") !=
+                     std::string::npos &&
+                 statuses[2].find("\"inference_ready\":false") !=
+                     std::string::npos);
+}
+
 void testFailureTaxonomyAndCapacityEvent() {
   constexpr std::string_view test = "failure taxonomy";
   for (ErrorEvent expected : {
@@ -1092,6 +1169,8 @@ int main() {
     testPromptAndImageSpanRejections();
     testRequestFlags();
     testBoundedArbitraryStatusJson();
+    testDetachedLifecycleStatusRoundTrip();
+    testReadyIsOneStaticGenerationHandshake();
     testFailureTaxonomyAndCapacityEvent();
     testOverflowLimitsAndOuterTruncation();
     testFuzzLikeInputsAndMutations();

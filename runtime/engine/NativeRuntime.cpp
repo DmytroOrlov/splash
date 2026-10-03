@@ -81,15 +81,13 @@ protocol::FinishReason mapFinishReason(EngineFinishReason reason) {
 
 } // namespace
 
-NativeRuntime::NativeRuntime(NativeLoopConfig config, engine::Cache &cache,
-                             model::Model &model, ByteSink output,
+NativeRuntime::NativeRuntime(NativeLoopConfig config, ByteSink output,
                              StatusProvider statusProvider,
                              NativeLoopClocks clocks,
                              protocol::ProtocolLimits limits)
     : config_(std::move(config)), output_(std::move(output)),
       statusProvider_(std::move(statusProvider)), clocks_(std::move(clocks)),
-      limits_(limits), parser_(limits_),
-      core_(config_.engine, cache, model, *this) {
+      limits_(limits), parser_(limits_) {
   if (!config_.engineInstanceId || !config_.maskWordsPerToken || !output_ ||
       !statusProvider_) {
     throw std::invalid_argument("invalid native engine loop config");
@@ -101,6 +99,55 @@ NativeRuntime::NativeRuntime(NativeLoopConfig config, engine::Cache &cache,
   if (!clocks_.monotonicMilliseconds) {
     clocks_.monotonicMilliseconds = std::move(defaults.monotonicMilliseconds);
   }
+}
+
+NativeRuntime::NativeRuntime(NativeLoopConfig config, engine::Cache &cache,
+                             model::Model &model, ByteSink output,
+                             StatusProvider statusProvider,
+                             NativeLoopClocks clocks,
+                             protocol::ProtocolLimits limits)
+    : NativeRuntime(std::move(config), std::move(output),
+                    std::move(statusProvider), std::move(clocks), limits) {
+  publishEngine(cache, model);
+}
+
+void NativeRuntime::publishEngine(engine::Cache &cache, model::Model &model) {
+  std::unique_ptr<engine::Engine> candidate(
+      new engine::Engine(config_.engine, cache, model, *this));
+  if (!tryPublishEngine(candidate))
+    throw std::logic_error("native runtime refused Engine publication");
+}
+
+bool NativeRuntime::tryPublishEngine(
+    std::unique_ptr<engine::Engine> &candidateEngine) {
+  if (!candidateEngine || core_ || !telemetry_.empty() ||
+      !pendingMasks_.empty())
+    return false;
+
+  uint32_t publishedContextTokens = 0;
+  // Install the notifier before moving ownership. If a callback copy fails,
+  // or its snapshot cannot be acquired, the caller still owns the same
+  // candidate Engine and no Engine is live.
+  try {
+    if (completionNotifier_)
+      candidateEngine->setCompletionNotifier(completionNotifier_);
+    publishedContextTokens =
+        candidateEngine->snapshot().maximumContextTokens;
+  } catch (...) {
+    return false;
+  }
+  core_ = std::move(candidateEngine);
+  config_.engine.maxContext = publishedContextTokens;
+  return true;
+}
+
+void NativeRuntime::destroyEngine() {
+  if (!core_)
+    return;
+  if (!core_->idle() || core_->commandInFlight() || !telemetry_.empty() ||
+      !pendingMasks_.empty())
+    throw std::logic_error("cannot destroy Engine before native work drains");
+  core_.reset();
 }
 
 bool NativeRuntime::receive(std::span<const uint8_t> bytes) {
@@ -152,8 +199,10 @@ bool NativeRuntime::finishInput() {
 bool NativeRuntime::tick() {
   if (closeConnection_ || !engineHealthy_)
     return false;
+  if (!core_)
+    return false;
   try {
-    return core_.tick(clocks_.monotonicMilliseconds());
+    return core_->tick(clocks_.monotonicMilliseconds());
   } catch (...) {
     executionFailed(std::current_exception());
   }
@@ -192,18 +241,23 @@ void NativeRuntime::announceReady() {
   if (ready_)
     throw std::logic_error("ready was already announced");
   uint64_t features = protocol::kNativeFeatureBits;
-  if (config_.engine.maxImagePatches)
+  if (config_.visionSupported || config_.engine.maxImagePatches)
     features |= protocol::FeatureVision;
+  const uint32_t contextCeiling = config_.configuredContextCeiling
+                                      ? config_.configuredContextCeiling
+                                      : config_.engine.maxContext;
   if (!send(protocol::ReadyEvent{config_.engineInstanceId,
                                  model::ExecutionLimits::maximumBatchWidth,
-                                 config_.engine.maxContext, features})) {
+                                 contextCeiling, features})) {
     throw std::runtime_error("failed to serialize ready event");
   }
   ready_ = true;
 }
 
 std::optional<double> NativeRuntime::millisecondsUntilNextWakeup() const {
-  auto wakeup = core_.nextWakeupMilliseconds();
+  if (!core_)
+    return std::nullopt;
+  auto wakeup = core_->nextWakeupMilliseconds();
   if (!wakeup)
     return std::nullopt;
   double now = clocks_.monotonicMilliseconds();
@@ -240,6 +294,21 @@ bool NativeRuntime::handleRequest(protocol::RequestFrame &request) {
     return handleIssue({protocol::FailureClass::ProtocolFatal,
                         protocol::IssueCode::InvalidRequestId,
                         request.requestId, "request id is already active"});
+  }
+  std::unique_lock<std::mutex> admissionLock;
+  if (config_.admissionGate) {
+    admissionLock = std::unique_lock<std::mutex>(
+        config_.admissionGate->mutex);
+    if (!config_.admissionGate->inferenceReady) {
+      requestError(request.requestId, "inference_unavailable",
+                   "inference is unavailable", false);
+      return true;
+    }
+  }
+  if (!core_) {
+    requestError(request.requestId, "inference_unavailable",
+                 "inference is unavailable", false);
+    return true;
   }
   if (!ready_) {
     requestError(request.requestId, "engine_not_ready",
@@ -290,7 +359,7 @@ bool NativeRuntime::handleRequest(protocol::RequestFrame &request) {
     engineRequest.returnProgress = request.returnProgress;
     engineRequest.deadlineMilliseconds =
         nowMonotonic + double(remaining) / 1000.0;
-    core_.submit(std::move(engineRequest));
+    core_->submit(std::move(engineRequest));
   } catch (const std::invalid_argument &error) {
     requestError(request.requestId, "invalid_request", error.what());
     return true;
@@ -329,7 +398,7 @@ bool NativeRuntime::handleCancel(const protocol::CancelFrame &cancel) {
     return true;
   }
   try {
-    core_.cancel(cancel.requestId);
+    core_->cancel(cancel.requestId);
   } catch (const std::exception &error) {
     // A decoded cancel for live telemetry has no remaining client-side
     // semantic failure. Core cancellation/release exceptions indicate
@@ -350,7 +419,7 @@ bool NativeRuntime::handleMask(const protocol::MaskResponseFrame &mask) {
   }
   auto failMaskRequest = [&](std::string code, std::string message) -> bool {
     try {
-      core_.failRequest(mask.requestId, std::move(code), std::move(message));
+      core_->failRequest(mask.requestId, std::move(code), std::move(message));
       return true;
     } catch (const std::exception &error) {
       engineError("mask_response_failure", error.what());
@@ -368,7 +437,7 @@ bool NativeRuntime::handleMask(const protocol::MaskResponseFrame &mask) {
                            "mask response does not match the pending request");
   }
   try {
-    core_.provideMask(mask.requestId, mask.maskWords);
+    core_->provideMask(mask.requestId, mask.maskWords);
     pendingMasks_.erase(found);
   } catch (const std::invalid_argument &error) {
     // Correctly framed mask contents (for example an all-zero row) are a
@@ -407,7 +476,7 @@ bool NativeRuntime::handleMaskIssue(protocol::ProtocolIssue issue) {
     return true;
   }
   try {
-    core_.failRequest(issue.requestId,
+    core_->failRequest(issue.requestId,
                       std::string(protocol::issueCodeName(issue.code)),
                       std::move(issue.message));
   } catch (const std::exception &error) {

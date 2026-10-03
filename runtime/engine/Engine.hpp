@@ -165,8 +165,9 @@ private:
     bool replaying = false;
     // Captured once the final prompt chunk completes; emitted with Done.
     std::vector<float> scoreLogits;
-    // A restore that could not fit alone released its prefix pin:
-    // admissions ignore the cache until one succeeds.
+    // A restore that could not fit, or whose destination failed verification,
+    // releases its prefix pin and makes this request bypass retained cache on
+    // retry. completeAdmission() clears the bypass after admission succeeds.
     bool skipCache = false;
     // Admission that waits for its state's read, its KV pages' restores,
     // or both, before the lane runs.

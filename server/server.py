@@ -493,8 +493,8 @@ class FrontendHandler(BaseHTTPRequestHandler):
                     "object": "model",
                     "created": 0,
                     "owned_by": "splash",
-                    "max_model_len": self.app.max_context,
-                    "context_length": self.app.max_context,
+                    "max_model_len": self.app.configured_context_ceiling,
+                    "context_length": self.app.configured_context_ceiling,
                     "vision": self.app.vision,
                     "input_modalities": self.app.input_modalities,
                     **({"root": self.app.model} if name != self.app.model else {}),
@@ -2294,6 +2294,12 @@ def parse_args(argv=None):
     parser.add_argument("--max-image-pixels", type=int, default=image_input.MAX_PIXELS)
     parser.add_argument("--request-timeout", type=float, default=None)
     parser.add_argument("--queue-size", type=int, default=32)
+    parser.add_argument(
+        "--pause-on-battery",
+        action="store_true",
+        default=False,
+        help="release model residency while on battery and recover on AC power",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--allowed-host", action="append", default=[])
     parser.add_argument("--api-key", default=os.environ.get("SPLASH_API_KEY"))
@@ -2350,6 +2356,8 @@ def _native_command(args):
         command.extend(("--kv-format", args.kv_format))
     if args.decode_share is not None:
         command.extend(("--decode-share", str(args.decode_share)))
+    if args.pause_on_battery:
+        command.append("--pause-on-battery")
     return command
 
 
@@ -2406,6 +2414,9 @@ def main():
         )
         if not runtime.wait_ready():
             raise engine_runtime.EngineUnhealthy("native runtime did not become ready")
+        # ReadyEvent is the one-shot process/control handshake and carries only
+        # static configuration. Inference may be unavailable while the HTTP
+        # control plane is constructed and remains observable through status.
         readiness = runtime.readiness
         if (
             readiness is None

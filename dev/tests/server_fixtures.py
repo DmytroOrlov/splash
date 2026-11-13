@@ -66,11 +66,23 @@ READY = engine_ready()
 
 def serve_context(app, tokens):
     """Have `app`'s engine serve `tokens` of context from now on, as a relaunch
-    whose plan holds that much announces."""
+    whose plan holds that much announces: the runtime starts a new serving
+    generation announcing it, and the status that generation answers carries
+    that ceiling resolved, which rebinds the frontend to the new generation and
+    publishes what that generation serves."""
     runtime = app.backend.runtime
     runtime.capabilities = dataclasses.replace(
         runtime.capabilities, max_context_tokens=tokens
     )
+    runtime.restart_count = getattr(runtime, "restart_count", 0) + 1
+    # The generation the new Ready announces is the ceiling it announces.
+    ceiling = app.configured_context_ceiling
+    runtime.status_event = native_peer.status_event(
+        configured_context_ceiling=ceiling,
+        effective_context_tokens=ceiling,
+        maximum_context_tokens=ceiling,
+    )
+    app.backend.status()
 
 
 # The generation APIs: Chat Completions, Responses and Messages.
@@ -470,6 +482,14 @@ class FakeRuntime:
         self.threads = []
 
     @property
+    def readiness(self):
+        return self.capabilities
+
+    @readiness.setter
+    def readiness(self, value):
+        self.capabilities = value
+
+    @property
     def pending_count(self):
         return sum(not call.done for call in self.calls)
 
@@ -518,7 +538,11 @@ class FakeRuntime:
         plan.start_release.wait(2)
         if call.done:
             return
-        call.emit(wire.StartEvent(call.request_id, 0, plan.matched_tokens))
+        call.emit(
+            wire.StartEvent(
+                call.request_id, 0, plan.matched_tokens, READY.max_context_tokens
+            )
+        )
         plan.started.set()
         plan.release.wait(2)
         if plan.exception:
@@ -849,7 +873,7 @@ def written_frame(process, call):
 
 
 def send_success(process, call, *, lane=0, tokens=(10, 11, 12)):
-    process.send(wire.StartEvent(call.request_id, lane, 0))
+    process.send(wire.StartEvent(call.request_id, lane, 0, READY.max_context_tokens))
     process.send(wire.TokensEvent(call.request_id, 0, tokens[:2]))
     if tokens[2:]:
         process.send(wire.TokensEvent(call.request_id, 2, tokens[2:]))
@@ -923,6 +947,7 @@ def main_args(**overrides):
             "allowed_origin": [],
             "api_key": None,
             "allow_idle_sleep": False,
+            "pause_on_battery": False,
             "no_webui": False,
             "max_request_size": serve_options.DEFAULT_MAX_REQUEST_BYTES,
             "port": 0,
@@ -962,6 +987,7 @@ def make_frontend(
     constraint_factory=None,
     thinking_codec=None,
     chat_format=QWEN,
+    initial_status=True,
     **options,
 ):
     """A frontend over the tokenizer, with its chat templates probed as
@@ -982,11 +1008,12 @@ def make_frontend(
         backend.runtime = SimpleNamespace(capabilities=capabilities)
     elif not isinstance(runtime, engine_runtime.MultiplexedRuntime):
         # A runtime that runs engines serves what they announce.
-        runtime.capabilities = capabilities
+        if runtime.capabilities != capabilities:
+            runtime.capabilities = capabilities
     # Unless a test passes its own, requests get the sampling the Qwen
     # families publish, as the server serving one does.
     options.setdefault("sampling_defaults", dataclasses.asdict(families.QWEN_SAMPLING))
-    return request_frontend.Frontend(
+    app = request_frontend.Frontend(
         tokenizer,
         backend,
         model,
@@ -998,6 +1025,20 @@ def make_frontend(
         response_store=responses_dialect.ResponseStore(),
         **options,
     )
+    runtime = getattr(backend, "runtime", None)
+    if (
+        initial_status
+        and isinstance(runtime, FakeRuntime)
+        and runtime.status_event == native_peer.status_event()
+    ):
+        ceiling = app.configured_context_ceiling
+        runtime.status_event = native_peer.status_event(
+            configured_context_ceiling=ceiling,
+            effective_context_tokens=ceiling,
+            maximum_context_tokens=ceiling,
+        )
+        backend.status()
+    return app
 
 
 def no_signed_thinking(signature):
@@ -1047,6 +1088,7 @@ class Harness:
         allowed_origins=(),
         vision=True,
         thinking_end=None,
+        initial_status=True,
         **frontend_options,
     ):
         self.tokenizer = tokenizer or FakeTokenizer()
@@ -1067,6 +1109,7 @@ class Harness:
             constraint_factory=constraint_factory,
             thinking_codec=thinking_codec,
             vision=vision,
+            initial_status=initial_status,
             **frontend_options,
         )
         # The chat templates are probed once, before the frontend is built;

@@ -26,6 +26,7 @@ namespace {
 
 using splash::test::capturedStderr;
 using splash::test::require;
+using splash::test::rejects;
 
 // The 27B's plan, or with another KV layout and a spill plan.
 EngineMemoryPlan plan(const kv::Layout &kvLayout = kv::Layout{16, 4, 256}, const KvSpillPlan &spill = {}) {
@@ -1075,6 +1076,686 @@ void testNoticesCarryTheTime() {
           "a notice did not carry the time on one line: " + notice);
 }
 
+// ---------------------------------------------------------------------------
+// Status while the model-bound stratum is absent (FR-019 partial). The
+// residency-absent observation seam is driven directly: no Engine-less runtime
+// exists before T024, and the model-less field shape's wire contract (the server
+// codec, the golden document and the Python reading) is T037's, so nothing
+// here claims a suspended lifecycle has already been served. What is proven is
+// that the observation states the physical ownership it was given, keeps the
+// retained graph's own measurements, and invents no live model reading.
+// ---------------------------------------------------------------------------
+
+// A lifecycle the runtime can hold while its model is resident: the label and
+// the context it resolved. A status document may not widen what it attests.
+LifecycleStatusSnapshot liveLifecycle(uint32_t effectiveContext,
+                                      bool inferenceReady = false) {
+  LifecycleStatusSnapshot lifecycle;
+  lifecycle.power = LifecyclePower::AC;
+  lifecycle.state = inferenceReady ? LifecycleState::Ready
+                                   : LifecycleState::Recovering;
+  lifecycle.revision = 4;
+  lifecycle.controlReady = true;
+  lifecycle.inferenceReady = inferenceReady;
+  lifecycle.modelResident = true;
+  lifecycle.configuredContextCeiling = 131072;
+  lifecycle.effectiveContextTokens = effectiveContext;
+  return lifecycle;
+}
+
+// Every field of two resource snapshots, for the passivity checks below.
+bool sameResources(const ResourceSnapshot &left, const ResourceSnapshot &right) {
+  const auto &l = left.lifecycle;
+  const auto &r = right.lifecycle;
+  return l.power == r.power && l.state == r.state && l.revision == r.revision &&
+         l.controlReady == r.controlReady && l.inferenceReady == r.inferenceReady &&
+         l.modelResident == r.modelResident &&
+         l.configuredContextCeiling == r.configuredContextCeiling &&
+         l.effectiveContextTokens == r.effectiveContextTokens &&
+         l.lastError == r.lastError &&
+         left.backendAllocatedBytes == right.backendAllocatedBytes &&
+         left.modelPackageResident == right.modelPackageResident &&
+         left.modelPackageResidentBytes == right.modelPackageResidentBytes &&
+         left.runtimeResident == right.runtimeResident &&
+         left.runtimeResidentBytes == right.runtimeResidentBytes &&
+         left.retainedCacheBytes == right.retainedCacheBytes &&
+         left.retainedKvBytes == right.retainedKvBytes &&
+         left.retainedStateBytes == right.retainedStateBytes &&
+         left.modelTelemetryAvailable == right.modelTelemetryAvailable;
+}
+
+// A model-less snapshot describes an ownership state, so the vocabulary of
+// the snapshot must fail closed on every claim it cannot support: an unknown
+// power can never authorize inference, a model-less lifecycle can never carry
+// live model telemetry, and residency of the runtime cannot be claimed without
+// the package its runtime sits on.
+void testDetachedLifecycleValues() {
+  LifecycleStatusSnapshot status;
+  status.power = LifecyclePower::Unknown;
+  status.state = LifecycleState::RecoveryFailed;
+  status.revision = 7;
+  status.controlReady = true;
+  status.configuredContextCeiling = 131072;
+  require(validLifecycleStatus(status),
+          "unknown power must remain representable while failing closed");
+  require(!status.inferenceReady && !status.effectiveContextTokens,
+          "model-less lifecycle status advertised inference context/readiness");
+  require(std::string(lifecyclePowerName(status.power)) == "unknown" &&
+              std::string(lifecycleStateName(status.state)) ==
+                  "recovery_failed",
+          "detached lifecycle enum serialization changed its wire names");
+  for (LifecyclePower power : {LifecyclePower::Unknown, LifecyclePower::AC,
+                               LifecyclePower::Battery})
+    require(validLifecyclePower(power), "legal lifecycle power was rejected");
+  for (LifecycleState state : {
+           LifecycleState::Ready, LifecycleState::Draining,
+           LifecycleState::Suspended, LifecycleState::Recovering,
+           LifecycleState::RecoveryFailed, LifecycleState::Shutdown})
+    require(validLifecycleState(state), "legal lifecycle state was rejected");
+  require(!validLifecyclePower(static_cast<LifecyclePower>(255)) &&
+              !validLifecycleState(static_cast<LifecycleState>(255)),
+          "unknown lifecycle enum value was accepted");
+
+  status.power = LifecyclePower::AC;
+  status.state = LifecycleState::Ready;
+  status.inferenceReady = true;
+  status.modelResident = true;
+  status.effectiveContextTokens = 102400;
+  require(validLifecycleStatus(status), "valid serving lifecycle was rejected");
+
+  auto unsafeContext = status;
+  unsafeContext.effectiveContextTokens = status.configuredContextCeiling + 1;
+  require(!validLifecycleStatus(unsafeContext),
+          "effective context above configured ceiling was accepted");
+  auto unreadyUnknownPower = status;
+  unreadyUnknownPower.power = LifecyclePower::Unknown;
+  require(!validLifecycleStatus(unreadyUnknownPower),
+          "unknown power source authorized inference readiness");
+  auto missingContext = status;
+  missingContext.effectiveContextTokens.reset();
+  require(!validLifecycleStatus(missingContext),
+          "inference readiness without effective context was accepted");
+  auto readyButClosed = status;
+  readyButClosed.inferenceReady = false;
+  require(!validLifecycleStatus(readyButClosed),
+          "ready lifecycle state was accepted with admission closed");
+  auto invalidState = status;
+  invalidState.state = static_cast<LifecycleState>(255);
+  require(!validLifecycleStatus(invalidState),
+          "unknown lifecycle state was accepted");
+
+  ResourceSnapshot modelLess;
+  modelLess.lifecycle = LifecycleStatusSnapshot{
+      .power = LifecyclePower::Battery,
+      .state = LifecycleState::Suspended,
+      .revision = 8,
+      .controlReady = true,
+      .inferenceReady = false,
+      .modelResident = false,
+      .configuredContextCeiling = 131072,
+  };
+  modelLess.backendAllocatedBytes = 4096;
+  modelLess.retainedCacheBytes = 2048;
+  modelLess.retainedKvBytes = 1024;
+  modelLess.retainedStateBytes = 512;
+  require(validResourceSnapshot(modelLess),
+          "model-less retained resource snapshot was rejected");
+  require(!modelLess.modelTelemetryAvailable &&
+              !modelLess.modelPackageResident && !modelLess.runtimeResident,
+          "model-less snapshot retained residency telemetry");
+  auto staleTelemetry = modelLess;
+  staleTelemetry.modelTelemetryAvailable = true;
+  require(!validResourceSnapshot(staleTelemetry),
+          "model-less snapshot advertised stale model telemetry");
+
+  auto recovering = modelLess;
+  recovering.lifecycle.state = LifecycleState::Recovering;
+  recovering.modelPackageResident = true;
+  recovering.modelPackageResidentBytes = 8192;
+  require(validResourceSnapshot(recovering),
+          "private recovery package allocation was treated as published residency");
+  require(!recovering.lifecycle.modelResident &&
+              !recovering.lifecycle.inferenceReady &&
+              !recovering.modelTelemetryAvailable,
+          "private recovery candidate appeared as published/live telemetry");
+
+  recovering.runtimeResident = true;
+  recovering.runtimeResidentBytes = 4096;
+  require(validResourceSnapshot(recovering),
+          "private recovery runtime allocation was rejected before publication");
+
+  auto runtimeWithoutPackage = recovering;
+  runtimeWithoutPackage.modelPackageResident = false;
+  runtimeWithoutPackage.modelPackageResidentBytes.reset();
+  require(!validResourceSnapshot(runtimeWithoutPackage),
+          "runtime residency without its package dependency was accepted");
+
+  auto publishedWithoutRuntime = recovering;
+  publishedWithoutRuntime.lifecycle.state = LifecycleState::Ready;
+  publishedWithoutRuntime.lifecycle.power = LifecyclePower::AC;
+  publishedWithoutRuntime.lifecycle.inferenceReady = true;
+  publishedWithoutRuntime.lifecycle.modelResident = true;
+  publishedWithoutRuntime.lifecycle.effectiveContextTokens = 102400;
+  publishedWithoutRuntime.runtimeResident = false;
+  publishedWithoutRuntime.runtimeResidentBytes.reset();
+  publishedWithoutRuntime.modelTelemetryAvailable = true;
+  require(!validResourceSnapshot(publishedWithoutRuntime),
+          "published model residency without package/runtime was accepted");
+
+  modelLess.lifecycle.effectiveContextTokens = 102400;
+  require(validResourceSnapshot(modelLess),
+          "resolved effective context was forgotten while model-less");
+  require(!modelLess.lifecycle.inferenceReady &&
+              !modelLess.lifecycle.modelResident &&
+              !modelLess.modelTelemetryAvailable,
+          "retained detached effective context implied published residency");
+
+  auto unsafeDetachedContext = modelLess;
+  unsafeDetachedContext.lifecycle.effectiveContextTokens =
+      unsafeDetachedContext.lifecycle.configuredContextCeiling + 1;
+  require(!validResourceSnapshot(unsafeDetachedContext),
+          "model-less effective context above its configured ceiling was accepted");
+}
+
+// Control readiness survives the model going away, and is not inference.
+void testControlReadyStatusCanBeModelLess() {
+  ResourceSnapshot snapshot;
+  snapshot.lifecycle = LifecycleStatusSnapshot{
+      .power = LifecyclePower::Battery,
+      .state = LifecycleState::Suspended,
+      .revision = 9,
+      .controlReady = true,
+      .inferenceReady = false,
+      .modelResident = false,
+      .configuredContextCeiling = 131072,
+  };
+  snapshot.backendAllocatedBytes = 4096;
+  snapshot.retainedCacheBytes = 2048;
+  require(validResourceSnapshot(snapshot) &&
+              snapshot.lifecycle.controlReady &&
+              !snapshot.lifecycle.inferenceReady &&
+              !snapshot.lifecycle.modelResident &&
+              !snapshot.lifecycle.effectiveContextTokens &&
+              !snapshot.modelTelemetryAvailable,
+          "model-less lifecycle status conflated control and inference readiness");
+}
+
+// A Battery-suspended graph keeps what the retained stratum measured: the
+// backend's own allocation, the cache, KV and state bytes, the context a
+// start resolved, the loop's metrics and admission. Model-scoped sections read
+// null, which is this schema's spelling of "not measured here": no live model
+// memory, ANE split, streamed store, weights or Engine scheduler is invented
+// from what the start once reported.
+void testDetachedStatusKeepsRetainedMeasurements() {
+  ResourceSnapshot resources;
+  resources.lifecycle.power = LifecyclePower::Battery;
+  resources.lifecycle.state = LifecycleState::Suspended;
+  resources.lifecycle.revision = 19;
+  resources.lifecycle.observationSequence = 27;
+  resources.lifecycle.controlReady = true;
+  resources.lifecycle.configuredContextCeiling = 131072;
+  resources.lifecycle.effectiveContextTokens = 65536;
+  resources.backendAllocatedBytes = 4 * kGiB;
+  resources.retainedCacheBytes = 2048;
+  resources.retainedKvBytes = 1024;
+  resources.retainedStateBytes = 512;
+
+  RuntimeMetricsSnapshot metrics;
+  metrics.prefillInputTokens = 77;
+  metrics.decodeOutputTokens = 9;
+  metrics.capacityFailures = 2;
+  metrics.decodeCycleMilliseconds = 3.5;
+  metrics.ttftP95Milliseconds = 12.5;
+  metrics.currentDecodeBatch = {true, 3, 0, 4, 21, 15, 1.5, 2666.0};
+  const ResourceWaitSnapshot waits{.memory = 1, .concurrency = 2,
+                                   .heldBehindRefusal = 4, .restoring = 1,
+                                   .suspended = 1, .oldestWaitMilliseconds = 250.0,
+                                   .draining = true};
+  const std::string status =
+      runtimeStatusJson(resources, metrics, MemoryPressure::Warning,
+                        "weights released for Battery", waits);
+  require(status.find("\"ready\":false") != std::string::npos &&
+              status.find("\"control_ready\":true") != std::string::npos &&
+              status.find("\"inference_ready\":false") != std::string::npos &&
+              status.find("\"state\":\"suspended\"") != std::string::npos &&
+              status.find("\"model_resident\":false") != std::string::npos &&
+              status.find("\"inference_ready\":true") == std::string::npos &&
+              status.find("\"power\":\"battery\"") != std::string::npos &&
+              status.find("\"revision\":19,\"observation_sequence\":27") != std::string::npos,
+          "detached status did not distinguish control and inference readiness");
+  // The ceiling and the context actually resolved are the only context
+  // numbers this document may carry; it advertises no serving engine's limit.
+  require(status.find("\"maximum_context_tokens\":null") != std::string::npos &&
+              status.find("\"configured_context_ceiling\":131072") !=
+                  std::string::npos &&
+              status.find("\"effective_context_tokens\":65536") !=
+                  std::string::npos &&
+              status.find("\"failure_reason\":\"weights released for Battery\"") !=
+                  std::string::npos,
+          "detached status lost static context or lifecycle diagnostics");
+  require(status.find("\"backend_allocated_bytes\":" + std::to_string(4 * kGiB)) !=
+                  std::string::npos &&
+              status.find("\"model_package_resident\":false,\"model_package_resident_bytes\":null") !=
+                  std::string::npos &&
+              status.find("\"runtime_resident\":false,\"runtime_resident_bytes\":null") !=
+                  std::string::npos &&
+              status.find("\"retained_cache_bytes\":2048,\"retained_kv_bytes\":1024,"
+                          "\"retained_state_bytes\":512,\"model_telemetry_available\":false}") !=
+                  std::string::npos,
+          "detached status lost the retained graph's own measurements or claimed "
+          "a residency it does not hold");
+  require(status.find("\"memory_pressure\":\"warning\"") != std::string::npos &&
+              status.find("\"admission\":{\"waiting\":3,\"waiting_memory\":1,"
+                          "\"waiting_concurrency\":2,\"held_behind_refusal\":4,\"restoring\":1,"
+                          "\"suspended\":1,\"draining\":true,\"oldest_wait_ms\":250}") !=
+                  std::string::npos,
+          "detached status lost the pressure or admission the loop still measures");
+  require(status.find("\"prefill_input_tokens\":77") != std::string::npos &&
+              status.find("\"decode_output_tokens\":9") != std::string::npos &&
+              status.find("\"decode_cycle_ms\":3.5") != std::string::npos &&
+              status.find("\"capacity_failures\":2") != std::string::npos &&
+              status.find("\"ttft_ms\":{\"p50\":0,\"p95\":12.5,\"samples\":0}") !=
+                  std::string::npos &&
+              status.find("\"current_decode_batch\":{\"valid\":true,\"width\":3,") !=
+                  std::string::npos,
+          "detached status did not serve the loop's own metrics");
+  // Nothing scoped to a loaded model or an Engine: null, never a zero this
+  // observation did not take, and never the start's cached reading either.
+  require(status.find("\"memory_plan\":null") != std::string::npos &&
+              status.find("\"memory_actual\":null") != std::string::npos &&
+              status.find("\"memory_governor\":null") != std::string::npos &&
+              status.find("\"memory_audit\":null") != std::string::npos &&
+              status.find("\"weights\":null") != std::string::npos &&
+              status.find("\"streamed_table\":null") != std::string::npos &&
+              status.find("\"streamed_experts\":null") != std::string::npos &&
+              status.find("\"ane_ffn\":null") != std::string::npos &&
+              status.find("\"model_timing\":null") != std::string::npos &&
+              status.find("\"scheduler\":null") != std::string::npos &&
+              status.find("\"identity\":null") != std::string::npos &&
+              status.find("\"kv\":null") != std::string::npos &&
+              status.find("\"state\":null") != std::string::npos &&
+              status.find("\"disk\":null") != std::string::npos &&
+              status.find("\"cache\":null") != std::string::npos &&
+              status.find("\"warmup\":null") != std::string::npos &&
+              status.find("\"metal\":null") != std::string::npos &&
+              status.find("\"requests\":null") != std::string::npos &&
+              status.find("\"draft_context\":null") != std::string::npos &&
+              status.find("\"constraint_masks\":null") != std::string::npos &&
+              status.find("\"images\":null") != std::string::npos,
+           "detached status invented a model or Engine section:\n" + status);
+  require(status.find("\"schema_version\":8") != std::string::npos &&
+              status.find("\"ready\":true") == std::string::npos,
+          "detached status changed the status schema or claimed readiness");
+
+  // A retained resource measured at zero stays an observable zero: null is
+  // only ever used for the sections residency absence makes unmeasurable.
+  resources.retainedCacheBytes = 0;
+  resources.retainedKvBytes = 0;
+  resources.retainedStateBytes = 0;
+  const std::string cleared =
+      runtimeStatusJson(resources, metrics, MemoryPressure::Normal, {}, waits);
+  require(cleared.find("\"retained_cache_bytes\":0,\"retained_kv_bytes\":0,"
+                       "\"retained_state_bytes\":0,\"model_telemetry_available\":false}") !=
+              std::string::npos &&
+              cleared.find("\"retained_cache_bytes\":null") == std::string::npos &&
+              cleared.find("\"streamed_experts\":null") != std::string::npos,
+          "a retained measurement of zero was hidden, or an unmeasurable model "
+          "section read as a zero");
+}
+
+// A snapshot is the only ownership evidence this observation may read; it can
+// never be talked into reporting a resident model's live status, and a snapshot
+// that misstates its own ownership never reaches a document at all.
+void testDetachedStatusRefusesResidencyClaims() {
+  const auto resident = [] {
+    ResourceSnapshot resources;
+    resources.lifecycle = liveLifecycle(65536);
+    resources.modelPackageResident = true;
+    resources.modelPackageResidentBytes = 8192;
+    resources.runtimeResident = true;
+    resources.runtimeResidentBytes = 4096;
+    resources.modelTelemetryAvailable = true;
+    resources.retainedCacheBytes = 2048;
+    return resources;
+  }();
+  require(validResourceSnapshot(resident),
+          "the published-residency fixture is meant to be a valid snapshot, one "
+          "this observation must refuse rather than serialize");
+  rejects([&] { (void)runtimeStatusJson(resident, {}, MemoryPressure::Normal, {}, {}); },
+          "cannot report a resident model's live telemetry",
+          "the residency-absent status serialized a published model");
+
+  auto serving = resident;
+  serving.lifecycle.inferenceReady = true;
+  serving.lifecycle.state = LifecycleState::Ready;
+  require(validResourceSnapshot(serving),
+          "the serving fixture is meant to be a valid snapshot");
+  rejects([&] { (void)runtimeStatusJson(serving, {}, MemoryPressure::Normal, {}, {}); },
+          "cannot report a resident model's live telemetry",
+          "the residency-absent status serialized inference readiness");
+
+  // Absent residency under a label that reads ready: the snapshot itself is
+  // what fails, so no document is produced from a lifecycle label alone.
+  auto labelled = serving;
+  labelled.lifecycle.modelResident = false;
+  labelled.lifecycle.state = LifecycleState::Ready;
+  labelled.modelTelemetryAvailable = false;
+  labelled.modelPackageResident = false;
+  labelled.runtimeResident = false;
+  labelled.modelPackageResidentBytes.reset();
+  labelled.runtimeResidentBytes.reset();
+  require(!validLifecycleStatus(labelled.lifecycle),
+          "a Ready label without residency was accepted by the vocabulary");
+  rejects([&] { (void)runtimeStatusJson(labelled, {}, MemoryPressure::Normal, {}, {}); },
+          "needs a valid resource snapshot",
+          "a lifecycle label became status without ownership evidence");
+
+  // Stale telemetry beside absent residency: the model's own counters cannot
+  // be carried over from an earlier document.
+  auto stale = resident;
+  stale.lifecycle.modelResident = false;
+  require(!validResourceSnapshot(stale),
+          "absent residency with previously published model telemetry was accepted");
+  rejects([&] { (void)runtimeStatusJson(stale, {}, MemoryPressure::Normal, {}, {}); },
+          "needs a valid resource snapshot",
+          "stale model telemetry reached a residency-absent document");
+}
+
+// Reading status is a read: it repeats byte-for-byte, leaves its inputs
+// untouched, notifies nothing and constructs nothing.
+void testDetachedStatusIsPassiveAndRepeatable() {
+  ResourceSnapshot resources;
+  resources.lifecycle.power = LifecyclePower::Battery;
+  resources.lifecycle.state = LifecycleState::Draining;
+  resources.lifecycle.revision = 3;
+  resources.lifecycle.controlReady = true;
+  resources.lifecycle.configuredContextCeiling = 131072;
+  resources.lifecycle.lastError = "the last restore was refused";
+  resources.backendAllocatedBytes = 4096;
+  resources.retainedCacheBytes = 2048;
+  resources.retainedKvBytes = 1024;
+  resources.retainedStateBytes = 512;
+  const RuntimeMetricsSnapshot metrics{
+      .ttftP50Milliseconds = 1.0,
+      .ttftP95Milliseconds = 2.0,
+      .ttftSamples = 1,
+      .itlP50Milliseconds = 3.0,
+      .itlP95Milliseconds = 4.0,
+      .itlSamples = 2,
+      .prefillInputTokens = 5,
+      .prefillWallMilliseconds = 6.0,
+      .decodeOutputTokens = 7,
+      .decodeWallMilliseconds = 8.0,
+      .decodeCycleMilliseconds = 9.0,
+      .draftedTokens = 10,
+      .acceptedDraftTokens = 11,
+      .capacityFailures = 12,
+      .metalFailures = 13};
+  const std::string first =
+      runtimeStatusJson(resources, metrics, MemoryPressure::Warning,
+                        "draining", ResourceWaitSnapshot{});
+  const std::string second =
+      runtimeStatusJson(resources, metrics, MemoryPressure::Warning,
+                        "draining", ResourceWaitSnapshot{});
+  require(first == second, "status collection is not repeatable");
+  const ResourceSnapshot before = resources;
+  const RuntimeMetricsSnapshot metricsBefore = metrics;
+  const std::string written = capturedStderr([&] {
+    for (int pass = 0; pass < 4; ++pass)
+      require(runtimeStatusJson(resources, metrics, MemoryPressure::Warning,
+                                "draining", ResourceWaitSnapshot{}) == first,
+              "status collection changed its own answer");
+  });
+  require(written.empty(), "status collection wrote to stderr: " + written);
+  require(sameResources(before, resources),
+          "status collection mutated the ownership snapshot it was given");
+  require(metricsBefore.prefillInputTokens == metrics.prefillInputTokens &&
+              metricsBefore.decodeOutputTokens == metrics.decodeOutputTokens &&
+              metricsBefore.ttftP95Milliseconds == metrics.ttftP95Milliseconds &&
+              metricsBefore.capacityFailures == metrics.capacityFailures,
+          "status collection mutated the metrics it was given");
+  // A refusal is a read too: it changes nothing either.
+  auto claiming = resources;
+  claiming.lifecycle.modelResident = true;
+  claiming.lifecycle.state = LifecycleState::Recovering;
+  claiming.modelTelemetryAvailable = true;
+  claiming.modelPackageResident = true;
+  claiming.modelPackageResidentBytes = 8192;
+  claiming.runtimeResident = true;
+  claiming.runtimeResidentBytes = 4096;
+  require(validResourceSnapshot(claiming),
+          "the claiming fixture is meant to be a valid snapshot of a resident "
+          "model, which this observation refuses");
+  rejects([&] { (void)runtimeStatusJson(claiming, metrics, MemoryPressure::Warning,
+                                        "draining", ResourceWaitSnapshot{}); },
+          "cannot report a resident model's live telemetry",
+          "the refusal did not name the residency it refused");
+  const ResourceSnapshot claimingBefore = claiming;
+  require(runtimeStatusJson(resources, metrics, MemoryPressure::Warning,
+                            "draining", ResourceWaitSnapshot{}) == first &&
+              sameResources(claimingBefore, claiming),
+          "a refused status left state behind");
+}
+
+// A recovering candidate's private allocations are physically resident while
+// the model is not published: the document states the snapshot's own
+// ownership — booleans and optional byte counts exactly as supplied — while
+// publication, inference readiness and model telemetry stay false and every
+// model/Engine section stays null. Neither the detached nor the package-only
+// shape may gain bytes it was not given.
+void testDetachedStatusReportsRecoveryCandidateResidency() {
+  const RuntimeMetricsSnapshot metrics;
+  const ResourceWaitSnapshot waits;
+  auto recovering = [] {
+    ResourceSnapshot resources;
+    resources.lifecycle.power = LifecyclePower::AC;
+    resources.lifecycle.state = LifecycleState::Recovering;
+    resources.lifecycle.revision = 11;
+    resources.lifecycle.controlReady = true;
+    resources.lifecycle.configuredContextCeiling = 131072;
+    resources.backendAllocatedBytes = 4096;
+    resources.retainedCacheBytes = 2048;
+    resources.retainedKvBytes = 1024;
+    resources.retainedStateBytes = 512;
+    return resources;
+  }();
+
+  // 1. Neither package nor runtime: the false/null pair the detached
+  // observation has always written.
+  require(validResourceSnapshot(recovering) &&
+              !recovering.modelPackageResident && !recovering.runtimeResident &&
+              !recovering.modelPackageResidentBytes &&
+              !recovering.runtimeResidentBytes,
+          "the neither-resident recovery fixture is meant to hold no package "
+          "or runtime");
+  const std::string none =
+      runtimeStatusJson(recovering, metrics, MemoryPressure::Normal, {}, waits);
+  require(none.find("\"model_package_resident\":false,"
+                    "\"model_package_resident_bytes\":null,"
+                    "\"runtime_resident\":false,\"runtime_resident_bytes\":null") !=
+              std::string::npos,
+          "the neither-resident shape lost its false/null pair");
+
+  // 2. The private package, its bytes measured, no runtime yet.
+  recovering.modelPackageResident = true;
+  recovering.modelPackageResidentBytes = 8192;
+  const std::string packageOnly =
+      runtimeStatusJson(recovering, metrics, MemoryPressure::Normal, {}, waits);
+  require(packageOnly.find("\"model_package_resident\":true,"
+                           "\"model_package_resident_bytes\":8192,"
+                           "\"runtime_resident\":false,"
+                           "\"runtime_resident_bytes\":null") != std::string::npos,
+          "a recovery candidate's private package allocation was serialized as "
+          "not resident");
+
+  // 3. Package and runtime both allocated privately, one package still
+  // measured as no bytes of its own: the optional number, not a fabricated
+  // zero.
+  recovering.runtimeResident = true;
+  recovering.runtimeResidentBytes = 4096;
+  const std::string both =
+      runtimeStatusJson(recovering, metrics, MemoryPressure::Normal, {}, waits);
+  require(both.find("\"model_package_resident\":true,"
+                    "\"model_package_resident_bytes\":8192,"
+                    "\"runtime_resident\":true,\"runtime_resident_bytes\":4096") !=
+              std::string::npos,
+          "the recovering candidate's private residency was not reported as "
+          "allocated");
+
+  // 4. Booleans and byte counts exactly match the input, including a package
+  // that carries no byte measurement beside a runtime that does.
+  auto unmeasured = recovering;
+  unmeasured.modelPackageResidentBytes.reset();
+  const std::string partial =
+      runtimeStatusJson(unmeasured, metrics, MemoryPressure::Normal, {}, waits);
+  require(partial.find("\"model_package_resident\":true,"
+                       "\"model_package_resident_bytes\":null,"
+                       "\"runtime_resident\":true,\"runtime_resident_bytes\":4096") !=
+              std::string::npos,
+          "an unmeasured private package byte count was fabricated or a measured "
+          "runtime one hidden");
+
+  // 5. Physical residency is not publication: readiness, telemetry and every
+  // model/Engine section stay as an absent-model observation writes them.
+  for (const auto &document : {none, packageOnly, both, partial}) {
+    require(document.find("\"lifecycle\":{") != std::string::npos &&
+                document.find("\"model_resident\":false") != std::string::npos &&
+                document.find("\"state\":\"recovering\"") != std::string::npos &&
+                document.find("\"ready\":false") != std::string::npos &&
+                document.find("\"inference_ready\":false") != std::string::npos &&
+                document.find("\"inference_ready\":true") ==
+                    std::string::npos &&
+                document.find("\"model_telemetry_available\":false") !=
+                    std::string::npos &&
+                document.find("\"ane_ffn\":null") != std::string::npos &&
+                document.find("\"memory_actual\":null") != std::string::npos &&
+                document.find("\"weights\":null") != std::string::npos &&
+                document.find("\"identity\":null") != std::string::npos &&
+                document.find("\"scheduler\":null") != std::string::npos &&
+                document.find("\"schema_version\":8") != std::string::npos,
+            "a recovery candidate's physical residency was published as live "
+            "model status");
+  }
+  // The candidate's own retained counts still read beside it.
+  require(packageOnly.find("\"retained_cache_bytes\":2048,\"retained_kv_bytes\":1024,"
+                           "\"retained_state_bytes\":512") != std::string::npos,
+          "the recovery document lost the retained graph's measurements");
+}
+
+// The same keys must read apart when a resident model measured a zero and when
+// the model is gone: an ANE split left Off, weights that read as held and a
+// store measured at nothing are all facts a live model leaves behind, and none
+// of them is evidence about residency.
+void testResidentLifecycleStatus() {
+  const auto memoryPlan = plan();
+  engine::EngineSnapshot core;
+  core.maximumContextTokens = 8192;
+  LifecycleStatusSnapshot lifecycle;
+  lifecycle.power = LifecyclePower::AC;
+  lifecycle.state = LifecycleState::Ready;
+  lifecycle.revision = 17;
+  lifecycle.observationSequence = 8;
+  lifecycle.controlReady = true;
+  lifecycle.inferenceReady = true;
+  lifecycle.modelResident = true;
+  lifecycle.configuredContextCeiling = 16384;
+  lifecycle.effectiveContextTokens = 8192;
+  auto render = [&] {
+    const RuntimeCacheIdentity identity;
+    const WarmupReport warmup;
+    const auto memoryAudit = audit(memoryPlan);
+    StatusSample sample;
+    sample.engine = core;
+    sample.lifecycle = lifecycle;
+    return runtimeStatusJson(StatusStart{memoryPlan, identity, warmup, memoryAudit}, sample);
+  };
+  const auto ready = render();
+  require(ready.find("\"ready\":true") != std::string::npos &&
+              ready.find("\"maximum_context_tokens\":8192") != std::string::npos &&
+              ready.find("\"configured_context_ceiling\":16384") != std::string::npos &&
+              ready.find("\"revision\":17,\"observation_sequence\":8") != std::string::npos,
+          "resident lifecycle contract lost readiness or ordering");
+  lifecycle.state = LifecycleState::Draining;
+  lifecycle.inferenceReady = false;
+  const auto draining = render();
+  require(draining.find("\"ready\":false") != std::string::npos &&
+              draining.find("\"inference_ready\":false") != std::string::npos,
+          "resident draining status authorized inference");
+  lifecycle.inferenceReady = true;
+  bool rejected = false;
+  try { (void)render(); } catch (const std::invalid_argument &) { rejected = true; }
+  require(rejected, "invalid resident lifecycle was accepted");
+}
+
+void testResidentZerosAndAbsentResidencyReadApart() {
+  const auto memoryPlan = plan();
+  engine::EngineSnapshot core;
+  core.maximumContextTokens = 102400;
+  WarmupReport warmup;
+  warmup.maximumPrefill = WarmupStepStatus::Complete;
+  warmup.decodeBatches.fill(WarmupStepStatus::Complete);
+  warmup.compositeStateRestore = WarmupStepStatus::Complete;
+  MemoryGovernorSnapshot governor;
+  governor.hostMeasurementValid = true;
+  governor.hostAvailableBytes = 8 * kGiB;
+  governor.hostReserveBytes = 2 * kGiB;
+  governor.hostGrowthAllowed = true;
+  model::SparseRowStats table;
+  table.table = "per_layer_token_embd.weight";
+  const model::ExpertStoreStats experts;
+  const RuntimeCacheIdentity identity;
+  const auto memoryAudit = audit(memoryPlan);
+  StatusSample sample;
+  sample.engine = core;
+  sample.memoryGovernor = governor;
+  sample.weights = WeightsSnapshot{600.0, false, false, 0, 0};
+  sample.streamedTable = table;
+  sample.streamedExperts = experts;
+  const std::string live = runtimeStatusJson(StatusStart{memoryPlan, identity, warmup, memoryAudit}, sample);
+  require(live.find("\"streamed_table\":{\"table\":\"per_layer_token_embd.weight\",\"table_bytes\":0,") !=
+              std::string::npos &&
+              live.find("\"streamed_experts\":{\"cap_bytes\":0,\"floor_bytes\":0,") !=
+                  std::string::npos,
+          "a resident model's measured zeros were serialized as if unmeasurable");
+  // A split the start left Off says nothing about residency: the live
+  // document keeps every live model section beside it.
+  require(live.find("\"ane_ffn\":{\"state\":\"off\"") != std::string::npos &&
+              live.find("\"weights\":{\"idle_release_seconds\":600,\"released\":false,") !=
+                  std::string::npos &&
+              live.find("\"memory_actual\":{\"allocated_bytes\":0,") != std::string::npos &&
+              live.find("\"model_timing\":{\"scope\":\"model_lifetime\"") !=
+                  std::string::npos &&
+              live.find("\"kv\":{\"block_tokens\":32,") != std::string::npos &&
+              live.find("\"warmup\":{") != std::string::npos,
+          "an ANE outcome of Off was read as proof the model resource is absent");
+
+  ResourceSnapshot absent;
+  absent.lifecycle.power = LifecyclePower::Battery;
+  absent.lifecycle.state = LifecycleState::Suspended;
+  absent.lifecycle.revision = 2;
+  absent.lifecycle.controlReady = true;
+  absent.lifecycle.configuredContextCeiling = 131072;
+  absent.backendAllocatedBytes = 4096;
+  absent.retainedCacheBytes = 2048;
+  absent.retainedKvBytes = 1024;
+  absent.retainedStateBytes = 512;
+  const std::string detached =
+      runtimeStatusJson(absent, RuntimeMetricsSnapshot{}, MemoryPressure::Normal,
+                        {}, ResourceWaitSnapshot{});
+  // The same key is null here, an object of measured zeros there: a consumer
+  // can tell the model away from a model that measured nothing.
+  require(detached.find("\"streamed_table\":null") != std::string::npos &&
+              detached.find("\"streamed_experts\":null") != std::string::npos &&
+              detached.find("\"ane_ffn\":null") != std::string::npos &&
+              detached.find("\"weights\":null") != std::string::npos &&
+              detached.find("\"memory_actual\":null") != std::string::npos &&
+              detached.find("\"warmup\":null") != std::string::npos &&
+              detached.find("\"model_telemetry_available\":false") != std::string::npos &&
+              detached.find("\"model_resident\":false") != std::string::npos &&
+              detached.find("\"retained_cache_bytes\":2048") != std::string::npos,
+          "residency-absent and resident readings are not distinguishable");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1085,6 +1766,14 @@ int main(int argc, char **argv) {
   try {
     testCleanRuntimeStatus(argv[1]);
     testStatusVariants(argv[2]);
+    testDetachedLifecycleValues();
+    testControlReadyStatusCanBeModelLess();
+    testDetachedStatusKeepsRetainedMeasurements();
+    testDetachedStatusRefusesResidencyClaims();
+    testDetachedStatusIsPassiveAndRepeatable();
+    testDetachedStatusReportsRecoveryCandidateResidency();
+    testResidentLifecycleStatus();
+    testResidentZerosAndAbsentResidencyReadApart();
     testCurrentReadinessAndSimultaneousPeak();
     testWarmupStepsReportMeasurementTruth();
     testMemoryPressureTelemetry();

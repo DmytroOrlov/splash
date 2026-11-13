@@ -214,6 +214,11 @@ bool Handoff::idle() const {
   return state_->outstanding.empty();
 }
 
+uint32_t Handoff::outstanding() const {
+  std::lock_guard lock(state_->mutex);
+  return static_cast<uint32_t>(state_->outstanding.size());
+}
+
 std::string Handoff::reason() const {
   std::lock_guard lock(state_->mutex);
   return state_->reason;

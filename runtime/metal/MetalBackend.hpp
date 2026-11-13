@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Supervision.hpp"
+#include "ResourceAuthority.hpp"
 #include "metal/Allocation.hpp"
 #include "metal/DeviceCapabilities.hpp"
 
@@ -18,6 +19,7 @@
 @class NSError;
 #endif
 
+namespace splash::engine { class ResourceDomainAuthority; }
 namespace splash::metal {
 
 enum class BufferStorage {
@@ -321,6 +323,40 @@ private:
 
 using CommandCompletion = std::function<void()>;
 
+// [Gate 4 / U-01] Whether the callbacks and descendants one backend still owes
+// its resource domain have retired: a count per category, each counting a
+// callback from the moment its command takes the obligation on until that
+// callback has returned, or has been dropped without ever running (a command
+// whose encoding failed after its first buffers, a step skipped behind a
+// failure: its closure can borrow nothing further, so it retires truthfully).
+// GPU `completed`, `CommandTicket::ready()` and `commandInFlight()` say none of
+// this: a `then` or a timing report can still be running after the GPU ended,
+// and a completion callback is invoked after the ticket is already completed.
+// Reading this is passive: it never waits for a callback, starts, interrupts or
+// releases one, and takes no lock the callbacks themselves take. The counts
+// are per obligation, so a callback that starts further borrowing work keeps
+// the window closed: the seat of the running callback leaves only when it has
+// returned.
+struct CallbackRetirement final {
+  // A command's CommandCompletion, owed from its submission, released when it
+  // has returned or was dropped unrun: includes abandoned and failed commands
+  // whose buffers were committed.
+  uint32_t gpuCallbacks = 0;
+  // A host step's `work`, owed from the step's encoding, released when it
+  // returned or the step was skipped.
+  uint32_t hostWork = 0;
+  // A host step's `then`, armed when its work returned, before the step's
+  // work seat is let go, and released when it returned.
+  uint32_t hostThen = 0;
+  // A host step's `timed` round-trip report, owed from the step's encoding
+  // until it ran, or until the command ended without reporting it.
+  uint32_t hostTiming = 0;
+
+  [[nodiscard]] bool retired() const noexcept {
+    return !(gpuCallbacks | hostWork | hostThen | hostTiming);
+  }
+};
+
 // Bytes one allocation added between two memoryStats() readings.
 [[nodiscard]] inline uint64_t allocationDelta(uint64_t before, uint64_t after) {
   if (after < before)
@@ -372,7 +408,7 @@ static_assert(kCommandTimeoutSeconds > 0.0 && kResidencyKeepAliveSeconds > 0.0);
 // One thread submits, allocates, names tables' reach (setTableReach) and
 // looks up pipelines; checkHealth(), healthy(), unhealthyReason(),
 // memoryStats() and commandInFlight() may be called from any thread.
-class MetalBackend final {
+class MetalBackend final : public AuthorityBinding {
 public:
   // Buffers stay wired for residencyKeepAliveSeconds after the last command;
   // an infinite keep-alive holds them while the backend lives. The watchdog
@@ -509,6 +545,14 @@ public:
   // for a command whose committed buffers the backend gave up (an encoding
   // failure after a commit, or a watchdog timeout): they may still run.
   [[nodiscard]] bool commandInFlight() const noexcept;
+  // [Gate 4 / U-01] The retirement receipt of this backend's callbacks and
+  // descendants (CallbackRetirement), read from the obligations the submitted
+  // commands and their host steps hold. Passive: it waits for nothing, asks
+  // nothing of the GPU, and never runs or cancels a callback. It is the fourth
+  // witness's GPU half: a lease cannot mint a quiescence proof while any count
+  // here stands.
+  [[nodiscard]] CallbackRetirement callbackRetirement() const noexcept;
+  [[nodiscard]] bool callbacksRetired() const noexcept;
   [[nodiscard]] bool healthy() const noexcept;
   // Serving-loop check of the command in flight. Terminal results may invoke
   // completion here if the driver callback is delayed.
@@ -517,11 +561,19 @@ public:
   void checkHealth();
   [[nodiscard]] std::string unhealthyReason() const;
 
-private:
+ private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
 
+  // Non-null while a resource-domain lease (engine/ResourceDomainLease.hpp)
+  // bound this backend: checkOperation(), releaseMemory, submission,
+  // allocation, pipeline preparation, shared-event creation and memory
+  // restore then also require the authority's current holder thread. Bound
+  // and unbound only by the lease's own teardown protocol or this backend's
+  // destruction, so setOperationGuard({}) (the startup guard Bootstrap clears
+  // before serving) can never remove it.
   friend class BackendInstrumentation;
+  friend class splash::engine::ResourceDomainAuthority;
 };
 
 } // namespace splash::metal

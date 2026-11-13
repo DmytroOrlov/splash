@@ -332,9 +332,9 @@ final class Server {
     /// port, where `holder`, the process holding the port's lock, is not this one: the launcher
     /// refuses it and leaves that server's record; else that it stopped, where it recorded
     /// nothing: it crashed or was killed.
-    nonisolated static func exitProblem(record: ServeRecord?, pid: pid_t, port: Int, holder: pid_t?) -> String {
+    nonisolated static func exitProblem(record: ServeRecord?, pid: pid_t, port: Int, holder: pid_t?, locale: Locale = .current) -> String {
         if let record, record.pid == pid, let failure = record.failure {
-            return problem(failure, port: port)
+            return problem(failure, port: port, locale: locale)
         }
         if let holder, holder != pid {
             return "Another Splash server is using port \(port). Stop it, or choose another port in Launch Options › Advanced."
@@ -375,16 +375,16 @@ final class Server {
     /// the memory left, or the SSD cache, holds; other apps hold the memory, GPU memory or port it
     /// needs; an update holds Splash; its files could not be prepared, or Splash cannot serve them;
     /// a failure of no class, which the log tells more of; else the failure's own message.
-    nonisolated static func problem(_ failure: ServeRecord.Failure, port: Int) -> String {
+    nonisolated static func problem(_ failure: ServeRecord.Failure, port: Int, locale: Locale = .current) -> String {
         switch (failure.kind, failure.bound) {
         case ("memory_budget", "max_memory"):
-            return "It needs \(Format.memory(failure.required_bytes ?? 0)) of memory but the memory limit is "
-                + "\(Format.memory(failure.budget_bytes ?? 0)). Raise the memory limit in Launch Options."
+            return "It needs \(Format.memory(failure.required_bytes ?? 0, locale: locale)) of memory but the memory limit is "
+                + "\(Format.memory(failure.budget_bytes ?? 0, locale: locale)). Raise the memory limit in Launch Options."
         case ("memory_budget", "device_memory"):
-            return "It needs \(Format.memory(failure.required_bytes ?? 0)) of memory but this Mac can give it "
-                + "\(Format.memory(failure.budget_bytes ?? 0)). Choose a smaller model."
+            return "It needs \(Format.memory(failure.required_bytes ?? 0, locale: locale)) of memory but this Mac can give it "
+                + "\(Format.memory(failure.budget_bytes ?? 0, locale: locale)). Choose a smaller model."
         case ("context_budget", let bound?):
-            let tokens = ContextLength.figure(failure.plan_context_tokens ?? 0)
+            let tokens = ContextLength.figure(failure.plan_context_tokens ?? 0, locale: locale)
             switch bound {
             case "max_memory":
                 return "Its context fits up to \(tokens) tokens within the memory limit. Choose a shorter context length, or raise the memory limit."

@@ -47,6 +47,23 @@ enum class WriteClass : uint8_t { Reclaim, Persist, Spill };
 class KvTier {
 public:
   virtual ~KvTier() = default;
+  // [Gate 3 / U-02] What this tier still owns of its retained IO, at a point
+  // where the engine thread may ask: a write its IO worker may still run, a
+  // restore it has been asked for or whose readers may still run, and a restore
+  // batch whose end has not returned yet. Every one of them holds a page, a
+  // slot, or the completion wake the tier owes; none of them is visible to any
+  // idle() of the engine. A tier that models none of an obligation reports zero
+  // for it truthfully, never a default that reads as quiescence.
+  struct TierIo final {
+    uint32_t writes = 0;
+    uint32_t restores = 0;
+    uint32_t batches = 0;
+    [[nodiscard]] bool quiescent() const noexcept {
+      return !writes && !restores && !batches;
+    }
+  };
+
+  [[nodiscard]] virtual TierIo retainedIo() const noexcept = 0;
   [[nodiscard]] virtual uint64_t slotBytes() const noexcept = 0;
   // False once its file stopped taking writes (model::SlotFile::writable);
   // existing copies stay readable.

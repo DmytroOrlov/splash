@@ -3,6 +3,7 @@
 #include "Checked.hpp"
 #include "engine/Engine.hpp"
 #include "engine/MemoryPlan.hpp"
+#include "engine/ResourceDomainLease.hpp"
 
 #include <dispatch/dispatch.h>
 #include <mach/mach.h>
@@ -141,12 +142,25 @@ void MemoryGovernor::Reservation::release() noexcept {
   bytes_ = 0;
 }
 
+MemoryGovernor::~MemoryGovernor() {
+  // Unlink this governor from its resource domain: the domain keeps a raw
+  // handle to it.
+  if (authority_)
+    authority_->detachGovernor(this);
+}
+
+void MemoryGovernor::authorityCheck() const {
+  if (authority_)
+    authority_->check("memory governor operation");
+}
+
 MemoryGovernor::MemoryGovernor(metal::MetalBackend &backend, uint64_t limitBytes,
                                uint64_t hostReserveBytes, uint64_t hostSpareReserveBytes,
                                HostMemoryProvider hostMemory, uint64_t untrackedReserveBytes, uint64_t hostHeldBytes)
     : backend_(backend), limitBytes_(limitBytes), hostReserveBytes_(hostReserveBytes),
       hostSpareReserveBytes_(hostSpareReserveBytes), hostMemory_(std::move(hostMemory)),
       untrackedReserveBytes_(untrackedReserveBytes), hostHeldBytes_(hostHeldBytes) {
+  ledger_.bindAuthoritySlot(&authority_);
   if (!limitBytes_) {
     throw std::invalid_argument("memory governor limit must be positive");
   }
@@ -167,6 +181,7 @@ MemoryGovernor::MemoryGovernor(metal::MetalBackend &backend, uint64_t limitBytes
         "host available memory does not satisfy the system reserve",
         metal::AllocationFailure::HostPressure);
   }
+  publishSnapshot();
 }
 
 MemoryGovernor::MemoryGovernor(metal::MetalBackend &backend, const EngineMemoryBreakdown &budget,
@@ -255,6 +270,17 @@ MemoryGovernor::tryReserve(uint64_t bytes, metal::AllocationFailure &failure) {
 
 metal::AllocationAdmission MemoryGovernor::allocationAdmission() noexcept {
   return [this](uint64_t bytes, const std::function<void()> &allocate) -> metal::AllocationResult {
+    std::lock_guard ledgerLock(ledgerMutex_);
+    authorityCheck();
+    struct AdmissionInterval {
+      const ResourceDomainAuthority *authority;
+      explicit AdmissionInterval(const ResourceDomainAuthority *a) : authority(a) {
+        if (authority) { std::lock_guard lock(authority->mutex_); ++authority->admissionsInFlight_; }
+      }
+      ~AdmissionInterval() {
+        if (authority) { std::lock_guard lock(authority->mutex_); --authority->admissionsInFlight_; }
+      }
+    } interval(authority_);
     metal::AllocationFailure failure;
     auto reservation = tryReserve(bytes, failure);
     if (!reservation)
@@ -273,11 +299,25 @@ metal::AllocationAdmission MemoryGovernor::allocationAdmission() noexcept {
   };
 }
 
-void MemoryGovernor::setPressure(MemoryPressure pressure) noexcept {
+void MemoryGovernor::setPressure(MemoryPressure pressure) {
+  std::lock_guard ledgerLock(ledgerMutex_);
+  authorityCheck();
   systemPressure_ = pressure;
 }
 
 MemoryGovernorSnapshot MemoryGovernor::snapshot() const noexcept {
+  std::shared_ptr<const MemoryGovernorSnapshot> publication;
+  {
+    std::lock_guard lock(publicationMutex_);
+    publication = publishedSnapshot_;
+  }
+  return *publication;
+}
+
+MemoryGovernorSnapshot MemoryGovernor::publishSnapshot() {
+  std::lock_guard ledgerLock(ledgerMutex_);
+  // The receipt covers callback evaluation as well as the authority check.
+  MemoryLedger::MutationGuard interval(ledger_);
   const std::optional<HostMemory> host = sampleHost();
   // The rule at this sample, from the one the governor last moved.
   HostRule rule = hostRule_;
@@ -285,14 +325,28 @@ MemoryGovernorSnapshot MemoryGovernor::snapshot() const noexcept {
               growthUnitBytes_, ledger_.hostRefusedWaitingBytes(), bandWaived_);
   MemoryGovernorSnapshot result = snapshot(host, rule);
   result.hostTelemetry = queryHostTelemetry();
+  auto publication = std::make_shared<const MemoryGovernorSnapshot>(result);
+  {
+    std::lock_guard lock(publicationMutex_);
+    publishedSnapshot_.swap(publication);
+  }
   return result;
 }
 
-MemoryGovernorSnapshot MemoryGovernor::evaluate() noexcept {
+MemoryGovernorSnapshot MemoryGovernor::evaluate() {
+  std::lock_guard ledgerLock(ledgerMutex_);
+  MemoryLedger::MutationGuard interval(ledger_);
   const std::optional<HostMemory> host = sampleHost();
   growthUnitBytes_ = ledger_.largestGrowthUnit();
   sampleHostRule(host);
-  return snapshot(host, hostRule_);
+  MemoryGovernorSnapshot result = snapshot(host, hostRule_);
+  result.hostTelemetry = queryHostTelemetry();
+  auto publication = std::make_shared<const MemoryGovernorSnapshot>(result);
+  {
+    std::lock_guard lock(publicationMutex_);
+    publishedSnapshot_.swap(publication);
+  }
+  return result;
 }
 
 uint64_t MemoryGovernor::untrackedBytes() const noexcept {
@@ -331,16 +385,32 @@ MemoryGovernor::snapshot(const std::optional<HostMemory> &hostMemory,
 
 void MemoryGovernor::release(uint64_t bytes) noexcept { reservedBytes_ = saturatingSubtract(reservedBytes_, bytes); }
 
-MemoryGovernor::Scope::Scope(MemoryGovernor &governor, ClaimId claim) noexcept
-    : governor_(governor), previousClaim_(std::exchange(governor.scope_, claim)),
-      previousFunded_(std::exchange(governor.fundedBytes_, 0)) {}
+MemoryGovernor::Scope::Scope(MemoryGovernor &governor, ClaimId claim)
+    : governor_(governor) {
+  std::lock_guard lock(governor_.ledgerMutex_);
+  scopedAuthority_ = governor_.authority_;
+  if (scopedAuthority_) {
+    std::lock_guard authorityLock(scopedAuthority_->mutex_);
+    scopedAuthority_->checkLocked("memory governor operation");
+    ++scopedAuthority_->admissionsInFlight_;
+  }
+  previousClaim_ = std::exchange(governor_.scope_, claim);
+  previousFunded_ = std::exchange(governor_.fundedBytes_, 0);
+}
 
 MemoryGovernor::Scope::~Scope() {
+  std::lock_guard lock(governor_.ledgerMutex_);
   governor_.scope_ = previousClaim_;
   governor_.fundedBytes_ = previousFunded_;
+  if (scopedAuthority_) {
+    std::lock_guard authorityLock(scopedAuthority_->mutex_);
+    --scopedAuthority_->admissionsInFlight_;
+  }
 }
 
 void MemoryGovernor::fund(uint64_t bytes) {
+  std::lock_guard lock(ledgerMutex_);
+  authorityCheck();
   if (!scope_)
     throw std::logic_error("memory was released for an allocation outside a claim's scope");
   fundedBytes_ = saturatingAdd(fundedBytes_, bytes);
@@ -409,6 +479,8 @@ std::array<uint32_t, 3> MemoryGovernor::heldPages(ClaimId claim) const {
 }
 
 FreeResult MemoryGovernor::free(ClaimId claim, const Need &need) {
+  std::lock_guard lock(ledgerMutex_);
+  authorityCheck();
   const Scope scope(*this, claim);
   // What the claim lacks stands: a refusal of what its takes allocate, as a
   // release's refill of the Index runway, says nothing of it.
@@ -488,6 +560,8 @@ GrowthHost MemoryGovernor::growthHost(bool paced) {
 }
 
 bool MemoryGovernor::controlPass(double nowMilliseconds) {
+  std::lock_guard lock(ledgerMutex_);
+  authorityCheck();
   clockMilliseconds_ = nowMilliseconds;
   ledger_.setNow(nowMilliseconds / 1000.0);
   growthUnitBytes_ = ledger_.largestGrowthUnit();
@@ -521,16 +595,20 @@ bool MemoryGovernor::controlPass(double nowMilliseconds) {
     if (pass->nowBytes || pass->laterBytes || pass->outcome == FreeOutcome::Pending)
       nextHostPassMilliseconds_ = nowMilliseconds + kHostSettleMilliseconds;
   }
+  publishSnapshot();
   return pass && pass->outcome == FreeOutcome::Pending;
 }
 
 void MemoryGovernor::growToTargets(double nowMilliseconds, MemoryPressure pressure) {
+  std::lock_guard lock(ledgerMutex_);
+  authorityCheck();
   clockMilliseconds_ = nowMilliseconds;
   ledger_.setNow(nowMilliseconds / 1000.0);
   systemPressure_ = pressure;
   growthUnitBytes_ = ledger_.largestGrowthUnit();
   sampleHostRule(sampleHost());
   ledger_.grow(roomBytes(), growthHost(false));
+  publishSnapshot();
 }
 
 void connectToGovernor(EngineConfig &config, MemoryGovernor &governor) { config.governor = &governor; }

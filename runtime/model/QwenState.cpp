@@ -1,8 +1,12 @@
 #include "model/QwenState.hpp"
 
+#include <CommonCrypto/CommonDigest.h>
+
 #include <cstring>
+#include <cstdlib>
 #include <algorithm>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -49,6 +53,41 @@ std::vector<std::span<std::byte>> stateSpans(const GdnParityBuffers &gdn,
   return spans;
 }
 
+using PayloadDigest = std::array<uint8_t, CC_SHA256_DIGEST_LENGTH>;
+
+void updateSha256(CC_SHA256_CTX &context, std::span<const std::byte> bytes) {
+  constexpr size_t maxChunk = std::numeric_limits<CC_LONG>::max();
+  while (!bytes.empty()) {
+    const size_t chunk = std::min(bytes.size(), maxChunk);
+    if (CC_SHA256_Update(&context, bytes.data(), static_cast<CC_LONG>(chunk)) != 1)
+      throw std::runtime_error("could not update Qwen payload SHA-256");
+    bytes = bytes.subspan(chunk);
+  }
+}
+
+PayloadDigest payloadSha256(std::span<const std::byte> bytes) {
+  CC_SHA256_CTX context;
+  if (CC_SHA256_Init(&context) != 1)
+    throw std::runtime_error("could not initialize Qwen payload SHA-256");
+  updateSha256(context, bytes);
+  PayloadDigest digest{};
+  if (CC_SHA256_Final(digest.data(), &context) != 1)
+    throw std::runtime_error("could not finalize Qwen payload SHA-256");
+  return digest;
+}
+
+PayloadDigest payloadSha256(const std::vector<std::span<std::byte>> &spans) {
+  CC_SHA256_CTX context;
+  if (CC_SHA256_Init(&context) != 1)
+    throw std::runtime_error("could not initialize Qwen payload SHA-256");
+  for (const auto span : spans)
+    updateSha256(context, {span.data(), span.size()});
+  PayloadDigest digest{};
+  if (CC_SHA256_Final(digest.data(), &context) != 1)
+    throw std::runtime_error("could not finalize Qwen payload SHA-256");
+  return digest;
+}
+
 class FileOffload final : public StateOffload {
 public:
   FileOffload(std::shared_ptr<SlotFile::Operation> operation,
@@ -72,27 +111,92 @@ private:
 class FileRestore final : public StateRestore {
 public:
   FileRestore(std::shared_ptr<SlotFile::Operation> operation,
+              std::vector<std::span<std::byte>> spans,
+              PayloadDigest expectedDigest,
               std::function<void()> committed,
               std::function<std::shared_ptr<const CompositeState>()> snapshot)
-      : operation_(std::move(operation)), committed_(std::move(committed)),
+      : operation_(std::move(operation)), spans_(std::move(spans)),
+        expectedDigest_(expectedDigest), committed_(std::move(committed)),
         snapshot_(std::move(snapshot)) {}
   ~FileRestore() override { operation_->drain(); }
   bool ready() const noexcept override { return operation_->ready(); }
-  void cancel() noexcept override { operation_->cancel(); }
+  void cancel() noexcept override {
+    {
+      std::lock_guard lock(mutex_);
+      if (outcome_ != Outcome::Pending)
+        return;
+      outcome_ = Outcome::Cancelled;
+    }
+    operation_->cancel();
+  }
   bool finish() override {
-    if (!operation_->wait()) return false;
-    committed_();
-    finished_ = true;
-    return true;
+    {
+      std::lock_guard lock(mutex_);
+      if (outcome_ == Outcome::Succeeded)
+        return true;
+      if (outcome_ != Outcome::Pending)
+        return false;
+    }
+
+    // Waiting and hashing do not hold the terminal lock: cancellation can
+    // still win until the final commit decision below.
+    if (!operation_->wait()) {
+      std::lock_guard lock(mutex_);
+      if (outcome_ == Outcome::Pending)
+        outcome_ = Outcome::Failed;
+      return false;
+    }
+
+    PayloadDigest actualDigest{};
+    try {
+      actualDigest = payloadSha256(spans_);
+    } catch (...) {
+      std::lock_guard lock(mutex_);
+      if (outcome_ == Outcome::Pending)
+        outcome_ = Outcome::Failed;
+      throw;
+    }
+
+    std::lock_guard lock(mutex_);
+    if (outcome_ == Outcome::Succeeded)
+      return true;
+    if (outcome_ != Outcome::Pending)
+      return false;
+    if (actualDigest != expectedDigest_) {
+      outcome_ = Outcome::Failed;
+      return false;
+    }
+
+    // Holding the terminal lock through this callback makes commit and
+    // cancellation linearizable. A concurrent cancel either sets Cancelled
+    // first, or observes the terminal result after this one commit finishes.
+    try {
+      committed_();
+      outcome_ = Outcome::Succeeded;
+      return true;
+    } catch (...) {
+      outcome_ = Outcome::Failed;
+      throw;
+    }
   }
   std::shared_ptr<const CompositeState> snapshot() override {
-    return finished_ ? snapshot_() : nullptr;
+    {
+      std::lock_guard lock(mutex_);
+      if (outcome_ != Outcome::Succeeded)
+        return nullptr;
+    }
+    return snapshot_();
   }
 private:
+  enum class Outcome : uint8_t { Pending, Succeeded, Failed, Cancelled };
+
   std::shared_ptr<SlotFile::Operation> operation_;
+  std::vector<std::span<std::byte>> spans_;
+  PayloadDigest expectedDigest_{};
   std::function<void()> committed_;
   std::function<std::shared_ptr<const CompositeState>()> snapshot_;
-  bool finished_ = false;
+  std::mutex mutex_;
+  Outcome outcome_ = Outcome::Pending;
 };
 
 } // namespace
@@ -175,8 +279,9 @@ QwenCompositeState::QwenCompositeState(std::shared_ptr<QwenBufferPool> pool,
 
 QwenCompositeState::QwenCompositeState(CompositeStateLayout layout,
     QwenLogicalLengths lengths, std::shared_ptr<SlotFile> file,
-    std::shared_ptr<SlotFile::Slot> disk)
-    : layout_(layout), lengths_(lengths), file_(std::move(file)), disk_(std::move(disk)) {}
+    std::shared_ptr<SlotFile::Slot> disk, PayloadDigest payloadSha256)
+    : layout_(layout), lengths_(lengths), file_(std::move(file)),
+      disk_(std::move(disk)), payloadSha256_(payloadSha256) {}
 
 std::unique_ptr<StateOffload>
 QwenCompositeState::offload(std::function<void()> completion) const {
@@ -194,12 +299,13 @@ std::unique_ptr<StateOffload> QwenCompositeState::write(
     QwenLogicalLengths lengths, std::function<void()> completion) {
   auto disk = file->acquire();
   if (!disk) return {};
-  auto result = std::shared_ptr<const QwenCompositeState>(
-      new QwenCompositeState(layout, lengths, file, disk));
   const std::span<std::byte> staged = staging->bytes();
   std::byte *cursor = staged.data();
   for (auto span : spans)
     cursor = std::copy(span.begin(), span.end(), cursor);
+  const PayloadDigest digest = payloadSha256(staged);
+  auto result = std::shared_ptr<const QwenCompositeState>(
+      new QwenCompositeState(layout, lengths, file, disk, digest));
   std::shared_ptr<SlotFile::Operation> operation;
   try {
     operation = file->write(
@@ -225,9 +331,9 @@ QwenCompositeState::persist(std::function<void()> completion) const {
   auto disk = file_->acquire();
   if (!disk)
     return {};
-  auto copy = std::shared_ptr<const CompositeState>(
-      new QwenCompositeState(layout_, lengths_, file_, disk));
   const auto spans = stateSpans(buffers_.gdn->buffers(), buffers_.window->buffer());
+  auto copy = std::shared_ptr<const CompositeState>(
+      new QwenCompositeState(layout_, lengths_, file_, disk, payloadSha256(spans)));
   auto operation = file_->write(std::move(disk), {spans.begin(), spans.end()},
                                 std::move(completion));
   // As for write(): nothing stops the file between the check and the write.
@@ -597,6 +703,10 @@ std::unique_ptr<StateRestore> QwenStateStorage::beginRestore(
   // The read takes the window along whether or not the restore uses it:
   // the snapshot that promotes the state copies it from the lane.
   auto spans = stateSpans(current(index), window(index));
+  auto restoreSpans = spans;
+  // T035 must prove destination-local failure and cancellation against these
+  // upstream lane buffers. FileRestore publishes lengths only after SHA-256
+  // verification; failed IO may have changed unpublished destination bytes.
   auto commit = [this, index, lengths = typed->lengths_, restoreDraftState,
                  committed = std::move(committed)] {
     restoreLengths(index, lengths, restoreDraftState);
@@ -604,7 +714,8 @@ std::unique_ptr<StateRestore> QwenStateStorage::beginRestore(
   };
   auto operation = typed->file_->read(typed->disk_, std::move(spans), std::move(completion));
   try {
-    return std::make_unique<FileRestore>(operation, std::move(commit),
+    return std::make_unique<FileRestore>(operation, std::move(restoreSpans),
+        typed->payloadSha256_, std::move(commit),
         [this, index, lengths = typed->lengths_] { return snapshot(index, lengths); });
   } catch (...) {
     operation->drain();
@@ -621,8 +732,21 @@ std::shared_ptr<const CompositeState> QwenStateStorage::adopt(const SlotRecord &
   validateLengths(lengths, true);
   if (record.payloadBytes != layout_.cachedBytes())
     throw std::invalid_argument("a recorded Qwen state does not match the state layout");
+  auto disk = file_->adopt(record);
+  // Adoption excludes worker operations. Read synchronously with SlotFile's
+  // CRC verification before binding the immutable source to its digest.
+  const auto size = file_->slotBytes();
+  std::unique_ptr<void, decltype(&std::free)> buffer(
+      std::aligned_alloc(kSlotReadAlignmentBytes, size), &std::free);
+  if (!buffer)
+    throw std::bad_alloc();
+  auto bytes = file_->readAt(*disk, 0, layout_.cachedBytes(),
+      {static_cast<std::byte *>(buffer.get()), static_cast<size_t>(size)});
+  if (!bytes)
+    return {};
   return std::shared_ptr<const CompositeState>(
-      new QwenCompositeState(layout_, lengths, file_, file_->adopt(record)));
+      new QwenCompositeState(layout_, lengths, file_, std::move(disk),
+                             payloadSha256(*bytes)));
 }
 
 QwenStateStorage::Lane &QwenStateStorage::lane(uint32_t index) {

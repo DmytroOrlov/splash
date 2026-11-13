@@ -1,3 +1,4 @@
+import base64
 import concurrent.futures
 import dataclasses
 import http.client
@@ -18,12 +19,15 @@ from dev.tests.server_fixtures import (
     FakeRuntime,
     FakeTokenizer,
     HarnessTestCase,
+    ImagePadTokenizer,
     Plan,
     chat_body,
     console_written,
     main_args,
     make_frontend,
     make_job,
+    pdf_bytes,
+    png_data_url,
     unprepared_hold,
 )
 from server import backend as backend_api
@@ -33,9 +37,18 @@ from server import server as api
 from server import supervision
 
 
+def ready_status(correlation_id=1):
+    return native_peer.status_event(
+        correlation_id,
+        configured_context_ceiling=READY.max_context_tokens,
+        effective_context_tokens=READY.max_context_tokens,
+        maximum_context_tokens=READY.max_context_tokens,
+    )
+
+
 def answer_status(process, message):
     if isinstance(message, wire.StatusRequestFrame):
-        process.send(native_peer.status_event(message.correlation_id))
+        process.send(ready_status(message.correlation_id))
 
 
 class RecoveringRuntime(FakeRuntime):
@@ -44,6 +57,7 @@ class RecoveringRuntime(FakeRuntime):
 
     def __init__(self):
         super().__init__()
+        self.status_event = ready_status()
         self.outcomes = queue.Queue()
         self.startup_calls = 0
 
@@ -63,6 +77,8 @@ class RecoveringRuntime(FakeRuntime):
         self.spawned_at = None
         if outcome is not None:
             raise outcome
+        self.restart_count += 1
+        self.capabilities = dataclasses.replace(self.capabilities)
         self.ready = True
         return True
 
@@ -84,8 +100,14 @@ class ServerRecoveryTests(HarnessTestCase):
         backend = backend_api.NativeBackend(
             runtime, FakeTokenizer(), lambda _record: None
         )
+        backend.configure_context_ceiling(
+            READY.max_context_tokens, self._context_limit_updated
+        )
         self.addCleanup(backend.close)
         return backend
+
+    def _context_limit_updated(self, context):
+        self.context_limit = context
 
     def relaunched(self, runtime, backend):
         runtime.outcomes.put(None)
@@ -100,11 +122,452 @@ class ServerRecoveryTests(HarnessTestCase):
             "reasoning_effort": "none",
         }
 
+    def test_battery_control_ready_http_recovers_on_ac_without_new_generation(self):
+        def observation(revision, effective=None):
+            snapshot = json.loads(native_peer.status_event().json)
+            ready = effective is not None
+            snapshot.update(
+                ready=ready,
+                control_ready=True,
+                inference_ready=ready,
+                model_resident=ready,
+                configured_context_ceiling=READY.max_context_tokens,
+                effective_context_tokens=effective,
+                maximum_context_tokens=effective,
+                lifecycle={
+                    "power": "ac" if ready else "battery",
+                    "state": "ready" if ready else "suspended",
+                    "revision": revision,
+                    "observation_sequence": revision,
+                    "control_ready": True,
+                    "inference_ready": ready,
+                    "model_resident": ready,
+                },
+            )
+            return wire.StatusJsonEvent(
+                1, json.dumps(snapshot, separators=(",", ":")).encode()
+            )
+
+        class ObservedRuntime(FakeRuntime):
+            def __init__(self):
+                super().__init__()
+                self.status_calls = 0
+                self.wait_calls = 0
+                self.identity = object()
+                self.status_event = observation(1)
+
+            def status(self, *args, **kwargs):
+                self.status_calls += 1
+                return super().status(*args, **kwargs)
+
+            def wait_ready(self, timeout=None):
+                self.wait_calls += 1
+                return super().wait_ready(timeout)
+
+        runtime = ObservedRuntime()
+        admitted = Plan([[4]], block=True)
+        runtime.plans.append(admitted)
+        identity = runtime.identity
+        harness = self.harness(runtime, max_context=READY.max_context_tokens)
+        witness = runtime.readiness
+        frontend = harness.app
+
+        def controls():
+            for path in ("/health", "/status", "/metrics", "/v1/models"):
+                self.assertEqual(harness.request("GET", path)[0], 200, path)
+
+        def refresh(revision, effective):
+            runtime.status_event = observation(revision, effective)
+            with harness.backend.lock:
+                harness.backend.status_refresh_after = 0
+                harness.backend._queue_status_refresh_locked()
+            self.wait_until(
+                lambda: harness.backend.status_order == (revision, 1, revision), 2
+            )
+
+        controls()
+        self.assertEqual(harness.request("GET", "/ready")[0], 503)
+        self.assertEqual(
+            harness.request("POST", "/v1/chat/completions", chat_body(max_tokens=4))[0],
+            503,
+        )
+        self.assertEqual(runtime.requests, [])
+        refresh(2, 72)
+        self.assertEqual(harness.app.max_context, 72)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(
+                harness.request, "POST", "/v1/chat/completions", chat_body(max_tokens=4)
+            )
+            try:
+                self.assertTrue(admitted.started.wait(2))
+                refresh(3, None)
+                controls()
+                self.assertEqual(harness.request("GET", "/ready")[0], 503)
+                self.assertEqual(
+                    harness.request(
+                        "POST", "/v1/chat/completions", chat_body(max_tokens=4)
+                    )[0],
+                    503,
+                )
+                self.assertEqual(len(runtime.requests), 1)
+            finally:
+                admitted.release.set()
+            self.assertEqual(pending.result(timeout=2)[0], 200)
+        refresh(4, 64)
+        self.assertIs(harness.app, frontend)
+        self.assertEqual(harness.app.max_context, 64)
+        self.assertEqual(harness.app._output_budget(None, [1] * 40, "max_tokens"), 24)
+        model = json.loads(harness.request("GET", "/v1/models")[2])["data"][0]
+        self.assertEqual(
+            (model["max_model_len"], model["context_length"]),
+            (READY.max_context_tokens,) * 2,
+        )
+        self.assertEqual(harness.request("GET", "/ready")[0], 200)
+        self.assertTrue(runtime.ready)
+        self.assertIs(runtime.identity, identity)
+        self.assertIs(runtime.readiness, witness)
+        self.assertEqual(runtime.restart_count, 0)
+        self.assertEqual(runtime.wait_calls, 0)
+        self.assertGreaterEqual(runtime.status_calls, 4)
+
+    def test_cold_ready_vision_survives_ac_without_another_ready(self):
+        for vision in (True, False):
+            with self.subTest(vision=vision):
+                runtime = FakeRuntime()
+                runtime.readiness = dataclasses.replace(
+                    READY, vision=vision, max_concurrent_requests=2
+                )
+                original = runtime.readiness
+                snapshot = json.loads(native_peer.status_event().json)
+
+                def observe(revision, ready):
+                    snapshot.update(
+                        ready=ready,
+                        control_ready=True,
+                        inference_ready=ready,
+                        model_resident=ready,
+                        configured_context_ceiling=READY.max_context_tokens,
+                        effective_context_tokens=READY.max_context_tokens
+                        if ready
+                        else None,
+                        maximum_context_tokens=READY.max_context_tokens
+                        if ready
+                        else None,
+                        lifecycle={
+                            "power": "ac" if ready else "battery",
+                            "state": "ready" if ready else "suspended",
+                            "revision": revision,
+                            "observation_sequence": revision,
+                            "control_ready": True,
+                            "inference_ready": ready,
+                            "model_resident": ready,
+                        },
+                    )
+                    runtime.status_event = wire.StatusJsonEvent(
+                        1, json.dumps(snapshot).encode()
+                    )
+
+                observe(1, False)
+                harness = self.harness(
+                    runtime,
+                    tokenizer=ImagePadTokenizer(),
+                    vision=original.vision,
+                    max_context=READY.max_context_tokens,
+                )
+                self.assertEqual(harness.request("GET", "/ready")[0], 503)
+                self.assertEqual(
+                    harness.request("POST", "/v1/chat/completions", chat_body())[0], 503
+                )
+                self.assertEqual(runtime.requests, [])
+                observe(2, True)
+                with harness.backend.lock:
+                    harness.backend.status_refresh_after = 0
+                    harness.backend._queue_status_refresh_locked()
+                self.wait_until(lambda: harness.backend.status_order == (2, 1, 2), 2)
+                self.assertIs(runtime.readiness, original)
+                model = json.loads(harness.request("GET", "/v1/models")[2])["data"][0]
+                self.assertEqual(
+                    model["input_modalities"],
+                    ["text", "image", "pdf"] if vision else ["text"],
+                )
+                image = {"type": "image_url", "image_url": {"url": png_data_url()}}
+                pdf = {
+                    "type": "file",
+                    "file": {
+                        "filename": "a.pdf",
+                        "file_data": "data:application/pdf;base64,"
+                        + base64.b64encode(pdf_bytes()).decode(),
+                    },
+                }
+                for part in (image, pdf):
+                    status, _, payload = harness.request(
+                        "POST",
+                        "/v1/chat/completions",
+                        chat_body(messages=[{"role": "user", "content": [part]}]),
+                    )
+                    if vision:
+                        self.assertEqual(status, 200, payload)
+                    else:
+                        self.assertEqual(status, 400, payload)
+                        self.assertIn(b"without vision", payload)
+
+    def test_duplicate_ac_pending_snapshot_recovers_at_new_sequence(self):
+        # [T034] The frontend half: the native pump re-consumes a duplicate AC
+        # sample at the SAME lifecycle revision but a strictly newer observation
+        # sequence, and only that newer order may replace the negative snapshot
+        # the pending sample produced. Same-order authority stays strict.
+        revision, sequence = 2, 5
+        ceiling = READY.max_context_tokens
+
+        def observation(sample, inference_ready):
+            document = json.loads(native_peer.status_event().json)
+            document.update(
+                ready=inference_ready,
+                control_ready=True,
+                inference_ready=inference_ready,
+                model_resident=True,
+                configured_context_ceiling=ceiling,
+                effective_context_tokens=ceiling if inference_ready else None,
+                maximum_context_tokens=ceiling,
+                lifecycle={
+                    "power": "ac",
+                    "state": "ready",
+                    "revision": revision,
+                    "observation_sequence": sample,
+                    "model_resident": True,
+                    "control_ready": True,
+                    "inference_ready": inference_ready,
+                    "last_error": "",
+                },
+            )
+            return wire.StatusJsonEvent(
+                1, json.dumps(document, separators=(",", ":")).encode()
+            )
+
+        class ObservedRuntime(FakeRuntime):
+            def __init__(self):
+                super().__init__()
+                self.status_calls = 0
+                self.identity = object()
+
+            def status(self, *args, **kwargs):
+                self.status_calls += 1
+                return super().status(*args, **kwargs)
+
+        runtime = ObservedRuntime()
+        # The pump's Ready lifecycle with the duplicate AC still in the mailbox:
+        # inference fails closed, the Engine and its context stay published.
+        runtime.status_event = observation(sequence, False)
+        harness = self.harness(runtime, max_context=ceiling)
+        frontend, witness, identity = harness.app, runtime.readiness, runtime.identity
+
+        def refresh(sample, inference_ready):
+            runtime.status_event = observation(sample, inference_ready)
+            with harness.backend.lock:
+                harness.backend.status_refresh_after = 0
+                harness.backend._queue_status_refresh_locked()
+
+        self.assertEqual(harness.request("GET", "/ready")[0], 503)
+        self.assertEqual(
+            harness.request("POST", "/v1/chat/completions", chat_body(max_tokens=4))[0],
+            503,
+        )
+        self.assertEqual(runtime.requests, [])
+        refresh(sequence, False)
+        self.wait_until(
+            lambda: harness.backend.status_order == (revision, 1, sequence), 2
+        )
+        self.assertEqual(harness.request("GET", "/ready")[0], 503)
+        self.assertEqual(runtime.restart_count, 0)
+        self.assertIs(harness.app, frontend)
+        self.assertIs(runtime.readiness, witness)
+
+        # A contradictory Ready=true authority at the SAME order cannot replace
+        # the cached negative one.
+        runtime.status_event = observation(sequence, True)
+        with harness.backend.lock:
+            cached_ordinal = harness.backend.status_cached_ordinal
+            self.assertFalse(
+                harness.backend._cache_status(
+                    json.loads(runtime.status_event.json),
+                    runtime.restart_count,
+                    cached_ordinal + 1,
+                )
+            )
+            self.assertEqual(harness.backend.status_order, (revision, 1, sequence))
+            self.assertIs(harness.backend.status_snapshot["inference_ready"], False)
+            self.assertIsNone(harness.backend.status_confirmed_at)
+        refresh(sequence, True)
+        self.wait_until(lambda: harness.backend.status_confirmed_at is None, 2)
+        self.assertEqual(harness.backend.status_order, (revision, 1, sequence))
+        self.assertEqual(harness.request("GET", "/ready")[0], 503)
+        self.assertEqual(runtime.requests, [])
+
+        # The owner consumed the duplicate: same revision, one newer order.
+        refresh(sequence + 1, True)
+        self.wait_until(
+            lambda: harness.backend.status_order == (revision, 1, sequence + 1), 2
+        )
+        self.assertEqual(harness.request("GET", "/ready")[0], 200)
+        self.assertEqual(
+            harness.request("POST", "/v1/chat/completions", chat_body(max_tokens=4))[0],
+            200,
+        )
+        self.assertEqual(len(runtime.requests), 1)
+        self.assertEqual(harness.app, frontend)
+        self.assertEqual(harness.app.max_context, ceiling)
+        self.assertIs(runtime.readiness, witness)
+        self.assertIs(runtime.identity, identity)
+        self.assertEqual(runtime.restart_count, 0)
+        self.assertGreaterEqual(runtime.status_calls, 2)
+
+    def test_invalid_resolved_context_fails_closed_without_fencing_generation(self):
+        cases = (
+            "missing",
+            "null",
+            "zero",
+            "negative",
+            "float",
+            "string",
+            "bool",
+            "over ceiling",
+            "ceiling mismatch",
+            "missing ceiling",
+            "missing maximum",
+            "maximum mismatch",
+            "readiness mismatch",
+        )
+        for case in cases:
+            with self.subTest(case=case):
+                runtime = FakeRuntime()
+                with mock.patch.object(
+                    runtime, "wait_ready", wraps=runtime.wait_ready
+                ) as handshake:
+                    harness = self.harness(runtime, max_context=128)
+                    frontend = harness.app
+                    witness = runtime.readiness
+                    self.assertEqual(harness.request("GET", "/ready")[0], 200)
+                    snapshot = json.loads(native_peer.status_event().json)
+                    snapshot["lifecycle"].update(revision=2, observation_sequence=2)
+                    field = "effective_context_tokens"
+                    if case == "missing":
+                        snapshot.pop(field)
+                    elif case in (
+                        "null",
+                        "zero",
+                        "negative",
+                        "float",
+                        "string",
+                        "bool",
+                        "over ceiling",
+                    ):
+                        snapshot[field] = {
+                            "null": None,
+                            "zero": 0,
+                            "negative": -1,
+                            "float": 1.5,
+                            "string": "64",
+                            "bool": True,
+                            "over ceiling": 129,
+                        }[case]
+                    elif case == "ceiling mismatch":
+                        snapshot["configured_context_ceiling"] = 127
+                    elif case == "missing ceiling":
+                        snapshot.pop("configured_context_ceiling")
+                    elif case == "missing maximum":
+                        snapshot.pop("maximum_context_tokens")
+                    elif case == "maximum mismatch":
+                        snapshot["maximum_context_tokens"] = 64
+                    else:
+                        snapshot["lifecycle"]["inference_ready"] = False
+
+                    def publish(document, revision):
+                        runtime.status_event = wire.StatusJsonEvent(
+                            1, json.dumps(document, separators=(",", ":")).encode()
+                        )
+                        with harness.backend.lock:
+                            harness.backend.status_refresh_after = 0
+                            harness.backend._queue_status_refresh_locked()
+                        self.wait_until(
+                            lambda: (
+                                harness.backend.status_order == (revision, 1, revision)
+                            ),
+                            2,
+                        )
+
+                    publish(snapshot, 2)
+                    self.assertEqual(harness.request("GET", "/ready")[0], 503)
+                    self.assertEqual(
+                        harness.request(
+                            "POST", "/v1/chat/completions", chat_body(max_tokens=4)
+                        )[0],
+                        503,
+                    )
+                    self.assertIsNone(frontend.max_context)
+                    for path in ("/status", "/health", "/v1/models"):
+                        self.assertEqual(harness.request("GET", path)[0], 200)
+                    self.assertTrue(runtime.ready)
+                    self.assertEqual(runtime.restart_count, 0)
+                    valid = json.loads(native_peer.status_event().json)
+                    valid.update(effective_context_tokens=64, maximum_context_tokens=64)
+                    valid["lifecycle"].update(revision=3, observation_sequence=3)
+                    publish(valid, 3)
+                    self.assertIs(harness.app, frontend)
+                    self.assertEqual(frontend.max_context, 64)
+                    self.assertEqual(harness.request("GET", "/ready")[0], 200)
+                    self.assertEqual(
+                        harness.request(
+                            "POST", "/v1/chat/completions", chat_body(max_tokens=4)
+                        )[0],
+                        200,
+                    )
+                    self.assertIs(runtime.readiness, witness)
+                    self.assertEqual(runtime.restart_count, 0)
+                    handshake.assert_not_called()
+
+    def test_stale_positive_refuses_before_native_submit_and_refreshes(self):
+        runtime = FakeRuntime()
+        harness = self.harness(runtime, max_context=128)
+        self.assertEqual(harness.request("GET", "/ready")[0], 200)
+        with harness.backend.lock:
+            harness.backend.status_confirmed_at -= (
+                backend_api.STATUS_LIFECYCLE_FRESHNESS_SECONDS + 1
+            )
+        with (
+            mock.patch.object(
+                harness.backend, "_queue_status_refresh_locked"
+            ) as scheduled,
+            mock.patch.object(runtime, "submit", wraps=runtime.submit) as submit,
+            mock.patch.object(harness.backend, "status", side_effect=TimeoutError),
+        ):
+            self.assertEqual(
+                harness.request(
+                    "POST", "/v1/chat/completions", chat_body(max_tokens=4)
+                )[0],
+                503,
+            )
+            submit.assert_not_called()
+            scheduled.assert_called()
+        self.assertTrue(runtime.ready)
+        self.assertEqual(runtime.restart_count, 0)
+        snapshot = json.loads(native_peer.status_event().json)
+        snapshot["lifecycle"].update(revision=2, observation_sequence=2)
+        runtime.status_event = wire.StatusJsonEvent(1, json.dumps(snapshot).encode())
+        with harness.backend.lock:
+            harness.backend.status_refresh_after = 0
+            harness.backend._queue_status_refresh_locked()
+        self.wait_until(lambda: harness.backend.status_order == (2, 1, 2), 2)
+        self.assertEqual(
+            harness.request("POST", "/v1/chat/completions", chat_body(max_tokens=4))[0],
+            200,
+        )
+        self.assertEqual(runtime.restart_count, 0)
+
     def test_probes_share_one_relaunch_without_waiting_for_it(self):
         for first_path in ("/ready", "/status"):
             with self.subTest(first_path=first_path):
                 runtime = RecoveringRuntime()
-                harness = self.harness(runtime)
+                harness = self.harness(runtime, max_context=READY.max_context_tokens)
                 runtime.fail(harness.backend)
                 started = time.monotonic()
                 response = harness.request("GET", first_path)
@@ -123,6 +586,7 @@ class ServerRecoveryTests(HarnessTestCase):
                         self.assertTrue(snapshot["transport"]["recovering"])
                 self.assertEqual(runtime.startup_calls, 1)
                 self.relaunched(runtime, harness.backend)
+                self.wait_until(lambda: harness.backend.refusal() is None)
                 self.assertEqual(harness.request("GET", "/ready")[0], 200)
                 snapshot = json.loads(harness.request("GET", "/status")[2])
                 self.assertFalse(snapshot["transport"]["recovering"])
@@ -136,7 +600,7 @@ class ServerRecoveryTests(HarnessTestCase):
         backend tells the server, which exits (they went on every 60 s for
         good, each loading the weights again)."""
         runtime = RecoveringRuntime()
-        harness = self.harness(runtime)
+        harness = self.harness(runtime, max_context=READY.max_context_tokens)
         backend = harness.backend
         backend.on_stopped = stopped = mock.Mock()
         clock = [100.0]
@@ -426,8 +890,30 @@ class ServerRecoveryTests(HarnessTestCase):
         app = make_frontend(
             FakeTokenizer(), backend, "test-model", 128, 1, 2, vision=False
         )
+        self.assertIsNone(app.max_context)
+        backend.status()
         self.assertEqual(app.max_context, READY.max_context_tokens)
+        old_generation = runtime.restart_count
+        old_status = backend_api.json_codec.loads(ready_status().json)
         smaller = dataclasses.replace(READY, max_context_tokens=65_536)
+
+        def relaunched_status(process, message):
+            if isinstance(message, wire.StatusRequestFrame):
+                ceiling = (
+                    65_536
+                    if process is not factory.processes[0]
+                    else READY.max_context_tokens
+                )
+                process.send(
+                    native_peer.status_event(
+                        message.correlation_id,
+                        configured_context_ceiling=ceiling,
+                        effective_context_tokens=ceiling,
+                        maximum_context_tokens=ceiling,
+                    )
+                )
+
+        factory.handler = relaunched_status
         factory.initial_output = native_peer.serialize_event(smaller)
         with (
             mock.patch.object(runtime._crash_trace, "dump"),
@@ -445,6 +931,13 @@ class ServerRecoveryTests(HarnessTestCase):
         self.assertIsNone(backend.stop_reason)
         self.assertIsNone(backend.refusal())
         self.assertEqual(app.max_context, 65_536)
+        self.assertFalse(backend._cache_status(old_status, old_generation, 100))
+        self.assertEqual(app.max_context, 65_536)
+        self.assertEqual(app.configured_context_ceiling, 65_536)
+        handler = SimpleNamespace(app=app, _limits=lambda: {})
+        self.assertEqual(
+            api.FrontendHandler._models(handler)[0]["max_model_len"], 65_536
+        )
         self.assertEqual(app.status()["capabilities"], {"max_context_tokens": 65_536})
 
     def test_relaunch_asks_for_the_first_engines_context(self):
@@ -460,7 +953,24 @@ class ServerRecoveryTests(HarnessTestCase):
                 dataclasses.replace(READY, max_context_tokens=65_536),
             ):
                 with self.subTest(max_context=max_context, relaunched=relaunched):
-                    factory = FakeFactory(handler=answer_status)
+
+                    def answer_relaunch_status(process, message):
+                        if isinstance(message, wire.StatusRequestFrame):
+                            context = (
+                                relaunched.max_context_tokens
+                                if process is not factory.processes[0]
+                                else READY.max_context_tokens
+                            )
+                            process.send(
+                                native_peer.status_event(
+                                    message.correlation_id,
+                                    configured_context_ceiling=context,
+                                    effective_context_tokens=context,
+                                    maximum_context_tokens=context,
+                                )
+                            )
+
+                    factory = FakeFactory(handler=answer_relaunch_status)
                     commands = []
 
                     def spawn(command, factory=factory, commands=commands, **_):
@@ -626,7 +1136,7 @@ class ServerRecoveryTests(HarnessTestCase):
 
     @staticmethod
     def serve(process, frame):
-        process.send(wire.StartEvent(frame.request_id, 0, 0))
+        process.send(wire.StartEvent(frame.request_id, 0, 0, READY.max_context_tokens))
         process.send(wire.TokensEvent(frame.request_id, 0, (4,)))
         process.send(
             wire.DoneEvent(
@@ -644,7 +1154,9 @@ class ServerRecoveryTests(HarnessTestCase):
     @staticmethod
     def crash(code):
         def fail(process, frame):
-            process.send(wire.StartEvent(frame.request_id, 0, 0))
+            process.send(
+                wire.StartEvent(frame.request_id, 0, 0, READY.max_context_tokens)
+            )
             process.send(
                 wire.ErrorEvent(
                     wire.FailureClass.ENGINE_UNHEALTHY, 0, False, code, b"boom"
@@ -723,7 +1235,9 @@ class ServerRecoveryTests(HarnessTestCase):
         poison = (1, 2, 3)
 
         def start_then_die(process, frame):
-            process.send(wire.StartEvent(frame.request_id, 0, 0))
+            process.send(
+                wire.StartEvent(frame.request_id, 0, 0, READY.max_context_tokens)
+            )
             process.kill()
 
         factory, runtime, backend = self.quarantine_server(
@@ -743,7 +1257,9 @@ class ServerRecoveryTests(HarnessTestCase):
         poison = (1, 2, 3)
 
         def segfault(process, frame):
-            process.send(wire.StartEvent(frame.request_id, 0, 0))
+            process.send(
+                wire.StartEvent(frame.request_id, 0, 0, READY.max_context_tokens)
+            )
             process.crash(signal.SIGSEGV)
 
         factory, runtime, backend = self.quarantine_server(
@@ -766,7 +1282,9 @@ class ServerRecoveryTests(HarnessTestCase):
         poison = (1, 2, 3)
 
         def killed_mid_frame(process, frame):
-            process.send(wire.StartEvent(frame.request_id, 0, 0))
+            process.send(
+                wire.StartEvent(frame.request_id, 0, 0, READY.max_context_tokens)
+            )
             done = native_peer.serialize_event(
                 wire.DoneEvent(
                     frame.request_id, wire.FinishReason.STOP, 3, 1, 100, 200, 350, ()
@@ -1017,7 +1535,7 @@ class ServerRecoveryTests(HarnessTestCase):
         self.assertEqual(factory.processes[1].stdin.messages(wire.RequestFrame), [])
 
     def test_idle_engine_death_restarts_before_traffic_arrives(self):
-        factory = FakeFactory()
+        factory = FakeFactory(handler=answer_status)
         runtime = engine_runtime.MultiplexedRuntime(
             process_factory=factory, eager_start=True
         )
@@ -1025,7 +1543,7 @@ class ServerRecoveryTests(HarnessTestCase):
         factory.processes[0].kill()
         self.wait_until(lambda: len(factory.processes) == 2 and runtime.ready, 2)
         self.assertEqual(runtime.restart_count, 1)
-        self.assertIsNone(backend.refusal())
+        self.wait_until(lambda: backend.refusal() is None)
 
     def test_idle_engine_that_stops_answering_status_is_restarted(self):
         def answer_after_the_first(process, message):
@@ -1173,7 +1691,7 @@ class ServerRecoveryTests(HarnessTestCase):
     def test_recovery_refusals_carry_the_last_engine_failure(self):
         runtime = RecoveringRuntime()
         runtime.outcomes.put(engine_runtime.EngineUnhealthy("GPU is gone"))
-        harness = self.harness(runtime)
+        harness = self.harness(runtime, max_context=READY.max_context_tokens)
         with (
             mock.patch.object(supervision, "BACKOFF_BASE_SECONDS", 0.01),
             mock.patch.object(backend_api, "print_status") as console,
@@ -1195,6 +1713,7 @@ class ServerRecoveryTests(HarnessTestCase):
             transport = json.loads(harness.request("GET", "/status")[2])["transport"]
             self.assertEqual(transport["error"], "GPU is gone")
             self.relaunched(runtime, harness.backend)
+            self.wait_until(lambda: harness.backend.refusal() is None)
             self.assertIsNone(harness.backend.refusal())
             console.assert_called_with("Engine restarted")
             transport = json.loads(harness.request("GET", "/status")[2])["transport"]

@@ -915,6 +915,37 @@ class ArchitectureTests(unittest.TestCase):
                             ],
                         )
 
+    def test_historical_and_template_paths_do_not_hide_current_broken_links(self):
+        files = set()
+        directories = set()
+        skill = ".agents/skills/speckit-analyze/SKILL.md"
+        text = '---\nsource: "templates/commands/analyze.md"\n---\nFEATURE_DIR/spec.md\nSee docs/missing.md\n'
+        self.assertEqual(
+            check_architecture.note_references(skill, text, files, directories),
+            ["names a missing repository file (docs/missing.md)"],
+        )
+        document = "specs/001-battery-aware-suspension/plan.md"
+        text = "dev/tests/test_server.py and docs/missing.md"
+        self.assertEqual(
+            check_architecture.note_references(document, text, files, directories),
+            ["names a missing repository file (docs/missing.md)"],
+        )
+        self.assertEqual(
+            check_architecture.note_references(
+                ".specify/templates/spec-template.md",
+                "FEATURE_DIR/spec.md and docs/missing.md",
+                files,
+                directories,
+            ),
+            ["names a missing repository file (docs/missing.md)"],
+        )
+        self.assertEqual(
+            check_architecture.note_references(
+                "docs/current.md", "FEATURE_DIR/spec.md", files, directories
+            ),
+            ["names a missing repository file (FEATURE_DIR/spec.md)"],
+        )
+
     def test_note_allowance_only_shrinks(self):
         note = "# " + "am" + "end/V.md\n"
         allowed = {"dev/benchmarks/run.py": 2}

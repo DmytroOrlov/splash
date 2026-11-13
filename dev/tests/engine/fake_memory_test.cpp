@@ -120,7 +120,7 @@ void testARefusalThroughTheGovernorHoldsNothing() {
     require(memory.held("kv") == 3 * kGiB && memory.total() == 3 * kGiB && memory.changes().size() == changes &&
                 test::metalStatistics().allocatedBytes == 3 * kGiB,
             "a refused allocation holds something");
-    require(governor->snapshot().headroomBytes == 1 * kGiB, "a refused allocation left a reservation behind");
+    require(governor->publishSnapshot().headroomBytes == 1 * kGiB, "a refused allocation left a reservation behind");
   };
   refused(2 * kGiB, metal::AllocationFailure::EngineBudget);
   // Other applications take 10 GiB: 3 GiB of the host's spare memory are

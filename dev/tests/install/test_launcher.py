@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 import errno
 import fcntl
@@ -74,6 +75,211 @@ class LauncherTests(unittest.TestCase):
         self.enterContext(mock.patch.object(launcher.paths, "MODELS", models))
         runtime = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.enterContext(mock.patch.object(launcher, "RUNTIME_DIR", runtime))
+
+    def test_kv_format_is_an_explicit_load_option(self):
+        base = ["serve", "--model", MODEL_ID]
+        self.assertEqual(launcher.parse_args(base).kv_format, "int8")
+        self.assertEqual(
+            launcher.parse_args(base + ["--kv-format", "bf16"]).kv_format, "bf16"
+        )
+        with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+            launcher.parse_args(base + ["--kv-format", "fp16"])
+
+    def test_request_timeout_reaches_the_server(self):
+        base = ["serve", "--model", MODEL_ID]
+        # Unset stays unset: the server's own default (none) remains authoritative.
+        self.assertIsNone(launcher.parse_args(base).request_timeout)
+        self.assertEqual(
+            launcher.parse_args(base + ["--request-timeout", "3600"]).request_timeout,
+            3600.0,
+        )
+        # Mirror the server's validation: positive and finite only.
+        for value in ("0", "-1", "inf", "nan", "soon"):
+            with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+                launcher.parse_args(base + ["--request-timeout", value])
+
+        def check_exec(binary, argv, environment):
+            argv = server_arguments(argv)
+            self.assertIn("--request-timeout=3600.0", argv)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                mock.patch.object(launcher, "RUNTIME_DIR", Path(temporary)),
+                mock.patch.object(launcher.socket, "socket"),
+                mock.patch.object(launcher, "_ensure_installed"),
+                mock.patch.object(
+                    launcher.os, "execve", side_effect=check_exec
+                ) as execute,
+                mock.patch("sys.stdout", io.StringIO()),
+            ):
+                launcher.main(base + ["--request-timeout", "3600"])
+            execute.assert_called_once()
+
+    def test_pause_on_battery_public_option_and_safe_probes(self):
+        base = ["serve", "--model", MODEL_IDS[0]]
+        self.assertFalse(launcher.parse_args(base).pause_on_battery)
+        self.assertTrue(
+            launcher.parse_args(base + ["--pause-on-battery"]).pause_on_battery
+        )
+
+        for enabled in (False, True):
+            with (
+                self.subTest(enabled=enabled),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                arguments = [
+                    *base,
+                    "--decode-share",
+                    "0.5",
+                    "--allowed-host",
+                    "proxy.example",
+                ]
+                if enabled:
+                    arguments.append("--pause-on-battery")
+
+                def capture_exec(binary, argv, environment):
+                    del binary, environment
+                    argv = server_arguments(argv)
+                    self.assertIn("--decode-share=0.5", argv)
+                    self.assertIn("--allowed-host=proxy.example", argv)
+                    self.assertEqual(argv.count("--pause-on-battery"), int(enabled))
+
+                with (
+                    mock.patch.object(launcher, "RUNTIME_DIR", Path(temporary)),
+                    mock.patch.object(launcher.socket, "socket"),
+                    mock.patch.object(launcher, "_ensure_installed"),
+                    mock.patch.object(launcher.os, "execve", side_effect=capture_exec),
+                    mock.patch("sys.stdout", io.StringIO()),
+                ):
+                    launcher.main(arguments)
+
+        help_result = subprocess.run(
+            [str(launcher.ROOT / "splash"), "serve", "--help"],
+            cwd=launcher.ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(help_result.returncode, 0, help_result.stderr)
+        help_text = " ".join(help_result.stdout.split())
+        self.assertIn("--pause-on-battery", help_text)
+        self.assertIn("release model residency while on battery", help_text)
+        self.assertIn("recover on AC power", help_text)
+
+        probe = "--__splash_cli_acceptance_probe__"
+        for enabled in (False, True):
+            arguments = [
+                str(launcher.ROOT / "splash"),
+                "serve",
+                "--model",
+                MODEL_IDS[0],
+            ]
+            if enabled:
+                arguments.append("--pause-on-battery")
+            arguments.append(probe)
+            result = subprocess.run(
+                arguments,
+                cwd=launcher.ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            final_diagnostic = result.stderr.strip().splitlines()[-1]
+            self.assertIn("error: unrecognized arguments:", final_diagnostic)
+            self.assertIn(probe, final_diagnostic)
+            if enabled:
+                self.assertNotIn("--pause-on-battery", final_diagnostic)
+
+    def test_queue_size_is_optional_and_positive(self):
+        base = ["serve", "--model", MODEL_ID]
+        # Unset stays unset: the server's own default (32) remains authoritative.
+        self.assertEqual(launcher.parse_args(base).queue_size, 32)
+        self.assertEqual(
+            launcher.parse_args(base + ["--queue-size", "64"]).queue_size, 64
+        )
+        for value in ("0", "-1", "1.5", "many"):
+            with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+                launcher.parse_args(base + ["--queue-size", value])
+
+    def test_cache_disk_quota(self):
+        parse = serve_options.parse_max_cache_disk
+        self.assertIsNone(parse("auto"))
+        self.assertIsNone(
+            launcher.parse_args(["serve", "--model", MODEL_ID]).max_cache_disk
+        )
+        self.assertEqual(parse("0"), 0)
+        self.assertEqual(parse("5G"), 5 * 1024**3)
+        for value in ("-1", "bad"):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                parse(value)
+
+    def test_decode_share(self):
+        base = ["serve", "--model", MODEL_ID]
+        self.assertIsNone(launcher.parse_args(base).decode_share)
+        for value in ("0", "0.25", "2"):
+            self.assertEqual(
+                launcher.parse_args(base + ["--decode-share", value]).decode_share,
+                float(value),
+            )
+        for value in ("-1", "inf", "nan", "bad"):
+            with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+                launcher.parse_args(base + ["--decode-share", value])
+
+    def test_image_budget_fails_before_installation(self):
+        for value in ("0", "bad", str(serve_options.images.MAX_PIXELS + 1)):
+            with (
+                mock.patch.object(launcher, "_ensure_installed") as install,
+                mock.patch("sys.stderr", io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                launcher.main(
+                    ["serve", "--model", MODEL_ID, "--max-image-pixels", value]
+                )
+            install.assert_not_called()
+
+    def test_server_holds_the_assembly_it_serves(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary)
+            chosen = selection(launcher.paths.MODELS)
+
+            def check_exec(_binary, argv, _environment):
+                self.assertEqual(server_arguments(argv)[0], str(chosen.link))
+                with (runtime / "serve.lock").open("a+") as lock:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            with (
+                mock.patch.object(launcher, "RUNTIME_DIR", runtime),
+                mock.patch.object(launcher.socket, "socket"),
+                mock.patch.object(launcher, "_ensure_installed") as install,
+                mock.patch.object(launcher.os, "execve", side_effect=check_exec),
+            ):
+                launcher.main(["serve", "--model", MODEL_ID])
+            install.assert_called_once_with(chosen)
+            first = launcher.paths.MODELS / ".resolved" / "first"
+            second = launcher.paths.MODELS / ".resolved" / "second"
+            for assembly in (first, second):
+                assembly.mkdir(parents=True)
+                (assembly / "model.json").write_text("{}")
+            chosen.link.parent.mkdir(parents=True, exist_ok=True)
+            chosen.link.symlink_to(first)
+            served, held = api.assembly.hold(chosen.link)
+            try:
+                chosen.link.unlink()
+                chosen.link.symlink_to(second)
+                self.assertEqual(served, first.resolve())
+                self.assertTrue(api.assembly.is_held(first))
+            finally:
+                held.close()
+            self.assertFalse(api.assembly.is_held(first))
+
+    def test_size_validation(self):
+        self.assertEqual(serve_options.parse_max_memory("5G"), 5 * 1024**3)
+        self.assertEqual(serve_options.parse_max_context("257K"), 257 * 1024)
+        for value in ("0", "-1", "bad", "1010001"):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                serve_options.parse_max_context(value)
 
     def test_serve_requires_exact_repository_id_before_build(self):
         for arguments in (

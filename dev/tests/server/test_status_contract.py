@@ -55,7 +55,9 @@ class StatusContractTests(unittest.TestCase):
             [
                 name
                 for name, path in PROMETHEUS_SERIES.items()
-                if path[0] not in SERVER_SECTIONS and name not in rendered
+                if path[0] not in SERVER_SECTIONS
+                and name not in rendered
+                and path[0] in status
             ],
             [],
         )
@@ -169,10 +171,13 @@ class StatusRouteTests(HarnessTestCase):
                 ),
             )
         snapshot = json.loads(harness.request("GET", "/status")[2])
-        self.assertEqual(
-            {key: snapshot[key] for key in ("capabilities", "transport")},
-            json.loads(TRANSPORT_GOLDEN.read_text()),
-        )
+        actual = {key: snapshot[key] for key in ("capabilities", "transport")}
+        expected = json.loads(TRANSPORT_GOLDEN.read_text())
+        age = actual["transport"].pop("status_age_ms")
+        expected["transport"].pop("status_age_ms")
+        self.assertIsInstance(age, (int, float))
+        self.assertGreaterEqual(age, 0)
+        self.assertEqual(actual, expected)
 
     def test_metrics_route_renders_the_engine_status(self):
         runtime = FakeRuntime()

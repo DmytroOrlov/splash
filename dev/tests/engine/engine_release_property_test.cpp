@@ -89,9 +89,9 @@ struct Wall final {
   // What a claim keeps of the room now, `owed` the lanes' first reads before it: the room less the first reads its
   // releases created. A start's (Need::afterStart) keeps too what its start, which allocated `allocated` before it, no
   // longer allocates (Model::startStateBytes).
-  [[nodiscard]] uint64_t kept(uint64_t owed, std::optional<uint64_t> allocated = std::nullopt) const {
+  [[nodiscard]] uint64_t kept(uint64_t owed, std::optional<uint64_t> allocated = std::nullopt) {
     const uint64_t created = owedReads() - std::min(owedReads(), owed);
-    const uint64_t room = spill.host.governor.snapshot().headroomBytes + allocated.value_or(0);
+    const uint64_t room = spill.host.governor.publishSnapshot().headroomBytes + allocated.value_or(0);
     const uint64_t taken = created + (allocated ? spill.model.startStateBytes() : 0);
     return room - std::min(room, taken);
   }
@@ -349,7 +349,7 @@ void testAReleaseInPlaceAfterAReclaimOfItsIndexPagesFreesWhatItCounted() {
               std::to_string(spill.pool.emptyExtents(kv::PageForm::Index)) + " empty Index extents: " + lanes.pool());
   lanes.wall();
   spill.allowSpillWrites(true);
-  const MemoryLedger::CountChecks before = spill.host.governor.snapshot().countChecks;
+  const MemoryLedger::CountChecks before = spill.host.governor.publishSnapshot().countChecks;
   const uint32_t indexPages = spill.cache.indexPages(1);
   spill.runUntil(
       [&] {
@@ -357,7 +357,7 @@ void testAReleaseInPlaceAfterAReclaimOfItsIndexPagesFreesWhatItCounted() {
                spill.cache.indexPages(1) > indexPages;
       },
       "the lane neither moved a page in place nor ended");
-  const MemoryLedger::CountChecks after = spill.host.governor.snapshot().countChecks;
+  const MemoryLedger::CountChecks after = spill.host.governor.publishSnapshot().countChecks;
   const bool ended = spill.events.usage.contains(1);
   require(after.coveredRuns != before.coveredRuns && after.overcountedRuns == before.overcountedRuns && !ended &&
               spill.engine.snapshot().resourceSuspensions == 0,
@@ -609,7 +609,7 @@ private:
     const uint32_t transfers = spill.tier.demotions + spill.tier.restores;
     const size_t suspended = spill.model.suspendedIds.size();
     const uint64_t preemptions = spill.engine.snapshot().prioritySuspensions;
-    const MemoryLedger::CountChecks before = spill.host.governor.snapshot().countChecks;
+    const MemoryLedger::CountChecks before = spill.host.governor.publishSnapshot().countChecks;
     const uint32_t resumptions = spill.model.resumptions;
     static_cast<void>(spill.engine.tick(spill.now++));
     // A suspended lane resumes, below a running priority too (Engine::admitQueued): its replay takes memory no
@@ -622,7 +622,7 @@ private:
     if (spill.engine.snapshot().prioritySuspensions != preemptions)
       preempted_.insert(spill.model.suspendedIds.begin() + static_cast<std::ptrdiff_t>(suspended),
                         spill.model.suspendedIds.end());
-    const MemoryLedger::CountChecks after = spill.host.governor.snapshot().countChecks;
+    const MemoryLedger::CountChecks after = spill.host.governor.publishSnapshot().countChecks;
     const uint64_t overcounted = after.overcountedRuns - before.overcountedRuns;
     totals_.engineOvercounts += overcounted;
     if (overcounted && quiet && transfers == spill.tier.demotions + spill.tier.restores)
@@ -810,7 +810,7 @@ private:
       break;
     }
     const bool quiet = spill.tier.inFlight() == 0;
-    const MemoryLedger::CountChecks before = governor.snapshot().countChecks;
+    const MemoryLedger::CountChecks before = governor.publishSnapshot().countChecks;
     const std::string pool = lanes_.pool();
     // A need of bytes its count covers, with no claim waiting to hold room above it: what the claim keeps of the
     // room once the lanes' first reads its releases created are set aside, a start's with what its start no longer
@@ -836,7 +836,7 @@ private:
       ledger.close(id);
     }
     claiming_ = false;
-    const MemoryLedger::CountChecks after = governor.snapshot().countChecks;
+    const MemoryLedger::CountChecks after = governor.publishSnapshot().countChecks;
     ++totals_.claims;
     totals_.quietClaims += quiet;
     totals_.coveredRuns += after.coveredRuns - before.coveredRuns;

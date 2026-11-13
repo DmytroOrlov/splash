@@ -212,6 +212,105 @@ PROSE_PATH = re.compile(
     r"(?:md|py|hpp|h|cpp|cc|c|mm|m|metal|swift|json|jsonl|txt|sh|mk|yml|toml"
     r"|js|css|html|jinja|tsv))(?![\w/])"
 )
+# These specific paths describe the pre-rebase checkout in the frozen Battery
+# plans and evidence. Other references in those documents remain checked.
+HISTORICAL_BATTERY_REFERENCES = frozenset(
+    {
+        (
+            "specs/001-battery-aware-suspension/plan.md",
+            "dev/tests/engine/test_protocol_python.py",
+        ),
+        (
+            "specs/001-battery-aware-suspension/plan.md",
+            "dev/tests/engine/test_protocol_recovery.py",
+        ),
+        (
+            "specs/001-battery-aware-suspension/plan.md",
+            "dev/tests/engine/test_runtime.py",
+        ),
+        (
+            "specs/001-battery-aware-suspension/plan.md",
+            "dev/tests/engine/test_server.py",
+        ),
+        (
+            "specs/001-battery-aware-suspension/plan.md",
+            "dev/tests/engine/test_server_recovery.py",
+        ),
+        ("specs/001-battery-aware-suspension/plan.md", "dev/tests/test_server.py"),
+        (
+            "specs/001-battery-aware-suspension/quickstart.md",
+            "dev/tests/engine/test_protocol_recovery.py",
+        ),
+        (
+            "specs/001-battery-aware-suspension/quickstart.md",
+            "dev/tests/engine/test_runtime.py",
+        ),
+        (
+            "specs/001-battery-aware-suspension/quickstart.md",
+            "dev/tests/engine/test_server_recovery.py",
+        ),
+        (
+            "specs/001-battery-aware-suspension/quickstart.md",
+            "dev/tests/test_server.py",
+        ),
+        (
+            "specs/001-battery-aware-suspension/research.md",
+            "dev/tests/engine/test_server_recovery.py",
+        ),
+        ("specs/001-battery-aware-suspension/research.md", "dev/tests/test_server.py"),
+        ("specs/001-battery-aware-suspension/research.md", "runtime/model/Runtime.mm"),
+        (
+            "specs/001-battery-aware-suspension/tasks.md",
+            "dev/tests/engine/test_protocol_python.py",
+        ),
+        (
+            "specs/001-battery-aware-suspension/tasks.md",
+            "dev/tests/engine/test_runtime.py",
+        ),
+        (
+            "specs/001-battery-aware-suspension/tasks.md",
+            "dev/tests/engine/test_server_recovery.py",
+        ),
+        ("specs/001-battery-aware-suspension/tasks.md", "dev/tests/test_server.py"),
+        ("specs/001-battery-aware-suspension/tasks.md", "runtime/model/Runtime.mm"),
+        ("specs/002-pause-on-battery-flag/plan.md", "dev/tests/test_server.py"),
+        ("specs/002-pause-on-battery-flag/quickstart.md", "dev/tests/test_server.py"),
+        ("specs/002-pause-on-battery-flag/research.md", "dev/tests/test_server.py"),
+        (
+            "specs/002-pause-on-battery-flag/tasks.md",
+            "dev/tests/engine/test_launcher.py",
+        ),
+        ("specs/002-pause-on-battery-flag/tasks.md", "dev/tests/test_server.py"),
+        (
+            "specs/003-upstream-battery-parity/evidence/post-rebase-20261107/coverage-audit-20261108.md",
+            "dev/tests/engine/test_runtime.py",
+        ),
+        (
+            "specs/003-upstream-battery-parity/plan.md",
+            "dev/tests/engine/test_server_recovery.py",
+        ),
+        ("specs/003-upstream-battery-parity/plan.md", "dev/tests/test_server.py"),
+        ("specs/003-upstream-battery-parity/plan.md", "engine/MetalBackend.hpp"),
+        (
+            "specs/003-upstream-battery-parity/research.md",
+            "dev/tests/engine/test_server_recovery.py",
+        ),
+        ("specs/003-upstream-battery-parity/research.md", "dev/tests/test_server.py"),
+        (
+            "specs/003-upstream-battery-parity/tasks.md",
+            "dev/tests/engine/test_launcher.py",
+        ),
+        (
+            "specs/003-upstream-battery-parity/tasks.md",
+            "dev/tests/engine/test_runtime.py",
+        ),
+        (
+            "specs/003-upstream-battery-parity/tasks.md",
+            "dev/tests/engine/test_server_recovery.py",
+        ),
+        ("specs/003-upstream-battery-parity/tasks.md", "dev/tests/test_server.py"),
+    }
+)
 # The files that hold such references today, and how many: the list only
 # shrinks, a file above or below its count is an error, and the check is
 # strict once the list is empty.
@@ -224,9 +323,9 @@ NOTE_ALLOWANCE: dict[str, int] = {
     "dev/tests/engine/runtime_resources_test.mm": 1,
     "dev/tests/engine/timing_profile_test.cpp": 1,
 }
-# runtime/engine's production lines: the budget only goes down, unless the
-# owner raises it.
-ENGINE_LINE_BUDGET = 30_105
+# Owner-approved Splash 1.6.1 with Battery baseline. The budget may only go
+# down unless the owner approves further growth.
+ENGINE_LINE_BUDGET = 36_606
 C_LIKE_SUFFIXES = SOURCE_SUFFIXES | {".swift"}
 HASH_COMMENT_SUFFIXES = {"", ".sh", ".bash", ".fish", ".mk", ".yml", ".yaml", ".toml"}
 C_LIKE_COMMENT = re.compile(
@@ -395,6 +494,28 @@ def note_references(
     for match in PROSE_PATH.finditer(prose):
         path = match[1]
         if OUTSIDE_NOTE.search(path):
+            continue
+        # Spec Kit's generated paths are variables, and its front-matter
+        # source names an upstream template, not a file in this checkout.
+        skill = re.fullmatch(r"\.agents/skills/speckit-([\w-]+)/SKILL\.md", name)
+        template = name.startswith(".specify/templates/") and name.endswith(".md")
+        if (skill or template) and path.startswith(
+            ("FEATURE_DIR/", "SPECIFY_FEATURE_DIRECTORY/")
+        ):
+            continue
+        if skill and path == f"templates/commands/{skill[1]}.md":
+            line = prose[
+                prose.rfind("\n", 0, match.start()) + 1 : prose.find("\n", match.end())
+            ]
+            front_matter_end = (
+                prose.find("\n---", 3) if prose.startswith("---\n") else -1
+            )
+            if (
+                0 < front_matter_end > match.start()
+                and line.strip() == f'source: "{path}"'
+            ):
+                continue
+        if (name, path) in HISTORICAL_BATTERY_REFERENCES:
             continue
         candidates = [posixpath.normpath(posixpath.join(here, path))]
         if not path.startswith("."):

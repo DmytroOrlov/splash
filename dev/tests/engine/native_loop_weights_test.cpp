@@ -634,6 +634,7 @@ void testTransfersLandWhileTheWeightsAreRestored() {
   tier.transferLimit = 64;
   tier.capacity = 128;
   engine::Cache cache(pool, &tier, nullptr);
+  test::RetainedPersistence persistence{cache};
   Executor executor;
   executor.keptTier = std::make_shared<test::OffloadControl>();
   executor.keptTier->ready = true;
@@ -647,9 +648,9 @@ void testTransfersLandWhileTheWeightsAreRestored() {
             .weights = WeightResidencyConfig{.weights = &weights, .admit = refusing(refuse)}}),
        .unixMicros = [] { return uint64_t{1'000'000}; },
        .monotonicMilliseconds = [&] { return now; }},
-      cache, executor,
+      metal::kResidencyKeepAliveSeconds, cache, persistence, executor,
       [&](std::span<const uint8_t> bytes) { output.insert(output.end(), bytes.begin(), bytes.end()); },
-      protocol::ProtocolLimits{});
+      test::readyStatusJson, protocol::ProtocolLimits{});
   loop.serveStatus(test::readyStatusJson);
   storage.commandInFlight = [&] { return loop.commandInFlight(); };
   loop.announceReady(protocol::peer::kTestReady);

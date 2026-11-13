@@ -788,7 +788,14 @@ extension DrawerTests {
         let window = Self.window(WithDrawer { Color.clear }.environment(state))
         defer { Self.close(window); state.drawer.endAll(); try? FileManager.default.removeItem(at: folder) }
         state.toggleDrawer()
-        for _ in 0..<11 { state.newTerminal() }
+        // Opening the terminal drawer starts its first terminal. A narrower
+        // viewport makes eleven tabs exceed the discovery threshold even for
+        // short shell titles and different system font metrics.
+        window.setContentSize(CGSize(width: 480, height: 600))
+        for _ in 0..<10 { state.newTerminal() }
+        #expect(state.drawer.terminals.count == 11)
+        Self.update(window)
+        pump(0.1)
         /// The tabs' strip, once they are wider than it.
         func strip() -> NSScrollView? {
             func scrollViews(in view: NSView) -> [NSScrollView] {

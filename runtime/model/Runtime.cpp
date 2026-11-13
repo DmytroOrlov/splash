@@ -2745,6 +2745,21 @@ Runtime::~Runtime() = default;
 
 void Runtime::checkHealth() { impl_->backend.checkHealth(); }
 
+// [Gate 4 / U-01] The callbacks and descendants this model still owes its
+// resource domain, read from the three owners of that work: the backend's owed
+// command and host-step closures, the FFN split's evaluations the Neural Engine
+// has not reported, and the ANE service queue's posted work (which includes a
+// program's delayed unload and destruction). Passive: nothing here waits, runs
+// or cancels anything, and no field is a flag anyone could clear.
+Model::Descendants Runtime::descendants() const noexcept {
+  Descendants receipt;
+  receipt.gpu = impl_->backend.callbackRetirement();
+  if (impl_->aneFfn)
+    receipt.agentJobs = impl_->aneFfn->agentJobs();
+  receipt.serviceWork = ane::serviceQueueWork();
+  return receipt;
+}
+
 void Runtime::beginColdRequest(const ModelRequest &request,
                                uint32_t stateLane) {
   if (const StateAdmission admission = beginAt(request, stateLane); !admission.granted()) {

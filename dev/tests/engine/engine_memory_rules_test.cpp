@@ -187,10 +187,11 @@ struct PassesUnderALimit {
   test::TestKvStorage storage;
   KvPool pool{(host.through(storage), storage), 0};
   engine::Cache cache{pool, nullptr, nullptr};
+  test::RetainedPersistence persistence_cache{cache};
   Executor model;
   bool shaped = (test::commandShape(4 * model::ExecutionLimits::prefillTokenBudget, 6, true)(model), true);
   Events events;
-  engine::Engine engine{host.connect({}), cache, model, events};
+  engine::Engine engine{host.connect({}), cache, persistence_cache, model, events};
   std::vector<std::pair<uint64_t, uint32_t>> prefills;
   double now = 1;
 };
@@ -513,10 +514,11 @@ struct LandingPages {
   KvPool pool{storage, 0};
   test::TestKvTier tier;
   engine::Cache cache{pool, &tier, test::ampleDiskBudget()};
+  test::RetainedPersistence persistence_cache{cache};
   Executor model;
   Events events;
   const EngineConfig config = test::engineConfig({.maxContext = 102400});
-  engine::Engine engine{config, cache, model, events};
+  engine::Engine engine{config, cache, persistence_cache, model, events};
   double now = 1;
 };
 
@@ -725,6 +727,7 @@ void testEnginesOnOneGovernorOfferTheCacheOnce() {
   test::TestKvStorage storage{64, 100, 4};
   KvPool pool{storage, 0};
   engine::Cache cache{pool, nullptr, nullptr};
+  test::RetainedPersistence persistence_cache{cache};
   Executor model;
   Events events;
   // A cached chain of two extents, one of which the host's claim may take.
@@ -735,11 +738,11 @@ void testEnginesOnOneGovernorOfferTheCacheOnce() {
   cache.endRequest(900);
   const ClaimSpec spec{.cls = ClaimClass::Host};
   const auto found = [&] { return host.governor.available(spec, {.bytes = std::numeric_limits<uint64_t>::max()}); };
-  engine::Engine first{host.connect({}), cache, model, events};
+  engine::Engine first{host.connect({}), cache, persistence_cache, model, events};
   const uint64_t once = found();
   require(once != 0, "the cache offered the host nothing");
   {
-    engine::Engine second{host.connect({}), cache, model, events};
+    engine::Engine second{host.connect({}), cache, persistence_cache, model, events};
     require(found() == once, "a second engine over the cache made its units count twice: " + std::to_string(found()) +
                                  " bytes for " + std::to_string(once));
   }
@@ -1242,12 +1245,13 @@ void testCopiesAheadForRegrowthStayWithinAUnit() {
     tier.transferLimit = 256;
     tier.capacity = 1024;
     engine::Cache cache(pool, &tier, test::ampleDiskBudget());
+    test::RetainedPersistence persistence_cache{cache};
     Executor executor;
     executor.keptTier = std::make_shared<test::OffloadControl>();
     executor.keptTier->ready = true;
     Events events;
     test::GovernedHost host;
-    engine::Engine engine{host.connect({.maxContext = 102400}), cache, executor, events};
+    engine::Engine engine{host.connect({.maxContext = 102400}), cache, persistence_cache, executor, events};
     guardReleases(storage, engine);
     test::FakeElasticPool experts("experts", host.memory, unitPages * pageBytes, 1, 2, 3, atCap ? 2 : 1);
     static_cast<void>(host.governor.ledger().addPool(experts));

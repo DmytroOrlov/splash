@@ -48,6 +48,7 @@ void testAClosedTierRefusesAStartPastTheResidentContext() {
   test::TestKvTier tier;
   tier.writableFile = false;
   engine::Cache cache(pool, &tier, nullptr);
+  test::RetainedPersistence persistence_cache{cache};
   Executor model;
   Events events;
   EngineConfig config = test::engineConfig();
@@ -61,7 +62,7 @@ void testAClosedTierRefusesAStartPastTheResidentContext() {
                                .densePages = 64,
                                .windowPages = 64,
                                .groupPages = 256}};
-  engine::Engine engine(config, cache, model, events);
+  engine::Engine engine(config, cache, persistence_cache, model, events);
   guardReleases(storage, engine);
   engine.submit(request(1, std::vector<uint32_t>(100, 3)));
   runUntilIdle(engine);
@@ -3149,7 +3150,7 @@ void testTwoLanesOnOnePromptAtTheWallNeedNoMoreThanTheLongerAlone() {
   const auto run = [](uint64_t quarters, bool two, bool started) {
     FlashNextGoverned lanes(test::commandShape(4 * model::ExecutionLimits::prefillTokenBudget, 6, true));
     Spilling &spill = lanes.spill;
-    const uint64_t idle = spill.host.governor.snapshot().headroomBytes;
+    const uint64_t idle = spill.host.governor.publishSnapshot().headroomBytes;
     lanes.startSpill(Spilling::prompt(1, 1, 2'046, 8));
     if (two && started)
       lanes.startSpill(Spilling::prompt(2, 1, 1'534, 8));
@@ -3163,7 +3164,7 @@ void testTwoLanesOnOnePromptAtTheWallNeedNoMoreThanTheLongerAlone() {
     };
     spill.runUntil([&] { return processed() >= 1'024 * KvCache::pageTokens && !spill.engine.commandInFlight(); },
                    "lane 1 did not reach its 1,024th page");
-    const uint64_t wall = spill.host.governor.snapshot().headroomBytes;
+    const uint64_t wall = spill.host.governor.publishSnapshot().headroomBytes;
     spill.host.leaveRoom(quarters * extentBytes / 4);
     spill.runUntil(
         [&] {
@@ -3725,7 +3726,7 @@ void testALoneLaneWaitsForItsLastWritesThenReleasesThem() {
   bool waited = false;
   spill.runUntil(
       [&] {
-        waited = waited || spill.host.governor.snapshot().claims.waiting != 0;
+        waited = waited || spill.host.governor.publishSnapshot().claims.waiting != 0;
         return spill.cache.holdsIndexPages(1);
       },
       "the lane released none of its pages once their copies landed");

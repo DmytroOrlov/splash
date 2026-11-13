@@ -94,9 +94,10 @@ void testTickHostTimeIsRecorded() {
   test::TestKvStorage storage(64, 4096, 4);
   KvPool pool(storage, 0);
   Cache cache(pool, nullptr, nullptr);
+  WriteBehind persistence(cache);
   test::Executor model;
   test::Events events;
-  Engine engine(test::engineConfig(), cache, model, events);
+  Engine engine(test::engineConfig(), cache, persistence, model, events);
   test::guardReleases(storage, engine);
   engine.submit(test::request(1, std::vector<uint32_t>(64, 7)));
   static_cast<void>(engine.tick(1));

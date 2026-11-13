@@ -36,7 +36,7 @@
 
    Expected after the fix: argparse fails before serving; the final `error: unrecognized arguments:` diagnostic contains the deliberate probe and does not contain `--pause-on-battery`. Before the fix, both are listed. Inspect that diagnostic specifically; the usage line may legitimately contain the registered flag. This executes real shell/Python dispatch and public parsing, but the deliberate unknown token stops the command before install, download/build, server, or native startup.
 
-4. **Launcher→server argv** — extend/run the existing launcher tests in `dev/tests/engine/test_launcher.py`. Exercise `launcher.main()` with its real parser while stubbing installation, port probing, and `os.execve`. This is the launcher propagation hop, not the shell executable boundary.
+4. **Launcher→server argv** — extend/run the existing launcher tests in `dev/tests/install/test_launcher.py`. Exercise `launcher.main()` with its real parser while stubbing installation, port probing, and `os.execve`. This is the launcher propagation hop, not the shell executable boundary.
 
    Expected: the opted-in invocation reaches the intercepted server exec with exactly one `--pause-on-battery`; the default invocation reaches it without the token and has `pause_on_battery == false`. Pair the default case with the default-mode outer public probe; the outer probe alone does not reveal the boolean value. No model/native process starts.
 

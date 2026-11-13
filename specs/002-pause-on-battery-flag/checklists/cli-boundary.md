@@ -43,11 +43,11 @@
 
 ## Existing Requirements Checklist Revalidation
 
-- [ ] CHK025 Are the checked “testable and unambiguous requirements,” “clear acceptance criteria,” and “feature readiness” assertions in `checklists/requirements.md` still supportable after the reopened public-boundary clarification and exact-token evidence requirement? [Ambiguity, requirements.md §Requirement Completeness and §Feature Readiness; Plan §Checklist Status]
+- [ ] CHK025 Are the checked “testable and unambiguous requirements,” “clear acceptance criteria,” and “feature readiness” assertions in `requirements.md` still supportable after the reopened public-boundary clarification and exact-token evidence requirement? [Ambiguity, requirements.md §Requirement Completeness and §Feature Readiness; Plan §Checklist Status]
 
 ## Notes
 
 - Mark items `[x]` only after review confirms the requirement-quality criterion is satisfied; this generated checklist intentionally leaves every item unchecked.
 - `$speckit-implement` reads checklist checkbox state as a gate and must not modify markers.
-- `checklists/requirements.md` is a separate built-in spec-quality checklist maintained by `$speckit-specify` and `$speckit-clarify`; this checklist does not replace it.
+- `requirements.md` is a separate built-in spec-quality checklist maintained by `$speckit-specify` and `$speckit-clarify`; this checklist does not replace it.
 - Items assess written requirements and evidence design, not implementation correctness.

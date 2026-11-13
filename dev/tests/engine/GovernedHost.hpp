@@ -83,7 +83,7 @@ public:
   void leaveRoom(std::optional<uint64_t> bytes) {
     memory.release("limit", memory.held("limit"));
     if (bytes)
-      memory.hold("limit", governor.snapshot().headroomBytes - *bytes);
+      memory.hold("limit", governor.publishSnapshot().headroomBytes - *bytes);
   }
 
   FakeMemory memory;

@@ -23,8 +23,8 @@ struct TranscriptTests {
         ])
         let live = ChatStore.Live(asked: asked, read: 0.45)
         let name = { (model: String) in "Name of \(model)" }
-        let page = TranscriptPage(conversation, askAgain: .init(enabled: false, help: "Ask Big Again"), name: name)
-            .streaming(TranscriptMessage(conversation.messages[3], live: live, asleep: false, name: name))
+        let page = TranscriptPage(conversation, askAgain: .init(enabled: false, help: "Ask Big Again"), locale: Locale(identifier: "en_US"), name: name)
+            .streaming(TranscriptMessage(conversation.messages[3], live: live, asleep: false, locale: Locale(identifier: "en_US"), name: name))
         let json = try #require(JSONSerialization.jsonObject(with: WebPage.encoder.encode(page)) as? [String: Any])
         #expect(json["id"] as? String == conversation.id.uuidString)
         #expect(json["askAgain"] as? [String: AnyHashable] == ["enabled": false, "help": "Ask Big Again"])
@@ -883,7 +883,7 @@ struct TranscriptPictures {
         for (name, reply, live, asleep) in states {
             let conversation = Conversation(messages: [question, reply])
             let page = TranscriptPage(conversation, askAgain: .init(enabled: false, help: "Ask Big Again"), name: { _ in "Big" })
-            let streaming = TranscriptMessage(reply, live: live(), asleep: asleep, name: { _ in "Big" })
+            let streaming = TranscriptMessage(reply, live: live(), asleep: asleep, locale: Locale(identifier: "en_US"), name: { _ in "Big" })
             await Snapshot.save("transcript-\(name)", size: CGSize(width: 860, height: 520),
                                 TranscriptView(transcript: transcript, page: page, reply: streaming).background(.background))
         }

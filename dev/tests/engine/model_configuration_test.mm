@@ -285,6 +285,8 @@ void testOneRulePerValue(const std::filesystem::path &fixtures) {
             "a DFlash2 draft's rotary theta is positive"},
            {&SourceModel::draft, R"("num_attention_heads": 32)", R"("num_attention_heads": 16)",
             "draft config num_attention_heads mismatch: checkpoint 16, runtime 32"},
+           {&SourceModel::draft, R"("sliding_window": 2048,)", "",
+            "draft config sliding_window must be a number"},
            {&SourceModel::draft, R"("selector_top_k": 16)", R"("selector_top_k": 8)",
             "draft config dflash_config selector_top_k mismatch"},
            {&SourceModel::draft, R"("selector_top_k": 16)",

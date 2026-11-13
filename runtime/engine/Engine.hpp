@@ -12,8 +12,10 @@
 
 #include <array>
 #include <cstdint>
+#include <atomic>
 #include <functional>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -23,6 +25,8 @@
 #include <vector>
 
 namespace splash::engine {
+
+class ResourceDomainLease;
 
 // Prefill checkpoints sit at multiples of this many tokens
 // (plannedCheckpoints) by default: two draft windows balance recovery
@@ -71,6 +75,10 @@ struct EngineConfig final {
   // The governor that admits the engine's memory and whose ledger holds
   // the requests' claims on it (ClaimHandle), which connectToGovernor sets.
   MemoryGovernor *governor = nullptr;
+  // Optional retained graph's lease, on its original Owner thread. It and
+  // all borrowed resources outlive this Engine. Without it restoration keeps
+  // the standalone WeightMemory behavior; no external Writer is activated.
+  ResourceDomainLease *writerLease = nullptr;
   // Which requests keep their KV on the SSD cache (KvMode), from the memory
   // plan; none unless the target can spill.
   EngineSpillConfig spill;
@@ -245,10 +253,9 @@ struct EngineSnapshot final {
 // FileRestore, the governor's Scope).
 class Engine final {
 public:
-  Engine(EngineConfig config, Cache &cache, model::Model &model,
-         EngineEventSink &events);
-  // Takes its own lanes back from the governor's ledger; the cache, which
-  // outlives it and another engine may share, stays.
+  // Cache, its retained WriteBehind, model and events must outlive this borrower.
+  Engine(EngineConfig config, Cache &cache, WriteBehind &writeBehind,
+         model::Model &model, EngineEventSink &events);
   ~Engine();
 
   // The request passed protocol::validateRequest; submit checks only what
@@ -278,9 +285,47 @@ public:
   // back. While a part is written on its thread (weightsWriting), a tick
   // only ends the requests whose deadlines passed: the write's end wakes the
   // loop (the completion notifier).
-  [[nodiscard]] bool tick(double nowMilliseconds);
-  // A command, or a part of the weights being written, whose writer may run
-  // commands of its own: the control pass waits for its end (FdTransport).
+  // [T031] A staged adoption rebinds the completion notifier across the Engine, Cache,
+  // StateCache and every actual weight-notifier receiver plus the tracker's
+  // body, and the rebinding must be rollback-safe. `setCompletionNotifier`
+  // allocates (the shared body, then the closure copies), so a rebind that
+  // begins after Engine ownership already moved cannot offer a strong undo.
+  // A PreparedCompletionBinding holds every allocation and tracker seat the
+  // rebinding will ever take BEFORE anything is installed; installation is
+  // then only swaps/moves of already-constructed values and hands the displaced
+  // previous slots back. The ordinary setter's API and behavior are unchanged.
+  class PreparedCompletionBinding final {
+   public:
+    PreparedCompletionBinding() = default;
+    ~PreparedCompletionBinding() = default;
+
+   private:
+    friend class Engine;
+    std::shared_ptr<const std::function<void()>> bodySlot_;
+    std::function<void()> engineSlot_;
+    std::function<void()> cacheSlot_;
+    std::function<void()> stateSlot_;
+    std::vector<std::pair<model::WeightMemory *, std::function<void()>>> weightSlots_;
+  };
+  // [T031] Prepare one four-slot rebinding of `notifier`: the shared body
+  // allocation and all receiver seats (Engine, Cache, StateCache and the weight receivers)
+  // are taken here, before anything is installed. Throws only from these
+  // preparations; nothing installed is touched.
+  [[nodiscard]] PreparedCompletionBinding prepareCompletionBinding(const std::function<void()> &notifier);
+  // [T031] Install an already-prepared rebinding — this Engine's body slot,
+  // its own closure slot, and the Cache/StateCache slots — by non-throwing
+  // moves, and take the displaced previous values back out for rollback.
+  // Bind-time recipient freezing and the NotifierTracker seat/run accounting
+  // (T017/U-01) are untouched: this installs the same closure copies.
+  [[nodiscard]] PreparedCompletionBinding installCompletionBinding(PreparedCompletionBinding &&prepared) noexcept;
+  // [T031] Identity reads for a staged adoption: the exact Cache and WriteBehind
+  // this Engine borrows and the complete EngineConfig it enforces, so the
+  // shell being rebound can prove the candidate is the graph it claims.
+  [[nodiscard]] const EngineConfig &borrowedConfig() const noexcept { return config_; }
+  [[nodiscard]] Cache *borrowedCache() const noexcept { return &cache_; }
+  [[nodiscard]] WriteBehind *borrowedWriteBehind() const noexcept { return &writeBehind_; }
+
+    [[nodiscard]] bool tick(double nowMilliseconds);
   [[nodiscard]] bool commandInFlight() const noexcept {
     return pending_.has_value() || weightsWriting();
   }
@@ -288,6 +333,101 @@ public:
   [[nodiscard]] bool idle() const noexcept {
     return requests_.empty() && !pending_;
   }
+
+  // [Gate 2 / FR-009] The request-side drain witness: one count per kind of
+  // request-side work that keeps Engine state owned, so a caller can see WHICH
+  // owner still refuses quiescence rather than being handed one boolean. `idle()`
+  // and `commandInFlight()` are the same machinery collapsed; they cannot tell a
+  // queued request from a parked ticket, a mask the server has not answered, a
+  // restore that landed but was never polled, a cancellation waiting on either,
+  // or a request's completion record that the next sweep has not taken. Every
+  // category must reach zero: one category standing alone refuses the drain, and
+  // none of them substitutes for the callback/descendant retirement receipts
+  // (Gate 4, T017) or the retained-IO receipts (Gate 3, T018).
+  struct RequestDrain final {
+    // Submitted and not started: Queued, or waiting for resources or a prefix.
+    uint32_t queued = 0;
+    // A lane taken: prefilling, decoding, or held by a mask wait.
+    uint32_t resident = 0;
+    // The record of a request whose terminal event has been emitted, held until
+    // the next sweepTerminal: its telemetry (emitted tokens, first token,
+    // score logits, speculations, failed restores) and the state and KV leases
+    // it still owns.
+    uint32_t records = 0;
+    // The inference command in flight (Engine::commandInFlight).
+    uint32_t commands = 0;
+    // A command ticket that has not retired, including a lane's pass state
+    // between the passes of one command (Request::passCommand).
+    uint32_t tickets = 0;
+    // A mask/overlap wait the engine asked for and has not been given.
+    uint32_t masks = 0;
+    // A restore ticket the engine still owns: its state read or KV restore in
+    // flight, one that landed but was not polled, or one cancelled while the
+    // request still holds the prefix and the state's in-use pin.
+    uint32_t restores = 0;
+    // A cancelled, timed out or failed end waiting for the command or restore
+    // it is drained by; the request owns its lane until that drain.
+    uint32_t ends = 0;
+    [[nodiscard]] bool drained() const noexcept {
+      return !queued && !resident && !records && !commands && !tickets && !masks && !restores && !ends;
+    }
+  };
+
+  [[nodiscard]] RequestDrain requestDrain() const;
+  [[nodiscard]] bool requestDrained() const {
+    return requestDrain().drained();
+  }
+
+  // [T030] The exact context window THIS Engine enforces: submit refuses a
+  // longer one, and a shorter one the runtime never advertises. Read straight
+  // from the config the Engine was built with, whose value nothing changes
+  // after construction; snapshot() reports the same number but carries the
+  // request, scheduler and telemetry state a capacity reader has no business
+  // touching.
+  [[nodiscard]] uint32_t maxContextTokens() const noexcept {
+    return config_.maxContext;
+  }
+
+  // [Gate 4 / U-01] The callback/descendant retirement receipt (U-01's missing
+  // primitive at the Engine boundary): every callback and descendant this Engine
+  // still owes before its resource domain may be retired. The GPU and Neural
+  // Engine halves come from the objects that own that work (Model::descendants,
+  // which folds MetalBackend::callbackRetirement, the ANE split's unreported
+  // evaluations and the ANE service queue); the last two fields are the Engine's
+  // own bound completion notifier: one seat per closure the machinery still
+  // keeps (a command's GPU/host completion callback held by the model's ticket,
+  // a state restore, a KV tier write or restore, a state offload), and one run
+  // while that closure is executing. A ticket's readiness, `commandInFlight()`,
+  // `idle()` or a request count says nothing about any of them, and none of these
+  // counts is a flag a caller may clear: `setCompletionNotifier` never disables
+  // a notifier, and a seat leaves only when the holder let go of the closure or
+  // the invocation returned. Passive: reading refuses to wait for, start,
+  // interrupt or release any callback.
+  struct CallbackRetirement final {
+    // The backend's owed command-completion callback and host-step `work`,
+    // `then` and `timed` closures.
+    metal::CallbackRetirement gpu;
+    // Evaluations the Neural Engine has not reported, and the ANE service-queue
+    // operations (unload, load, evaluation, a program's delayed destruction)
+    // the service has not run to its end.
+    uint32_t agentJobs = 0;
+    uint32_t serviceWork = 0;
+    // The bound completion notifier: retained by machinery that borrows the
+    // graph, and running while its body has not returned.
+    uint32_t notifierSeats = 0;
+    uint32_t notifierRuns = 0;
+    [[nodiscard]] bool retired() const noexcept {
+      return gpu.retired() &&
+             !(agentJobs | serviceWork | notifierSeats | notifierRuns);
+    }
+  };
+
+  [[nodiscard]] CallbackRetirement callbackRetirement() const;
+  [[nodiscard]] bool callbacksRetired() const {
+    return callbackRetirement().retired();
+  }
+
+
   [[nodiscard]] std::optional<double> nextWakeupMilliseconds() const;
   [[nodiscard]] EngineSnapshot snapshot() const;
   [[nodiscard]] ResourceWaitSnapshot resourceWaitSnapshot(double nowMilliseconds) const;
@@ -307,7 +447,7 @@ public:
   [[nodiscard]] bool releaseIdleWeights(double nowMilliseconds);
   [[nodiscard]] bool releaseWeights(double nowMilliseconds);
   // At Ready: the idle release counts from here, not from warmup.
-  void startIdleClock(double nowMilliseconds);
+  void startIdleClock(double nowMilliseconds) noexcept;
   // Restoring from the arrival of a request that found them released.
   [[nodiscard]] WeightsSnapshot weightsSnapshot() const;
   // Neither released nor being restored; true for an engine with no weights
@@ -316,13 +456,20 @@ public:
   // A part of the weights is being written on a thread of its own
   // (model::WeightImages), which may allocate and run commands meanwhile:
   // the engine leaves memory and the backend alone until it ends.
-  [[nodiscard]] bool weightsWriting() const noexcept { return weights_ && weights_->writing(); }
+  [[nodiscard]] bool weightsWriting() const noexcept { return weights_ && (weights_->writing() || weights_->writerIntervalActive()); }
   // At a clean stop, once tick() has stopped: makes every restore point a
   // persistent tier has waiting durable, the newest first, as the writes it
   // starts land (WriteBehind::flush), once no part of the weights is being
   // written. True once none is left. The requests and the command in flight
   // stay as they are, for teardown.
   [[nodiscard]] bool flushRestorePoints();
+  // Terminal teardown only: the independent reaper joins the Writer. This
+  // waits for its complete receipt/wake bookkeeping, then reclaims as Owner;
+  // it neither joins a Writer here nor resumes inference.
+  void retireWeightWriterForShutdown();
+  // Nonblocking Owner safe point, also usable after the native stream fails:
+  // reclaim a complete Writer receipt without resuming model execution.
+  bool pollWeightWriter();
 
 private:
   // A lane's end other than its output's, and for a retryable outcome the
@@ -377,6 +524,7 @@ private:
   // (MemoryLedger::open), closed when the request leaves requests_.
   struct ClaimHandle final {
     MemoryGovernor *governor = nullptr;
+  ResourceDomainLease *writerLease = nullptr;
     ClaimId id;
     ClaimHandle() = default;
     ClaimHandle(ClaimHandle &&other) noexcept;
@@ -532,9 +680,11 @@ private:
     bool replaying = false;
     // Captured once the final prompt chunk completes; emitted with Done.
     std::vector<float> scoreLogits;
-    // A restore that could not fit alone released its prefix pin:
-    // admissions ignore the cache until one succeeds.
+    // A restore that could not fit releases its prefix pin: the retry looks
+    // the prompt up ignoring the cache. completeAdmission() clears the bypass
+    // after admission succeeds.
     bool skipCache = false;
+    std::vector<uint64_t> failedRestores;
     // Admission that waits for its state's read, its KV pages' restores,
     // or both, before the lane runs.
     struct Restore {
@@ -1270,14 +1420,20 @@ private:
   // ends a restore no request waits for (tick); true when it progressed.
   [[nodiscard]] bool advanceWeights(double nowMilliseconds);
 
+  struct WriterCoordinator;
+  std::unique_ptr<WriterCoordinator> writer_;
+  std::exception_ptr writerFailure_;
   EngineConfig config_;
   std::optional<WeightResidency> weights_;
+  MemoryLedger::ModelRegistration modelRegistration_;
   Cache &cache_;
-  WriteBehind writeBehind_;
+  WriteBehind &writeBehind_;
   model::Model &model_;
   EngineEventSink &events_;
   Scheduler scheduler_;
   std::unordered_map<uint64_t, Request> requests_;
+  std::vector<std::pair<uint64_t, std::vector<uint32_t>>> deferredWriterMasks_;
+  bool deferredWriterTerminals_ = false;
   // Pressure preempted work, a lane is still resident, and memory is still
   // short (the host admits no growth, or allocationFailed_), up to the
   // drain's end.
@@ -1300,6 +1456,95 @@ private:
   // decodes: the scheduler plans none of its work, and admission starts it
   // in no lane.
   [[nodiscard]] bool belowRunnable(const Request &request) const;
+  // [Gate 4 / U-01] The tracker the bound completion notifier reports to
+  // (Engine::callbackRetirement's two notifier fields). It is shared with every
+  // copy of the closure, so it outlives the callbacks reporting to it, the Engine
+  // itself and any transfer, tier reader or completion thread still running one.
+  struct NotifierTracker final {
+    std::atomic<uint32_t> seats{0};
+    std::atomic<uint32_t> runs{0};
+    std::mutex bodyMutex;
+    // The current binding's closure, in a slot a rebind replaces wholesale
+    // (`setCompletionNotifier` is the only writer, under `bodyMutex`): what is
+    // bound from a rebind on is given the new body, and the slot the replaced
+    // binding leaves behind stays alive for as long as any closure bound with
+    // it is still held. Nothing runs a body under this mutex.
+    std::shared_ptr<const std::function<void()>> bodySlot;
+  };
+  // One bound notifier. Copying it occupies one seat of its tracker: the copy is
+  // the closure some holder keeps borrowed (a submission's GPU/host completion
+  // callback, a state restore, a tier write or restore, a state offload), and
+  // destroying it releases that seat. Running it occupies one run until its body
+  // returned, so a notifier that starts further borrowing work cannot open a
+  // false-zero window. Its recipient is frozen with the binding it came from
+  // (one shared slot, read once at the binding), so undoing the Engine's
+  // binding retargets only the hand-offs that come after it: a closure a
+  // transfer already holds keeps running what it was given, and its own
+  // shared_ptr keeps that body alive past the Engine, the Cache or the
+  // StateCache it was bound into. Reaching the recipient takes no lock, and
+  // no callback ever runs under one the Engine's own work takes.
+  struct BoundNotifier final {
+    BoundNotifier(std::shared_ptr<NotifierTracker> tracker,
+                  std::shared_ptr<const std::function<void()>> body)
+        : tracker_(std::move(tracker)), body_(std::move(body)) {
+      if (tracker_)
+        ++tracker_->seats;
+    }
+    explicit BoundNotifier(std::shared_ptr<NotifierTracker> tracker)
+        : tracker_(std::move(tracker)) {
+      if (!tracker_)
+        return;
+      ++tracker_->seats;
+      std::lock_guard lock(tracker_->bodyMutex);
+      body_ = tracker_->bodySlot;
+    }
+    BoundNotifier(const BoundNotifier &other)
+        : tracker_(other.tracker_), body_(other.body_) {
+      if (tracker_)
+        ++tracker_->seats;
+    }
+    BoundNotifier(BoundNotifier &&other) noexcept
+        : tracker_(std::exchange(other.tracker_, nullptr)),
+          body_(std::move(other.body_)) {}
+    BoundNotifier &operator=(const BoundNotifier &other) {
+      if (this == &other)
+        return *this;
+      if (tracker_)
+        --tracker_->seats;
+      tracker_ = other.tracker_;
+      body_ = other.body_;
+      if (tracker_)
+        ++tracker_->seats;
+      return *this;
+    }
+    BoundNotifier &operator=(BoundNotifier &&other) noexcept {
+      if (this == &other)
+        return *this;
+      if (tracker_)
+        --tracker_->seats;
+      tracker_ = std::exchange(other.tracker_, nullptr);
+      body_ = std::move(other.body_);
+      return *this;
+    }
+    ~BoundNotifier() {
+      if (tracker_)
+        --tracker_->seats;
+    }
+    [[nodiscard]] std::shared_ptr<NotifierTracker> tracker() const noexcept {
+      return tracker_;
+    }
+    void operator()() const;
+
+   private:
+    std::shared_ptr<NotifierTracker> tracker_;
+    std::shared_ptr<const std::function<void()>> body_;
+  };
+  // The completion closure's stable bindings are measured, never assumed: the
+  // Engine's own slot plus what this Cache reports (Cache::notifierBindings,
+  // its own and the StateCache's) — normally three, and never more than the
+  // slots actually hold. Anything the tracker counts above them is a closure a
+  // transfer, a submission or a running callback still holds.
+  std::shared_ptr<NotifierTracker> notifier_{std::make_shared<NotifierTracker>()};
   std::function<void()> completionNotifier_;
   std::optional<Pending> pending_;
   PassCommand passCommand_{scheduler_, [this](uint64_t id) { return requests_.at(id).pendingEnd.has_value(); }};

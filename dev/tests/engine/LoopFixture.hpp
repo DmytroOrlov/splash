@@ -98,6 +98,8 @@ struct LoopOptions final {
   std::optional<TierOptions> tier;
   std::optional<engine::CacheSpillPolicy> cacheSpill;
   std::function<void(Executor &)> shape;
+  // Exercise callbacks supplied by a test on the actual admission path.
+  bool useConfigClocks = false;
 };
 
 // A native loop over the fake model, collecting the bytes it writes. Its
@@ -123,13 +125,13 @@ struct LoopFixture {
                     : nullptr),
         cache(pool, tier ? &*tier : nullptr, budget, options ? options->cacheSpill : std::nullopt),
         loop(
-            clocked(std::move(config), idleReleaseSeconds), cache, executor,
+            clocked(std::move(config), idleReleaseSeconds), idleReleaseSeconds, cache, persistence, executor,
             [this](std::span<const uint8_t> bytes) {
               if (writeFailure)
                 throw *writeFailure;
               output.insert(output.end(), bytes.begin(), bytes.end());
             },
-            limits) {
+            [this] { return status(); }, limits) {
     loop.serveStatus([this] { return status(); });
     storage.commandInFlight = [this] { return loop.commandInFlight(); };
     if (memory) {
@@ -173,6 +175,8 @@ struct LoopFixture {
     if (!residency.admit)
       residency.admit = governor ? governor->allocationAdmission() : test::admitAll;
     residency.idleReleaseMilliseconds = 1000.0 * idleReleaseSeconds;
+    if (options && options->useConfigClocks)
+      return config;
     config.unixMicros = [] { return uint64_t{1'000'000}; };
     if (options && options->timing)
       config.monotonicMilliseconds = [this] { return monotonic; };
@@ -194,12 +198,14 @@ struct LoopFixture {
       const bool progressed = loop.tick();
       if (control && !loop.commandInFlight())
         static_cast<void>(control->run(memory->pressure()));
-      if (memory)
+      if (memory) {
+        governor->publishSnapshot();
         checkMemory({.memory = *memory,
                      .storage = storage,
                      .model = executor,
                      .weights = &weights,
                      .governor = &*governor});
+      }
       if (!loop.commandInFlight())
         cache.checkInvariants();
       if (progressed)
@@ -237,6 +243,7 @@ public:
   // The tier's quota, its slots' bytes, refilled on the awake clock.
   std::shared_ptr<model::DiskBudget> budget;
   engine::Cache cache;
+  RetainedPersistence persistence{cache};
   Executor executor;
   std::vector<uint8_t> output;
   // Thrown by every write while set, as by a closed output pipe.

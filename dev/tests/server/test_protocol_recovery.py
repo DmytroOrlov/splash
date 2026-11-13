@@ -4,13 +4,15 @@ import unittest
 from itertools import product
 from unittest import mock
 
-from dev.tests.server_fixtures import FakeRuntime, Harness, Plan
+from dev.tests import native_peer
+from dev.tests.server_fixtures import FOREVER, FakeRuntime, Harness, Plan, judgment_body
 from dev.tests.tool_output import argument_grammar, project
 from server import errors as api_errors
 from server import server as api
 from server import tool_schema
 from server.chat_messages import normalize_messages, template_messages
 from server.dialects import anthropic as anthropic_dialect
+from server.dialects import scoring as scoring_dialect
 from server.thinking import ThinkingCodec
 
 
@@ -473,8 +475,91 @@ class ProtocolRecoveryTests(unittest.TestCase):
                         json.loads(calls[0]["function"]["arguments"]), {"value": value}
                     )
 
+    def test_effective_context_limits_and_static_metadata(self):
+        runtime = FakeRuntime()
+        harness = self.harness(runtime, max_context=128, initial_status=False)
+        app = harness.app
+        with self.assertRaises(api_errors.APIError) as caught:
+            app._output_budget(None, [1] * 40, "max_tokens")
+        self.assertEqual(caught.exception.code, "engine_recovering")
+
+        def metadata():
+            status, _, raw = harness.request("GET", "/v1/models")
+            self.assertEqual(status, 200)
+            model = json.loads(raw)["data"][0]
+            return model["max_model_len"], model["context_length"]
+
+        self.assertEqual(metadata(), (128, 128))
+        runtime.status_event = native_peer.status_event(
+            effective_context_tokens=64, maximum_context_tokens=64
+        )
+        harness.backend.status()
+        self.assertEqual(app.max_context, 64)
+        self.assertEqual(app._output_budget(None, [1] * 40, "max_tokens"), 24)
+        self.assertEqual(app._output_budget(80, [1] * 40, "max_tokens"), 24)
+        with self.assertRaises(api_errors.ContextLengthError) as caught:
+            app._output_budget(None, [1] * 65, "max_tokens")
+        self.assertEqual(caught.exception.maximum_input_tokens, 63)
+        with self.assertRaises(api_errors.ContextLengthError) as caught:
+            app._check_image_request_size(64, 1, 4)
+        self.assertEqual(caught.exception.maximum_input_tokens, 63)
+
+        def score(app, messages, labels, admit, checkpoint, what):
+            admit(65)
+
+        with mock.patch.object(
+            scoring_dialect, "_encode_score_prompt", side_effect=score
+        ):
+            with self.assertRaises(api_errors.ContextLengthError) as caught:
+                scoring_dialect.prepare_judgment(
+                    app, judgment_body(), deadline=FOREVER, disconnected=lambda: False
+                )
+        self.assertEqual(runtime.requests, [])
+        self.assertEqual(caught.exception.maximum_input_tokens, 64)
+        for value in (None, 0, -1, True, 129):
+            app._update_serving_context(value)
+            with self.assertRaises(api_errors.APIError) as caught:
+                app._output_budget(None, [1] * 40, "max_tokens")
+            self.assertEqual(caught.exception.code, "engine_recovering")
+        runtime.status_event = native_peer.status_event(
+            effective_context_tokens=64,
+            maximum_context_tokens=64,
+            lifecycle={
+                "power": "ac",
+                "state": "ready",
+                "revision": 2,
+                "observation_sequence": 2,
+                "control_ready": True,
+                "inference_ready": True,
+                "model_resident": True,
+            },
+        )
+        harness.backend.status()
+        self.assertEqual(app.max_context, 64)
+        self.assertEqual(metadata(), (128, 128))
+
+    def test_contradictory_context_status_fails_closed(self):
+        for fields in (
+            {"configured_context_ceiling": 127},
+            {"effective_context_tokens": 64, "maximum_context_tokens": 63},
+            {"inference_ready": False},
+        ):
+            with self.subTest(fields=fields):
+                runtime = FakeRuntime()
+                harness = self.harness(runtime, max_context=128, initial_status=False)
+                runtime.status_event = native_peer.status_event(**fields)
+                harness.backend.status()
+                self.assertIsNone(harness.app.max_context)
+                self.assertIsNotNone(harness.backend.refusal())
+
     def test_anthropic_overflow_has_actual_counts_for_text_and_image_precheck(self):
-        harness = self.harness(FakeRuntime(), max_context=2)
+        runtime = FakeRuntime()
+        runtime.status_event = native_peer.status_event(
+            configured_context_ceiling=2,
+            effective_context_tokens=2,
+            maximum_context_tokens=2,
+        )
+        harness = self.harness(runtime, max_context=2)
         status, _, raw = harness.request("POST", "/v1/messages", request_body())
         self.assertEqual(status, 400)
         self.assertEqual(

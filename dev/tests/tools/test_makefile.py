@@ -86,6 +86,31 @@ class MakefileTests(unittest.TestCase):
             (directory / name).chmod(0o755)
         return directory / "python3"
 
+    def test_metal_gate_runs_gpu_suites_in_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            make = root / "record-make"
+            make.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$METAL_GATE_LOG"\n')
+            make.chmod(0o755)
+            log = root / "calls"
+            result = self.make(
+                "-j4",
+                "-o",
+                "platform-check",
+                *ENGINE_BUILT,
+                "check-native-metal",
+                f"MAKE={make}",
+                METAL_GATE_LOG=str(log),
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(
+                log.read_text().splitlines(),
+                [
+                    "--no-print-directory test-engine-metal",
+                    "--no-print-directory test-sanitizers-metal",
+                ],
+            )
+
     def test_a_rebuilt_environment_gets_the_development_requirements_again(self):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)

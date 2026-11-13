@@ -75,6 +75,7 @@ class ResponseLifecycleTests(unittest.TestCase):
 
     def test_store_false_uses_history_without_retaining_it(self):
         harness = self.harness()
+        harness.backend.status()
         harness.app.response_store.put(
             {"id": "resp_previous"}, [{"role": "user", "content": "old history"}]
         )
@@ -95,6 +96,7 @@ class ResponseLifecycleTests(unittest.TestCase):
 
     def test_stored_history_is_independent_of_the_request_body(self):
         harness = self.harness()
+        harness.backend.status()
         question = {"type": "message", "role": "user", "content": "question"}
         answer = {
             "type": "message",
@@ -123,6 +125,11 @@ class ResponseLifecycleTests(unittest.TestCase):
         # record stores, and leaves them as they were posted.
         harness = self.harness(
             tokenizer=fixtures.ImagePadTokenizer(), max_context=65536
+        )
+        harness.backend.runtime.status_event = fixtures.native_peer.status_event(
+            configured_context_ceiling=65536,
+            effective_context_tokens=65536,
+            maximum_context_tokens=65536,
         )
         pdf = base64.b64encode(fixtures.pdf_bytes()).decode()
         posted = [

@@ -219,7 +219,7 @@ class PromptProgressTests(unittest.TestCase):
             result = RuntimeCall(
                 None, 1, 1, request(10, return_progress=enabled), None, None
             )
-            result._record_start(wire.StartEvent(1, 0, 1))
+            result._record_start(wire.StartEvent(1, 0, 1, 131_072))
             return result
 
         self.assertIsNotNone(

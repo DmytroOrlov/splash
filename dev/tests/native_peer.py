@@ -46,6 +46,21 @@ def status_event(correlation_id: int = 1, **fields) -> wire.StatusJsonEvent:
         "memory_pressure": "normal",
         "thermal_state": "nominal",
         "metal": {"healthy": True},
+        "control_ready": True,
+        "inference_ready": True,
+        "model_resident": True,
+        "configured_context_ceiling": 128,
+        "effective_context_tokens": 128,
+        "maximum_context_tokens": 128,
+        "lifecycle": {
+            "power": "ac",
+            "state": "ready",
+            "revision": 1,
+            "observation_sequence": 1,
+            "control_ready": True,
+            "inference_ready": True,
+            "model_resident": True,
+        },
     }
     for key, value in fields.items():
         if value is None:
@@ -87,7 +102,11 @@ def _event_payload(event: wire.EngineEvent) -> tuple[wire.FrameType, bytes]:
             )
         case wire.StartEvent():
             return wire.FrameType.START, struct.pack(
-                "<QII", event.request_id, event.lane, event.matched_prompt_tokens
+                "<QIII",
+                event.request_id,
+                event.lane,
+                event.matched_prompt_tokens,
+                event.capacity_tokens,
             )
         case wire.PromptProgressEvent():
             return wire.FrameType.PROMPT_PROGRESS, struct.pack(

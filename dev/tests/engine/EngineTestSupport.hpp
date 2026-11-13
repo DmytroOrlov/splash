@@ -220,7 +220,7 @@ struct Spilling {
                        residentTokens ? residentTokens
                                       : static_cast<uint32_t>(residentKvBytes / 100 * engine::KvCache::pageTokens),
                        host, pages)),
-               cache, model, events) {
+               cache, persistence, model, events) {
     tier.budget = budget;
     tier.transferLimit = 1024;
     {
@@ -314,6 +314,7 @@ struct Spilling {
   test::TestKvTier tier;
   std::shared_ptr<model::DiskBudget> budget;
   engine::Cache cache;
+  RetainedPersistence persistence{cache};
   Executor model;
   Events events;
   // The host as the governor sees it: ample until a test pauses it.

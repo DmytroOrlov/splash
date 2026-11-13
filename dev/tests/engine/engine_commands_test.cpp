@@ -24,6 +24,7 @@
 
 using namespace splash;
 using namespace splash::engine;
+using splash::test::constrainedRequest;
 using splash::test::Events;
 using splash::test::Executor;
 using splash::test::guardReleases;
@@ -127,11 +128,12 @@ void testImagePromptsRunPrefillGroups() {
     test::TestKvStorage storage(512, 4096, 4);
     KvPool pool(storage, 0);
     engine::Cache cache(pool, nullptr, nullptr);
+    test::RetainedPersistence persistence_cache{cache};
     Executor model;
     model.groupRows = 4 * model::ExecutionLimits::prefillTokenBudget;
     model.streamedExperts = true;
     Events events;
-    engine::Engine engine(test::engineConfig(), cache, model, events);
+    engine::Engine engine(test::engineConfig(), cache, persistence_cache, model, events);
     guardReleases(storage, engine);
     model.time(test::passingTarget());
     auto value = request(1, std::vector<uint32_t>(8193, 7));
@@ -154,10 +156,11 @@ void testTicketAdvancesOnTheEngineWakes() {
   test::TestKvStorage storage(64, 4096, 4);
   KvPool pool(storage, 0);
   engine::Cache cache(pool, nullptr, nullptr);
+  test::RetainedPersistence persistence_cache{cache};
   Executor model;
   model.stagePrefillUntil = std::make_shared<std::atomic<bool>>(false);
   Events events;
-  engine::Engine engine(test::engineConfig(), cache, model, events);
+  engine::Engine engine(test::engineConfig(), cache, persistence_cache, model, events);
   guardReleases(storage, engine);
   engine.submit(request(1, std::vector<uint32_t>(100, 7)));
   double now = 1;
@@ -180,6 +183,7 @@ void testPrefillPassesInterleaveDecodeAndEndAtACancel() {
     test::TestKvStorage storage(512, 4096, 4);
     KvPool pool(storage, 0);
     engine::Cache cache(pool, nullptr, nullptr);
+    test::RetainedPersistence persistence_cache{cache};
     Executor model;
     model.groupRows = 4 * model::ExecutionLimits::prefillTokenBudget;
     model.streamedExperts = true;
@@ -199,7 +203,7 @@ void testPrefillPassesInterleaveDecodeAndEndAtACancel() {
                                            : test::CommandTimes{500.0, 300.0};
     };
     Events events;
-    engine::Engine engine(test::engineConfig({.decodeShare = 0.5}), cache, model, events);
+    engine::Engine engine(test::engineConfig({.decodeShare = 0.5}), cache, persistence_cache, model, events);
     guardReleases(storage, engine);
     model.time(test::passingTarget());
     EngineRequest decoding = request(1, std::vector<uint32_t>(100, 3));
@@ -216,6 +220,10 @@ void testPrefillPassesInterleaveDecodeAndEndAtACancel() {
     if (cancel) {
       tickUntil(engine, now, [&] { return passes() == 3 && !engine.commandInFlight(); },
                 "the long prompt did not run three passes");
+      const auto passDrain = engine.requestDrain();
+      require(!passDrain.drained() && passDrain.commands == 0 && passDrain.tickets == 1 &&
+                  passDrain.resident == 2,
+              "saved pass state did not independently hold the request drain between passes");
       engine.cancel(2);
       require(engine.snapshot().cancelled == 1, "a cancel between passes did not end the request at once");
       const size_t ran = commands.size();
@@ -246,6 +254,8 @@ void testPrefillPassesInterleaveDecodeAndEndAtACancel() {
     engine.cancel(1);
     if (!cancel) engine.cancel(2);
     runUntilIdle(engine);
+    tickUntil(engine, now, [&] { return engine.requestDrained(); },
+              "retired pass ownership still prevented the request drain");
   }
 }
 
@@ -264,7 +274,7 @@ struct PassingEngine {
     std::vector<size_t> captures;
   };
   explicit PassingEngine(bool governed = false)
-      : engine(governed ? host.connect({.decodeShare = 0.5}) : test::engineConfig({.decodeShare = 0.5}), cache,
+      : engine(governed ? host.connect({.decodeShare = 0.5}) : test::engineConfig({.decodeShare = 0.5}), cache, persistence_cache,
                model, events) {
     model.decodeFinishes = false;
     model.commandTimes = [this](const BatchPlan &plan, std::span<const ModelBatchItem> items) {
@@ -306,6 +316,7 @@ struct PassingEngine {
   test::TestKvStorage storage{512, 4096, 4};
   KvPool pool{storage, 0};
   engine::Cache cache{pool, nullptr, nullptr};
+  test::RetainedPersistence persistence_cache{cache};
   Executor model;
   // What a command may hold, which the engine takes as it is built.
   bool shaped = (test::commandShape(4 * model::ExecutionLimits::prefillTokenBudget, 6, true)(model), true);
@@ -539,6 +550,7 @@ void testLaterPassesFollowEveryLanesMovedPages() {
   test::TestKvStorage storage(16, 4096, 4);
   KvPool pool(storage, 0);
   engine::Cache cache(pool, nullptr, nullptr);
+  test::RetainedPersistence persistence_cache{cache};
   Executor model;
   model.kv = &storage;
   model.groupRows = 4 * model::ExecutionLimits::prefillTokenBudget;
@@ -558,7 +570,7 @@ void testLaterPassesFollowEveryLanesMovedPages() {
   };
   Events events;
   const EngineConfig config = test::engineConfig();
-  engine::Engine engine(config, cache, model, events);
+  engine::Engine engine(config, cache, persistence_cache, model, events);
   guardReleases(storage, engine);
   model.time(test::passingTarget());
   double now = 1;
@@ -1005,6 +1017,7 @@ void testALaneJoinsWithTheRowsThatSpareItACommand() {
   test::TestKvStorage storage(512, 4096, 4);
   KvPool pool(storage, 0);
   engine::Cache cache(pool, nullptr, nullptr);
+  test::RetainedPersistence persistence_cache{cache};
   Executor model;
   // Each prefill command's rows, by lane in submission order.
   std::vector<std::vector<uint32_t>> commands;
@@ -1018,7 +1031,7 @@ void testALaneJoinsWithTheRowsThatSpareItACommand() {
     return test::CommandTimes{};
   };
   Events events;
-  engine::Engine engine(test::engineConfig({.maxContext = 102400}), cache, model, events);
+  engine::Engine engine(test::engineConfig({.maxContext = 102400}), cache, persistence_cache, model, events);
   guardReleases(storage, engine);
   engine.submit(request(1, std::vector<uint32_t>(2060, 7)));
   engine.submit(request(2, std::vector<uint32_t>(30, 8)));
@@ -1054,13 +1067,14 @@ void testACaptureCutReplansWithARowCap() {
   test::TestKvStorage storage(512, 4096, 4);
   KvPool pool(storage, 0);
   engine::Cache cache(pool, nullptr, nullptr);
+  test::RetainedPersistence persistence_cache{cache};
   Executor model;
   test::commandShape(4 * model::ExecutionLimits::prefillTokenBudget, 1, true)(model);
   RanRows commands;
   recordPrefills(model, commands);
   model.denyReservationAt = engine::kPrefillCheckpointTokens;
   Events events;
-  engine::Engine engine(test::engineConfig({.maxContext = 102400}), cache, model, events);
+  engine::Engine engine(test::engineConfig({.maxContext = 102400}), cache, persistence_cache, model, events);
   guardReleases(storage, engine);
   model.time(test::passingTarget());
   engine.submit(request(1, std::vector<uint32_t>(7000, 7)));
@@ -1082,13 +1096,14 @@ void testARowCapEndsWithItsTick() {
   test::TestKvStorage storage(2048, 4096, 4);
   KvPool pool(storage, 0);
   engine::Cache cache(pool, nullptr, nullptr);
+  test::RetainedPersistence persistence_cache{cache};
   Executor model;
   test::commandShape(4 * model::ExecutionLimits::prefillTokenBudget, 1, true)(model);
   RanRows commands;
   recordPrefills(model, commands);
   model.denyReservationAt = engine::kPrefillCheckpointTokens;
   Events events;
-  engine::Engine engine(test::engineConfig({.maxContext = 102400}), cache, model, events);
+  engine::Engine engine(test::engineConfig({.maxContext = 102400}), cache, persistence_cache, model, events);
   guardReleases(storage, engine);
   model.time(test::kM6FlashNextQ2);
   engine.submit(request(1, std::vector<uint32_t>(18'096, 7)));
@@ -1113,11 +1128,12 @@ void testAPartialAdmissionReplansWithoutTheDeniedLane() {
   storage.budgetPages = 52;
   KvPool pool(storage, 0);
   engine::Cache cache(pool, nullptr, nullptr);
+  test::RetainedPersistence persistence_cache{cache};
   Executor model;
   RanRows commands;
   recordPrefills(model, commands);
   Events events;
-  engine::Engine engine(test::engineConfig({.maxContext = 102400}), cache, model, events);
+  engine::Engine engine(test::engineConfig({.maxContext = 102400}), cache, persistence_cache, model, events);
   guardReleases(storage, engine);
   engine.submit(request(1, std::vector<uint32_t>(300, 7)));
   engine.submit(request(2, std::vector<uint32_t>(1500, 8)));
@@ -1145,11 +1161,12 @@ void testReplansPerTickAreBounded() {
     test::TestKvStorage storage(2048, 4096, 4);
     KvPool pool(storage, 0);
     engine::Cache cache(pool, nullptr, nullptr);
+    test::RetainedPersistence persistence_cache{cache};
     Executor model;
     test::commandShape(groupRows, 1, true)(model);
     model.reservationRoom = [&] { return random() % 3 != 0; };
     Events events;
-    engine::Engine engine(test::engineConfig({.maxContext = 102400}), cache, model, events);
+    engine::Engine engine(test::engineConfig({.maxContext = 102400}), cache, persistence_cache, model, events);
     guardReleases(storage, engine);
     model.time(test::passingTarget());
     for (uint64_t id = 1; id <= prompts.size(); ++id)
@@ -1193,10 +1210,11 @@ void testAPreemptingStartWaitsUntilItLeads() {
     test::TestKvStorage storage(1024, 4096, 4);
     KvPool pool(storage, 0);
     engine::Cache cache(pool, nullptr, nullptr);
+    test::RetainedPersistence persistence_cache{cache};
     Executor executor;
     executor.decodeFinishes = false;
     Events events;
-    engine::Engine engine(test::engineConfig({.maxContext = 102400}), cache, executor, events);
+    engine::Engine engine(test::engineConfig({.maxContext = 102400}), cache, persistence_cache, executor, events);
     guardReleases(storage, engine);
     const auto submit = [&](uint64_t id, uint32_t tokens, RequestPriority priority, uint32_t output) {
       EngineRequest value = request(id, std::vector<uint32_t>(tokens, static_cast<uint32_t>(id)));
@@ -1244,10 +1262,11 @@ void testPreemptingStartsAreJudgedTogether() {
   test::TestKvStorage storage(1024, 4096, 4);
   KvPool pool(storage, 0);
   engine::Cache cache(pool, nullptr, nullptr);
+  test::RetainedPersistence persistence_cache{cache};
   Executor executor;
   executor.decodeFinishes = false;
   Events events;
-  engine::Engine engine(test::engineConfig({.maxContext = 102400}), cache, executor, events);
+  engine::Engine engine(test::engineConfig({.maxContext = 102400}), cache, persistence_cache, executor, events);
   guardReleases(storage, engine);
   const auto submit = [&](uint64_t id, uint32_t tokens, RequestPriority priority, uint32_t output) {
     EngineRequest value = request(id, std::vector<uint32_t>(tokens, static_cast<uint32_t>(id)));
@@ -1303,10 +1322,117 @@ void testSpillPromptsTriedTogetherPrefillApart() {
           "two Spill prompts tried together prefilled together, the later one behind");
 }
 
+void testRequestDrainRefusesHeldRequestsAndAParkedTicket() {
+  test::TestKvStorage storage(64, 4096, 4);
+  KvPool pool(storage, 0);
+  engine::Cache resources(pool, nullptr, nullptr);
+  test::RetainedPersistence persistence(resources);
+  Executor executor(1);
+  Events events;
+  engine::Engine engine(test::engineConfig(), resources, persistence, executor, events);
+  guardReleases(storage, engine);
+  double now = 1;
+  require(engine.requestDrained() && engine.idle(), "a fresh engine does not drain");
+
+  const auto parked = executor.holdCommands();
+  engine.submit(request(1, std::vector<uint32_t>(65, 1)));
+  require(engine.tick(now++) && engine.commandInFlight(), "the fixture's command did not park");
+  engine.submit(request(2, std::vector<uint32_t>(65, 2)));
+  static_cast<void>(engine.tick(now++));
+  {
+    const auto drain = engine.requestDrain();
+    require(!drain.drained() && !engine.requestDrained(),
+            "a parked command with a queued peer drained");
+    require(drain.commands == 1 && drain.tickets == 1,
+            "the parked command did not refuse as both a command and an unretired ticket");
+    require(drain.resident == 1, "the lane that command holds did not refuse the drain");
+    require(drain.queued == 1, "the request that could not take a lane did not refuse the drain");
+    require(drain.records == 0 && drain.masks == 0 && drain.restores == 0 && drain.ends == 0,
+            "categories nothing in this fixture owns reported work");
+  }
+
+  *parked = true;              // the parked ticket retires
+  executor.holdPrefillUntil = {};  // later commands run at once
+  tickUntil(engine, now, [&] { return engine.requestDrained(); },
+            "the drain never accepted the retired requests and command");
+  require(engine.idle() && engine.requestDrained(),
+          "the drain accepted while request-side ownership remained");
+}
+
+void testRequestDrainRefusesAnUnansweredMaskWait() {
+  test::TestKvStorage storage(8, 4096, 4);
+  KvPool pool(storage, 0);
+  engine::Cache resources(pool, nullptr, nullptr);
+  test::RetainedPersistence persistence(resources);
+  Executor executor(1);
+  Events events;
+  engine::Engine engine(test::engineConfig(), resources, persistence, executor, events);
+  guardReleases(storage, engine);
+  engine.submit(constrainedRequest(203, 100'000.0));
+  require(engine.tick(1) && engine.tick(2), "the request did not reach its initial mask");
+  {
+    const auto drain = engine.requestDrain();
+    require(!drain.drained(), "an unanswered mask drained");
+    require(drain.masks == 1 && drain.resident == 1,
+            "the mask wait and the lane holding it were not both counted");
+    require(drain.commands == 0 && drain.tickets == 0,
+            "a mask wait was reported as a command the engine does not have");
+  }
+  const std::array<uint32_t, 1> initialMask{1};
+  engine.provideMask(203, initialMask);
+  require(engine.tick(3) && engine.tick(4) && engine.tick(5) && engine.tick(6),
+          "the request did not launch its overlapped verification");
+  {
+    const auto drain = engine.requestDrain();
+    require(drain.masks == 1 && drain.commands == 1 && drain.tickets == 1 && drain.resident == 1,
+            "the verify mask inside its command did not refuse on all three owners");
+  }
+  const std::array<uint32_t, 8> verifyMask{1, 2, 3, 4, 5, 6, 7, 8};
+  engine.provideMask(203, verifyMask);
+  double now = 7;
+  tickUntil(engine, now, [&] { return engine.requestDrained(); },
+            "the drain never accepted the answered mask and its retired command");
+  require(events.completedCount == 1 && events.maskRequests.size() == 2,
+          "the drain accepted without the constrained request finishing its masks");
+}
+
+void testRequestDrainRefusesACompletionRecordUntilTheSweep() {
+  test::TestKvStorage storage(8, 4096, 4);
+  KvPool pool(storage, 0);
+  engine::Cache resources(pool, nullptr, nullptr);
+  test::RetainedPersistence persistence(resources);
+  Executor executor(1);
+  Events events;
+  engine::Engine engine(test::engineConfig(), resources, persistence, executor, events);
+  guardReleases(storage, engine);
+  engine.submit(constrainedRequest(203, 100'000.0));
+  require(engine.tick(1) && engine.tick(2), "the request did not reach its mask wait");
+  require(engine.requestDrain().masks == 1, "the fixture's mask wait did not stand");
+  engine.cancel(203);  // no command and no restore in its way: the end lands now
+  {
+    const auto drain = engine.requestDrain();
+    require(!drain.drained() && drain.records == 1,
+            "the ended request's record did not refuse the drain");
+    require(drain.resident == 0 && drain.queued == 0 && drain.masks == 0 && drain.commands == 0 &&
+                drain.tickets == 0 && drain.restores == 0 && drain.ends == 0,
+            "other categories of a request that gave its lane and mask back");
+    const EngineSnapshot counts = engine.snapshot();
+    require(counts.activeRequests.empty() && counts.cancelled == 1 && counts.submitted == 1 &&
+                !engine.commandInFlight(),
+            "the refused record already reads as finished work to the other views");
+  }
+  static_cast<void>(engine.tick(3));
+  require(engine.requestDrained(), "the drain refused after sweepTerminal took the record");
+}
+
 } // namespace
 
 std::span<const test::TestCase> commandsTests() {
   static constexpr test::TestCase kTests[] = {
+      {"testRequestDrainRefusesHeldRequestsAndAParkedTicket", testRequestDrainRefusesHeldRequestsAndAParkedTicket},
+      {"testRequestDrainRefusesAnUnansweredMaskWait", testRequestDrainRefusesAnUnansweredMaskWait},
+      {"testRequestDrainRefusesACompletionRecordUntilTheSweep", testRequestDrainRefusesACompletionRecordUntilTheSweep},
+
       {"testImagePromptsRunPrefillGroups", testImagePromptsRunPrefillGroups},
       {"testAPassCommandReleasesAnEndedLaneOnlyWhenGivenUp", testAPassCommandReleasesAnEndedLaneOnlyWhenGivenUp},
       {"testAPassCommandWhoseLanesAllEndedIsGivenUp", testAPassCommandWhoseLanesAllEndedIsGivenUp},

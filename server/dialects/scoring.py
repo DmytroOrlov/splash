@@ -641,8 +641,9 @@ def prepare_judgment(app, body, *, deadline, disconnected):
 
         def admit(prompt_tokens):
             checkpoint()
-            if prompt_tokens > app.max_context:
-                raise ContextLengthError(prompt_tokens, app.max_context)
+            context = app._serving_context()
+            if prompt_tokens > context:
+                raise ContextLengthError(prompt_tokens, context)
 
         tokens, slots, prompt = _encode_score_prompt(
             app,
@@ -704,8 +705,9 @@ def prepare_systemone(app, body, *, deadline, disconnected):
 
             def admit(prompt_tokens, qid=qid, prepared=total_tokens):
                 checkpoint()
-                if prompt_tokens > app.max_context:
-                    raise ContextLengthError(prompt_tokens, app.max_context)
+                context = app._serving_context()
+                if prompt_tokens > context:
+                    raise ContextLengthError(prompt_tokens, context)
                 if prepared + prompt_tokens > MAX_SYSTEMONE_TOTAL_TOKENS:
                     raise RequestValidationError(
                         [

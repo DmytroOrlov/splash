@@ -379,6 +379,44 @@ void eventsNeverDecrease(MetalBackend &backend) {
   std::cout << "PASS a shared event never decreases\n";
 }
 
+// [Gate 4 / U-01] The outstanding count (Handoff::outstanding): the evaluations
+// the agent has been started for, or queued for itself, and has not been told
+// back. Each one keeps the surfaces, the shared event and the program it runs on
+// borrowed until its report arrives, so the fourth witness counts them rather
+// than asking whether the handoff retired. Reading the count waits for nothing,
+// starts nothing and cancels nothing; a report the test holds is what stands.
+void outstandingAreCounted(MetalBackend &backend) {
+  const auto settled = [&](std::function<bool()> done) {
+    const auto deadline = AwakeClock::now() + std::chrono::seconds(5);
+    while (!done() && AwakeClock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return done();
+  };
+  ane::Handoff handoff(backend, kBound);
+  std::mutex parkMutex;
+  std::condition_variable wake;
+  bool handed = false;
+  ane::Handoff::Report held;
+  const ane::Handoff::Start hold = [&](const SharedEvent &, uint64_t, uint64_t,
+                                       ane::Handoff::Report report) {
+    {
+      std::lock_guard lock(parkMutex);
+      held = std::move(report);
+      handed = true;
+    }
+    wake.notify_all();
+  };
+  const uint64_t ready = handoff.next(), done = handoff.next();
+  handoff.queue(ready, done, hold);
+  require(settled([&] { return handed; }), "the job the test holds the report of never started");
+  require(handoff.outstanding() == 1 && !handoff.idle() && handoff.outstanding() > 0,
+          "an evaluation the agent has not reported was not counted");
+  held(true);
+  require(settled([&] { return handoff.outstanding() == 0 && handoff.idle(); }),
+          "the report did not retire its count");
+  std::cout << "PASS unreported evaluations are counted, and each report retires its own\n";
+}
+
 } // namespace
 
 int main(int argc, const char *argv[]) {
@@ -399,6 +437,7 @@ int main(int argc, const char *argv[]) {
       }
       times(backend);
       cancels(backend);
+      outstandingAreCounted(backend);
     } catch (const std::exception &error) {
       std::cout << "FAIL " << error.what() << '\n';
       return 1;

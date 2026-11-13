@@ -784,6 +784,28 @@ class Model : public PrefillWorkSource {
 public:
   virtual ~Model() = default;
   virtual void checkHealth() {}
+  // [Gate 4 / U-01] The callbacks and descendants this model still owes its
+  // resource domain before that domain may be retired: the GPU's own
+  // (MetalBackend::callbackRetirement — a command's completion callback, a host
+  // step's `work`, its `then`, its timing report), the Neural Engine evaluations
+  // its handoff has not been told back (ops::AneFfn::agentJobs), and the ANE
+  // service-queue operations the service has not run to its end
+  // (ane::serviceQueueWork, which covers the delayed unload and destruction of
+  // a program's state after its caller let the program go). Every field is a
+  // count held by the machinery that keeps the callback's borrow, never a flag
+  // someone may clear: all zero is retirement, and reading it waits for, runs
+  // and cancels nothing. A model that submits no GPU command and runs no split
+  // owes none of its own; the runtime overrides this with its backend's and
+  // its split's receipts.
+  struct Descendants final {
+    metal::CallbackRetirement gpu;
+    uint32_t agentJobs = 0;
+    uint32_t serviceWork = 0;
+    [[nodiscard]] bool retired() const noexcept {
+      return gpu.retired() && !(agentJobs | serviceWork);
+    }
+  };
+  [[nodiscard]] virtual Descendants descendants() const noexcept { return {}; }
   [[nodiscard]] virtual StateAdmission begin(const ModelRequest &request) = 0;
   // Safe-point preemption returns the request's state buffers, retaining
   // only its host-side sampling/constraint continuation. Resume replays the

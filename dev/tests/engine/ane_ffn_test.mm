@@ -63,6 +63,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1043,6 +1044,13 @@ void limits(AneSum &sum, const std::filesystem::path &cache) {
       [&] { Program late(sum.mil("sum_late"), {}, {std::chrono::nanoseconds(1), {}}, cache); });
   if (message.find("the Neural Engine did not answer within 1e-09 s") == std::string::npos)
     fail("a limit of 1 ns: " + message);
+  // [Gate 4 / U-01] The service still owes the work this caller stopped waiting
+  // for (ane::serviceQueueWork): the posted operation borrows the compiled model
+  // and, on the same queue, the block that destroys a program's state after its
+  // caller let the program go. A caller that gave up on its wait retires none of
+  // that; only the service running the block to its end does.
+  if (ane::serviceQueueWork() == 0)
+    fail("a service operation its caller gave up on reported itself retired");
   // Queued behind the work the first stopped waiting for.
   Program next(sum.mil("sum_next"), {}, kLimits, cache);
   evaluates(sum, next, sum.bind(next, "sum_next"), "the program after a limit ran out");
@@ -1050,6 +1058,16 @@ void limits(AneSum &sum, const std::filesystem::path &cache) {
     Program interrupted(sum.mil("sum_interrupted"), {}, {std::chrono::seconds(120), [] { return true; }}, cache);
   });
   if (message.find("interrupted") == std::string::npos) fail("an interrupted wait: " + message);
+  // [Gate 4 / U-01] And once the service ran what it owed, the count comes back
+  // to rest on its own: the receipt is the service's, not a flag the caller
+  // could clear to pass a witness.
+  {
+    const auto deadline = AwakeClock::now() + std::chrono::seconds(60);
+    while (ane::serviceQueueWork() != 0 && AwakeClock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    if (ane::serviceQueueWork() != 0)
+      fail("the service queue never came to rest: owed=" + std::to_string(ane::serviceQueueWork()));
+  }
   section("limits: 1 ns runs out, and a program comes up after it; an interrupted wait throws Interrupted");
 }
 

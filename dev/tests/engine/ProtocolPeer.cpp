@@ -179,11 +179,11 @@ EngineEvent decodeEvent(FrameType type, Reader &in) {
     return event;
   }
   case FrameType::Start: {
-    StartEvent event;
-    event.requestId = in.u64();
-    event.lane = in.u32();
-    event.matchedPromptTokens = in.u32();
-    return event;
+    const auto requestId = in.u64();
+    const auto lane = in.u32();
+    const auto matched = in.u32();
+    const auto capacity = in.u32();
+    return StartEvent{requestId, lane, matched, capacity};
   }
   case FrameType::PromptProgress: {
     PromptProgressEvent event;

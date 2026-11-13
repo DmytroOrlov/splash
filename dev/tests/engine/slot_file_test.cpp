@@ -21,7 +21,9 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <iterator>
 #include <memory>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -58,6 +60,17 @@ static_assert(SlotFile::slotBytesFor(1) == kHostPageBytes &&
 
 using splash::test::rejects;
 using splash::test::require;
+
+static std::set<int> unlinkedRegularDescriptors() {
+  std::set<int> descriptors;
+  for (int descriptor = 0; descriptor < getdtablesize(); ++descriptor) {
+    struct stat info {};
+    if (fstat(descriptor, &info) == 0 && S_ISREG(info.st_mode) &&
+        info.st_nlink == 0)
+      descriptors.insert(descriptor);
+  }
+  return descriptors;
+}
 
 static void testFailedWriteStopsWriting() {
   const pid_t child = fork();
@@ -670,8 +683,59 @@ template <class Value> static void put(std::vector<std::byte> &bytes, size_t off
   std::memcpy(bytes.data() + offset, &value, sizeof(value));
 }
 
-// readAt reads a landed slot's bytes with one aligned pread, and nothing for unwritten, out-of-
-// range or misaligned requests.
+// A completed slot whose backing file lost bytes after its write is a miss
+// both through the worker and beside it: neither read returns anything, the
+// file goes on taking writes, and the slot's fresh write lands. Historical
+// (f9f4eb3a) form sized slots by the file's own alignment constant and passed
+// the quota as a byte count of the file; this file's slots are host pages and
+// its quota is the shared DiskBudget, and its temporary file is still opened
+// unlinked, so the same descriptor witness finds it and the same truncation
+// reaches the same payload. Placed after AlignedBytes so the read beside the
+// worker can be checked too.
+static void testTruncatedCompletedSlotIsRejected() {
+  constexpr size_t size = kHostPageBytes;
+  auto budget = std::make_shared<DiskBudget>(size);
+  const auto before = unlinkedRegularDescriptors();
+  SlotFile file(size, budget);
+  const auto after = unlinkedRegularDescriptors();
+  std::vector<int> added;
+  std::set_difference(after.begin(), after.end(), before.begin(), before.end(),
+                      std::back_inserter(added));
+  require(added.size() == 1,
+          "could not uniquely identify the new unlinked slot descriptor");
+  const int descriptor = added.front();
+
+  auto slot = file.acquire();
+  std::vector<std::byte> source(size, std::byte{0x6d}), restored(size);
+  require(slot && file.write(slot, {source}, {})->wait(),
+          "complete slot write failed before truncation");
+  require(file.read(slot, {restored}, {})->wait() && restored == source,
+          "complete slot was not readable before truncation");
+  require(ftruncate(descriptor, static_cast<off_t>(size - 1)) == 0,
+          "could not truncate the completed slot backing file");
+  require(!file.read(slot, {restored}, {})->wait(),
+          "completed slot remained readable after backing-file truncation");
+  const AlignedBytes buffer(size);
+  // The payload read as a whole fails beside the worker too, and so does every
+  // read that covers the bytes the truncation took; the bytes that survived
+  // still read back, as a temporary file's slot is trusted without a per-read
+  // checksum and only the whole payload a restore takes is refused.
+  require(!file.readAt(*slot, 0, size, buffer.span()) && !file.readAt(*slot, size - 1000, 1000, buffer.span()) &&
+              !file.readAt(*slot, size - 1, 1, buffer.span()),
+          "a truncated completed slot read back beside the worker");
+  const auto surviving = file.readAt(*slot, 0, 1, buffer.span());
+  require(surviving && surviving->size() == 1,
+          "the bytes a truncation left behind became unreadable");
+  require(file.writable(), "a truncated payload stopped the file taking writes");
+  require(file.write(slot, {source}, {})->wait() && file.read(slot, {restored}, {})->wait() &&
+              restored == source,
+          "a truncated slot took no fresh write");
+}
+
+// A slot reads beside the worker once its write landed: the bytes asked for,
+// from one pread of the aligned units around them into aligned memory that
+// holds those; nothing for an unwritten slot, bytes past the payload, memory
+// that is not aligned or too small, or another file's slot.
 static void testReadAtReadsAlignedUnits() {
   constexpr size_t size = 4 * kHostPageBytes;
   constexpr uint64_t unit = splash::kSlotReadAlignmentBytes;
@@ -1047,6 +1111,7 @@ static void testSlotsKeepNoReaders() {
 int main() {
   try {
     testFailedWriteStopsWriting();
+    testTruncatedCompletedSlotIsRejected();
     testScatteredSpans();
     testAlignedRunsMoveDirectly();
     testCancelledDirectWrite();
@@ -1072,8 +1137,9 @@ int main() {
     constexpr size_t size = 4 * kHostPageBytes;
     auto budget = std::make_shared<DiskBudget>(size * 2 + 1);
     SlotFile file(size, budget);
-    require(file.slotBytes() == size && budget->usedBytes() == 0,
-            "file did not report its slot size or took quota");
+    require(file.slotBytes() == size && budget->capacityBytes() == size * 2 + 1 &&
+                budget->usedBytes() == 0,
+            "file did not report its slot size, its budget's quota or took quota");
     auto first = file.acquire();
     auto second = file.acquire();
     require(first && second && budget->usedBytes() == size * 2 && !file.acquire(),

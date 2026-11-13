@@ -30,7 +30,9 @@ class StatusContractTests(unittest.TestCase):
             [
                 name
                 for name, path in PROMETHEUS_SERIES.items()
-                if path[0] not in SERVER_SECTIONS and name not in rendered
+                if path[0] not in SERVER_SECTIONS
+                and name not in rendered
+                and path[0] in status
             ],
             [],
         )

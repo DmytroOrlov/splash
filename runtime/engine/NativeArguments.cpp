@@ -119,9 +119,14 @@ NativeArguments parseNativeArguments(int argc, const char *const *argv) {
     if (quota != "0" && !parsePositive(quota, result.maxCacheDisk.bytes))
       throw UsageError("MAX_CACHE_DISK_BYTES must be a nonnegative integer");
   }
-  // Options follow as --name value pairs; a missing value fails its check.
-  for (; next < argc; next += 2) {
+  // Options follow as --name value pairs or standalone Boolean flags.
+  for (; next < argc;) {
     const std::string_view option(argv[next]);
+    if (option == "--pause-on-battery") {
+      result.pauseOnBattery = true;
+      ++next;
+      continue;
+    }
     const std::string_view value(next + 1 < argc ? argv[next + 1] : "");
     if (option == "--kv-format") {
       if (value != "int8" && value != "bf16")
@@ -183,6 +188,7 @@ NativeArguments parseNativeArguments(int argc, const char *const *argv) {
     } else {
       throw UsageError("unexpected argument " + std::string(option));
     }
+    next += 2;
   }
   if (result.persistentCache && !result.maxCacheDisk.automatic && !result.maxCacheDisk.bytes)
     throw UsageError("--persistent-cache requires an SSD cache, which MAX_CACHE_DISK_BYTES 0 turns off");

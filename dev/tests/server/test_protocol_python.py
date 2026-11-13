@@ -129,7 +129,7 @@ def engine_events():
     return {
         "ready": p.ReadyEvent(4, 524_288, False),
         "ready_vision": p.ReadyEvent(4, 524_288, True),
-        "start": p.StartEvent(91, 2, 4096),
+        "start": p.StartEvent(91, 2, 4096, 8192),
         "prompt_progress": p.PromptProgressEvent(91, 2048, 123456),
         "tokens": p.TokensEvent(91, 17, (10, 11, 12)),
         "mask_request_initial": p.MaskRequestEvent(91, 6, 4, ()),
@@ -272,6 +272,20 @@ class ProtocolPythonTests(unittest.TestCase):
             code,
             lambda: decode_event(native_peer.serialize_event(event)),
         )
+
+    def test_start_capacity_validation(self):
+        self.assert_fatal_event(p.IssueCode.INVALID_COUNT, p.StartEvent(1, 0, 0, 0))
+        self.assert_fatal_event(p.IssueCode.INVALID_COUNT, p.StartEvent(1, 0, 641, 640))
+        start = p.StartEvent(1, 0, 100, 640)
+        self.assertEqual(decode_event(native_peer.serialize_event(start)), start)
+        self.assertLess(
+            start.capacity_tokens, p.ReadyEvent(4, 1024, False).max_context_tokens
+        )
+        data = native_peer.serialize_event(start)
+        with self.assertRaises(p.ProtocolError):
+            decode_event(data[:-1])
+        with self.assertRaises(p.ProtocolError):
+            decode_event(mutate_u16(data, 4, 11))
 
     def test_client_frames_match_golden(self):
         golden = read_golden()

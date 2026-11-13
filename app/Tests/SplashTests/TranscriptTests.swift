@@ -21,7 +21,7 @@ struct TranscriptTests {
         ])
         let live = ChatStore.Live(conversation: conversation.id, asked: asked, read: 0.45)
         let page = TranscriptPage(conversation, live: live, asleep: false,
-                                  askAgain: .init(enabled: false, help: "Ask Big Again"), name: { "Name of \($0)" })
+                                  askAgain: .init(enabled: false, help: "Ask Big Again"), locale: Locale(identifier: "en_US"), name: { "Name of \($0)" })
         let json = try #require(JSONSerialization.jsonObject(with: Transcript.encoder.encode(page)) as? [String: Any])
         #expect(json["id"] as? String == conversation.id.uuidString)
         #expect(json["askAgain"] as? [String: AnyHashable] == ["enabled": false, "help": "Ask Big Again"])
@@ -369,7 +369,7 @@ struct TranscriptPictures {
         for (name, reply, live, asleep) in states {
             let conversation = Conversation(messages: [question, reply])
             let page = TranscriptPage(conversation, live: live(conversation.id), asleep: asleep,
-                                      askAgain: .init(enabled: false, help: "Ask Big Again"), name: { _ in "Big" })
+                                      askAgain: .init(enabled: false, help: "Ask Big Again"), locale: Locale(identifier: "en_US"), name: { _ in "Big" })
             await Snapshot.save("transcript-\(name)", size: CGSize(width: 860, height: 520),
                                 TranscriptView(transcript: transcript, page: page).background(.background))
         }

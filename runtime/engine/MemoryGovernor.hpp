@@ -6,10 +6,12 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <mutex>
 
 namespace splash::engine {
 
 struct EngineMemoryBreakdown;
+class ResourceDomainAuthority;
 
 struct HostMemoryPages {
   // Mach's free_count, which includes the speculative pages.
@@ -185,7 +187,14 @@ private:
 // is about to allocate Metal memory. That keeps policy out of MetalBackend
 // and makes every growth operation transactional. Single-threaded: startup,
 // the engine and the control pass all run on the native loop thread; nothing
-// here is synchronized.
+// here is synchronized. While a resource-domain lease (engine/ResourceDomainLease.hpp)
+// has bound this governor, its mutating operations and the admission callbacks
+// it hands out demand that lease's current holder thread at call time, so a
+// callback captured before a handoff cannot mutate the ledger while another
+// holder holds; snapshot() stays a passive read and never consults the lease.
+// A ledger mutex serializes snapshots with mutations, including the complete
+// synchronous admission/reservation interval. Host providers run under that
+// recursive mutex and must not wait for another thread to enter this governor.
 class MemoryGovernor final {
 public:
   using HostMemoryProvider = std::function<std::optional<HostMemory>()>;
@@ -207,6 +216,8 @@ public:
   // sets for the Mac's memory, and the streamed table's host memory is
   // charged in full.
   MemoryGovernor(metal::MetalBackend &backend, const EngineMemoryBreakdown &budget, HostMemoryProvider hostMemory);
+
+  ~MemoryGovernor();
 
   // The only way to reserve memory. Low-level storage/model components
   // receive only this transactional callback, so allocation stays governed
@@ -240,7 +251,7 @@ public:
   // what the paced reclaim returns. The limit and critical pressure refuse
   // them like any other. A start marks what it allocates so until serving
   // begins (RuntimeResources::beginServing).
-  bool setServing(bool serving) noexcept;
+  bool setServing(bool serving);
   // Sets the bytes the engine has just returned to the system for the growth
   // that follows, until it is set again, and returns the credit it replaced,
   // which a scope that sets it restores. The control pass sets it while an
@@ -249,12 +260,12 @@ public:
   // growthAdmission counts only the chunk's bytes beyond them against the
   // host's headroom, whose sample may not show them yet. The control pass
   // checks the rest against the sample it took before the exchange.
-  uint64_t setGrowthCredit(uint64_t bytes) noexcept;
+  uint64_t setGrowthCredit(uint64_t bytes);
   // Whether a request cannot proceed for want of memory, as each control pass
   // finds: only then does growth wait for the recovery margin once the host
   // has run short.
-  void setRequestWaiting(bool waiting) noexcept;
-  void setPressure(MemoryPressure pressure) noexcept;
+  void setRequestWaiting(bool waiting);
+  void setPressure(MemoryPressure pressure);
   // The outcome of the engine's last reclaim pass with a target. While one
   // finds nothing left to release, the hold for the recovery margin is
   // waived: growth proceeds as with no request waiting, since only other
@@ -262,7 +273,7 @@ public:
   // A pass that releases or waits for memory again, or the host's recovery,
   // ends the waiver. Only a pass while the host is short counts, so no
   // episode starts waived by a pass that macOS's warning alone asked for.
-  void reclaimed(ReclaimOutcome outcome) noexcept;
+  void reclaimed(ReclaimOutcome outcome);
   // What the governor makes of a fresh sample of the host. Reading it
   // changes nothing: the host's hysteresis moves only with the samples a
   // reservation or the control pass (evaluate) takes, so /status and the
@@ -270,9 +281,19 @@ public:
   [[nodiscard]] MemoryGovernorSnapshot snapshot() const noexcept;
   // The control pass's evaluation: snapshot(), with the host's hysteresis
   // moved to its sample, as a reservation's moves it.
-  MemoryGovernorSnapshot evaluate() noexcept;
+  MemoryGovernorSnapshot evaluate();
 
 private:
+  // Non-null while a resource-domain lease (engine/ResourceDomainLease.hpp)
+  // has bound this governor: every mutating operation and every admission
+  // callback this governor hands out then demands the authority's current
+  // holder thread at call time. Bound and unbound only through the lease's
+  // teardown protocol or this governor's destruction.
+  const ResourceDomainAuthority *authority_ = nullptr;
+  // Throws metal::MetalBackendError unless the caller holds the bound
+  // authority; a no-op while unbound.
+  void authorityCheck() const;
+
   // Held while an admitted allocation runs; released when it ends.
   class Reservation final {
   public:
@@ -330,6 +351,7 @@ private:
   snapshot(const std::optional<HostMemory> &hostMemory, const HostState &host) const noexcept;
   void release(uint64_t bytes) noexcept;
 
+  mutable std::recursive_mutex ledgerMutex_;
   metal::MetalBackend &backend_;
   uint64_t limitBytes_ = 0;
   uint64_t hostReserveBytes_ = 0;
@@ -345,6 +367,8 @@ private:
   MemoryPressure systemPressure_ = MemoryPressure::Normal;
   // As the latest reservation or control pass evaluated it.
   HostState host_;
+
+  friend class ResourceDomainAuthority;
 };
 
 } // namespace splash::engine

@@ -195,7 +195,7 @@ extension LaunchOption {
                                         message: "Tokens, with K for 1024 or M for a million, such as 100K or 1M. Past the model’s own window it stretches it with YaRN, which changes answers at every length.",
                                         parse: { ContextLength.parse($0).map(String.init) },
                                         text: { Int($0).map(ContextLength.text) ?? $0 },
-                                        title: { Int($0).map(ContextLength.title) ?? $0 }))),
+                                        title: { Int($0).map { ContextLength.title($0) } ?? $0 }))),
         LaunchOption(
             flag: "--max-memory", title: "Memory limit",
             help: "The most memory the model may use, to leave room for other apps. Auto gives it what this Mac can.",
@@ -405,13 +405,13 @@ enum ContextLength {
     static let lengths = [16, 32, 64, 128, 256].map { $0 * 1024 }
 
     /// A length as the menu names it: 32K tokens, 1M tokens, 100,000 tokens.
-    static func title(_ tokens: Int) -> String {
-        "\(figure(tokens)) tokens"
+    static func title(_ tokens: Int, locale: Locale = .current) -> String {
+        "\(figure(tokens, locale: locale)) tokens"
     }
 
     /// A length in short: 32K, 1M, 100,000.
-    static func figure(_ tokens: Int) -> String {
-        tokens % 1024 == 0 || tokens % 1_000_000 == 0 ? text(tokens) : tokens.formatted()
+    static func figure(_ tokens: Int, locale: Locale = .current) -> String {
+        tokens % 1024 == 0 || tokens % 1_000_000 == 0 ? text(tokens) : tokens.formatted(.number.locale(locale))
     }
 
     /// A length as it is typed, which `parse` reads back: 32K, 1M, 100000.

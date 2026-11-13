@@ -104,6 +104,17 @@ public:
   }
   void poll() override;
 
+  // [Gate 3 / U-02] The tier's own retained IO: every write whose IO the file's
+  // worker may still run, every restore asked for and not yet retired (a queued
+  // one counts here the moment it is asked for, before any reader runs it), and
+  // every restore batch whose end the readers have not returned. Each holds a
+  // page, a slot or the completion wake the tier owes; a parked transfer of
+  // either kind refuses the drain until it has landed AND been polled.
+  [[nodiscard]] TierIo retainedIo() const noexcept override {
+    return TierIo{static_cast<uint32_t>(writes_.size()), restores_,
+                  static_cast<uint32_t>(batches_.size())};
+  }
+
 private:
   // What a transfer's ticket reports once the tier retired it.
   struct Outcome final {

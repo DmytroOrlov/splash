@@ -42,6 +42,10 @@ struct CacheLookup final {
   // A matched block deeper than the state once held a reusable state that
   // is gone from both tiers.
   bool lostState = false;
+  // No state of the chain was acquirable, but a state of it is being
+  // written: the copy it carries lands in pollTransfers(); the caller waits
+  // for it rather than recomputing the prefix.
+  bool stateOffloadPending = false;
 
   [[nodiscard]] uint32_t resumeBoundary() const noexcept {
     return state ? state->boundary() : 0;
@@ -419,6 +423,26 @@ public:
     states_.setCompletionNotifier(notifier);
     completionNotifier_ = std::move(notifier);
   }
+  // [T031] Graph-side half of the prepared completion-binding install (see
+  // Engine::installCompletionBinding): moves an already-prepared pair of
+  // closures into this Cache's and the StateCache's slots and hands the
+  // displaced previous pair back. Moves only; a staged adoption's rollback
+  // path installs the displaced values back through the same call.
+  [[nodiscard]] std::pair<std::function<void()>, std::function<void()>>
+  installCompletionSlots(std::function<void()> &&cacheSlot, std::function<void()> &&stateSlot) noexcept {
+    std::function<void()> displacedState = states_.installCompletion(std::move(stateSlot));
+    std::function<void()> displacedCache = std::move(completionNotifier_);
+    completionNotifier_ = std::move(cacheSlot);
+    return {std::move(displacedCache), std::move(displacedState)};
+  }
+  // [Gate 4 / U-01] How many completion-closure bindings this Cache holds: its
+  // own and the StateCache's. `Engine::callbackRetirement` subtracts exactly
+  // these, plus the Engine's own, from the notifier tracker's live copies;
+  // measuring them here keeps a setup that never completed one of its three
+  // assignments from reading a borrowed closure as retired.
+  [[nodiscard]] uint32_t notifierBindings() const noexcept {
+    return (completionNotifier_ ? 1u : 0u) + states_.notifierBindings();
+  }
   // Consumes finished transfers: a written state or KV page frees its RAM, a
   // restored block becomes usable, and restores the tier had no room for
   // start.
@@ -519,11 +543,14 @@ public:
   // Pin the usable prefix before potentially evicting for active allocations.
   // Accounting is separate: failed admission retries are not extra samples.
   // A probe of the prompt that has seen the KV graph as it is supplies the
-  // matched chain; otherwise the prompt is matched again.
+  // matched chain; otherwise the prompt is matched again. `excludedStates`
+  // are the chain's blocks whose restore this request already failed: it
+  // acquires below them while they stay in the cache for other requests.
   [[nodiscard]] CacheLookup lookup(
       std::span<const uint32_t> prompt,
       PromptIdentity identity,
-      const CacheProbe *probe = nullptr);
+      const CacheProbe *probe = nullptr,
+      std::span<const uint64_t> excludedStates = {});
   void recordLookup(const CacheLookup &lookup);
   void promoteState(const CacheLookup &lookup, StateRestore &transfer);
   // Gives the request the matched chain up to its state. Disk-only blocks
@@ -627,6 +654,46 @@ public:
   // A KV demotion, a KV restore or the one state write is in flight, so
   // memory or quota returns by itself and its completion wakes the engine.
   [[nodiscard]] bool transfersInFlight() const noexcept;
+  // [Gate 3 / U-02] The retained-IO quiescence witness: every retained transfer
+  // this graph still owns, counted by the obligation that keeps it owned, so a
+  // drain can say which owner stands instead of collapsing to one boolean.
+  // Independent of the engine's request state (`Engine::idle()` and every
+  // request-side counter say nothing about any of these) and of callback
+  // retirement. A transfer whose IO landed but whose poll has not consumed it
+  // stays owned there: its storage, its completion wake, its disk publication
+  // and — when it failed — the cleanup that must not leave invalid disk state
+  // published are all owed at that point, so `owed` counts them apart from the
+  // ones still running.
+  struct RetainedIo final {
+    // The tier's own IO: a write its file worker may still run, a restore it
+    // was asked for (queued or whose readers run) and a restore batch whose
+    // end has not returned.
+    uint32_t tierWrites = 0;
+    uint32_t tierRestores = 0;
+    uint32_t tierBatches = 0;
+    // The cache's records of transfers it started: reclaim demotions and
+    // persistent copies (kvWrites), pages written through for a Spill request
+    // (spillWrites), and KV restores, including one still waiting for the
+    // tier's room and so owning its slot and the waiters on it.
+    uint32_t kvWrites = 0;
+    uint32_t spillWrites = 0;
+    uint32_t kvRestores = 0;
+    // The one state write, running or landed: it holds its entry's disk copy,
+    // the RAM copy it reads in place and the quota it drew.
+    uint32_t stateWrites = 0;
+    // Landed transfers not yet polled: each still owns its storage and owes
+    // its publication, its completion wake or, for a failure, its cleanup.
+    uint32_t owed = 0;
+    [[nodiscard]] bool quiescent() const noexcept {
+      return !tierWrites && !tierRestores && !tierBatches && !kvWrites &&
+             !spillWrites && !kvRestores && !stateWrites && !owed;
+    }
+  };
+
+  [[nodiscard]] RetainedIo retainedIo() const noexcept;
+  [[nodiscard]] bool retainedIoIdle() const noexcept {
+    return retainedIo().quiescent();
+  }
   // One bounded reclaim step, for an allocation retry or a pressure pass: one
   // empty extent, one extent emptied of its pages, one state or one KV leaf,
   // so a denial or a pass frees only what it needs. With ReleaseExtents free

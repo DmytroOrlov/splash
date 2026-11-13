@@ -236,7 +236,7 @@ const std::vector<std::pair<std::string, EngineEvent>> &engineEvents() {
   static const std::vector<std::pair<std::string, EngineEvent>> events{
       {"ready", ReadyEvent{4, 524'288, false}},
       {"ready_vision", ReadyEvent{4, 524'288, true}},
-      {"start", StartEvent{91, 2, 4096}},
+      {"start", StartEvent{91, 2, 4096, 8192}},
       {"prompt_progress", PromptProgressEvent{91, 2048, 123456}},
       {"tokens", TokensEvent{91, 17, {10, 11, 12}}},
       {"mask_request_initial", MaskRequestEvent{91, 6, 4, {}}},
@@ -997,6 +997,27 @@ void testBoundedArbitraryStatusJsonAndFrames() {
   CHECK(test, issue.code == IssueCode::FrameTooLarge);
 }
 
+void testDetachedLifecycleStatusRoundTrip() {
+  constexpr std::string_view test = "detached lifecycle status";
+  StatusJsonEvent event{808, R"({"schema_version":6,"control_ready":true,"inference_ready":false,"lifecycle":{"revision":17,"observation_sequence":18,"model_resident":false}})"};
+  CHECK(test, roundTripEvent(event) == event);
+}
+
+void testReadyIsOneStaticGenerationHandshake() {
+  constexpr std::string_view test = "static ready handshake";
+  std::vector<EngineEvent> events{ReadyEvent{4, 1024, false},
+      StatusJsonEvent{1, R"({"state":"suspended"})"},
+      StatusJsonEvent{2, R"({"state":"recovering"})"},
+      StatusJsonEvent{3, R"({"state":"ready"})"}};
+  std::vector<uint8_t> bytes;
+  for (const auto &event : events) {
+    auto encoded = serializeEvent(event, kLimits);
+    CHECK(test, encoded);
+    if (encoded) bytes.insert(bytes.end(), encoded.value->begin(), encoded.value->end());
+  }
+  CHECK(test, peer::decodeEvents(bytes) == events);
+}
+
 void testFailureTaxonomy() {
   constexpr std::string_view test = "failure taxonomy";
   for (ErrorEvent expected : {
@@ -1018,8 +1039,11 @@ void testFailureTaxonomy() {
   invalid.sampling.topP = 0.0f;
   expectRequestIssue(test, invalid, IssueCode::InvalidSampling);
 
+  expectEventIssue(test, StartEvent{8, 0, 0, 0}, IssueCode::InvalidCount);
+  expectEventIssue(test, StartEvent{8, 0, 641, 640}, IssueCode::InvalidCount);
+  CHECK(test, roundTripEvent((StartEvent{8, 0, 100, 640})) == (StartEvent{8, 0, 100, 640}));
   expectEventIssue(test, ReadyEvent{0, 4096, false}, IssueCode::InvalidCount);
-  expectEventIssue(test, StartEvent{8, ExecutionLimits::maximumBatchWidth, 0},
+  expectEventIssue(test, StartEvent{8, ExecutionLimits::maximumBatchWidth, 0, 640},
                    IssueCode::InvalidCount);
   expectEventIssue(test,
                    TokensEvent{8, std::numeric_limits<uint32_t>::max(), {1}},
@@ -1170,8 +1194,11 @@ int main(int argc, char **argv) {
     testThinkingBudget();
     testBoundedArbitraryStatusJsonAndFrames();
     testFailureTaxonomy();
+    testDetachedLifecycleStatusRoundTrip();
+    testReadyIsOneStaticGenerationHandshake();
     testUnnamedRequestFailuresAreFatal();
     testInvalidLimitsAndOuterTruncation();
+
     testFuzzLikeInputsAndMutations();
   } catch (const std::exception &error) {
     ++failures;

@@ -309,7 +309,7 @@ class RuntimeTests(unittest.TestCase):
                 call = runtime.submit(request(11))
                 try:
                     if name != "before_start":
-                        process.send(wire.StartEvent(call.request_id, 0, 0))
+                        process.send(wire.StartEvent(call.request_id, 0, 0, 131_072))
                     for offset, tokens in valid_chunks:
                         process.send(wire.TokensEvent(call.request_id, offset, tokens))
                     process.send(
@@ -380,7 +380,7 @@ class RuntimeTests(unittest.TestCase):
                 call = runtime.submit(request(12))
                 try:
                     if started:
-                        process.send(wire.StartEvent(call.request_id, 0, 0))
+                        process.send(wire.StartEvent(call.request_id, 0, 0, 131_072))
                     for offset, tokens in chunks:
                         process.send(wire.TokensEvent(call.request_id, offset, tokens))
                     process.send(
@@ -409,7 +409,7 @@ class RuntimeTests(unittest.TestCase):
         self.addCleanup(runtime.close)
         process = factory.processes[0]
         call = runtime.submit(request(13, logical_max_output_tokens=3))
-        process.send(wire.StartEvent(call.request_id, 0, 0))
+        process.send(wire.StartEvent(call.request_id, 0, 0, 131_072))
         process.send(wire.TokensEvent(call.request_id, 0, (20, 21)))
         process.send(wire.TokensEvent(call.request_id, 2, (22,)))
         process.send(
@@ -435,7 +435,7 @@ class RuntimeTests(unittest.TestCase):
                 self.addCleanup(runtime.close)
                 process = factory.processes[0]
                 call = runtime.submit(request(15, logical_max_output_tokens=3))
-                process.send(wire.StartEvent(call.request_id, 0, 0))
+                process.send(wire.StartEvent(call.request_id, 0, 0, 131_072))
                 process.send(
                     wire.TokensEvent(
                         call.request_id, 0, tuple(range(20, 20 + completion))
@@ -528,7 +528,7 @@ class RuntimeTests(unittest.TestCase):
         frame = process.stdin.wait_for(wire.RequestFrame)[0]
         self.assertEqual(frame.score_tokens, (101, 202, 303))
         self.assertEqual(frame.logical_max_output_tokens, 0)
-        process.send(wire.StartEvent(call.request_id, 0, 0))
+        process.send(wire.StartEvent(call.request_id, 0, 0, 131_072))
         process.send(
             wire.DoneEvent(
                 call.request_id,
@@ -567,7 +567,7 @@ class RuntimeTests(unittest.TestCase):
                     )
                 )
                 try:
-                    process.send(wire.StartEvent(call.request_id, 0, 0))
+                    process.send(wire.StartEvent(call.request_id, 0, 0, 131_072))
                     process.send(
                         wire.DoneEvent(
                             call.request_id,
@@ -594,7 +594,7 @@ class RuntimeTests(unittest.TestCase):
         process = factory.processes[0]
         call = runtime.submit(request(10))
         try:
-            process.send(wire.StartEvent(call.request_id, 0, 0))
+            process.send(wire.StartEvent(call.request_id, 0, 0, 131_072))
             process.send(
                 wire.DoneEvent(
                     call.request_id,
@@ -637,7 +637,7 @@ class RuntimeTests(unittest.TestCase):
         def handler(process, message):
             if not isinstance(message, wire.RequestFrame):
                 return
-            process.send(wire.StartEvent(message.request_id, 2, 1))
+            process.send(wire.StartEvent(message.request_id, 2, 1, 131_072))
             process.send(wire.TokensEvent(message.request_id, 0, (41, 42)))
             process.send(
                 wire.DoneEvent(
@@ -721,7 +721,7 @@ class RuntimeTests(unittest.TestCase):
                 )
                 healthy = runtime.submit(request(40))
 
-                process.send(wire.StartEvent(bad.request_id, 0, 0))
+                process.send(wire.StartEvent(bad.request_id, 0, 0, 131_072))
                 process.send(wire.MaskRequestEvent(bad.request_id, 88, 2, (5, 6)))
                 cancel = process.stdin.wait_for(wire.CancelFrame)[0]
                 self.assertEqual(cancel.request_id, bad.request_id)
@@ -762,7 +762,7 @@ class RuntimeTests(unittest.TestCase):
         self.addCleanup(runtime.close)
         process = factory.processes[0]
         call = runtime.submit(request(10))
-        process.send(wire.StartEvent(call.request_id, 0, 0))
+        process.send(wire.StartEvent(call.request_id, 0, 0, 131_072))
         process.send(wire.MaskRequestEvent(call.request_id, 88, 2, ()))
         with self.assertRaisesRegex(
             engine_runtime.ProtocolFatal, "token mask for an unconstrained request"
@@ -790,7 +790,7 @@ class RuntimeTests(unittest.TestCase):
                 mask_provider=provider,
             )
         )
-        process.send(wire.StartEvent(call.request_id, 0, 0))
+        process.send(wire.StartEvent(call.request_id, 0, 0, 131_072))
         process.send(wire.MaskRequestEvent(call.request_id, 88, 2, ()))
         process.stdin.wait_for(wire.CancelFrame)
         self.assertTrue(call.cancel_requested)
@@ -820,7 +820,7 @@ class RuntimeTests(unittest.TestCase):
         self.addCleanup(runtime.close)
         process = factory.processes[0]
         call = runtime.submit(request(10), on_event=on_event)
-        process.send(wire.StartEvent(call.request_id, 0, 0))
+        process.send(wire.StartEvent(call.request_id, 0, 0, 131_072))
         process.send(wire.TokensEvent(call.request_id, 0, (20,)))
         process.stdin.wait_for(wire.CancelFrame)
         process.send(wire.TokensEvent(call.request_id, 1, (21,)))
@@ -859,7 +859,7 @@ class RuntimeTests(unittest.TestCase):
                 mask_provider=provider,
             )
         )
-        process.send(wire.StartEvent(call.request_id, 0, 0))
+        process.send(wire.StartEvent(call.request_id, 0, 0, 131_072))
         process.send(wire.MaskRequestEvent(call.request_id, 89, 2, (5, 6)))
         self.assertTrue(provider_started.wait(1.0))
         self.assertTrue(call.cancel())
@@ -903,7 +903,7 @@ class RuntimeTests(unittest.TestCase):
                     mask_provider=provider,
                 )
             )
-            call._record_start(wire.StartEvent(call.request_id, 0, 0))
+            call._record_start(wire.StartEvent(call.request_id, 0, 0, 131_072))
             runtime._submit_mask(
                 call, wire.MaskRequestEvent(call.request_id, 89, 2, (5, 6))
             )
@@ -966,7 +966,7 @@ class RuntimeTests(unittest.TestCase):
                     mask_provider=provider,
                 )
             )
-            process.send(wire.StartEvent(call.request_id, 0, 0))
+            process.send(wire.StartEvent(call.request_id, 0, 0, 131_072))
             process.send(wire.MaskRequestEvent(call.request_id, 1, 2, ()))
             return call
 
@@ -1021,6 +1021,48 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotEqual(status.correlation_id, first.correlation_id)
         self.assertEqual(status.json, READY_STATUS)
         self.assertTrue(runtime.ready)
+
+    def test_model_less_status_is_ready_without_relaunch_or_second_handshake(self):
+        readiness = [False]
+
+        def handler(process, message):
+            if isinstance(message, wire.StatusRequestFrame):
+                value = "true" if readiness[0] else "false"
+                process.send(
+                    wire.StatusJsonEvent(
+                        message.correlation_id,
+                        (
+                            f'{{"schema_version":{wire.STATUS_SCHEMA_VERSION},"ready":false,'
+                            '"control_ready":true,"inference_ready":' + value + "}"
+                        ).encode(),
+                    )
+                )
+
+        factory = FakeFactory(handler)
+        runtime = engine_runtime.MultiplexedRuntime(
+            process_factory=factory, eager_start=True
+        )
+        self.addCleanup(runtime.close)
+        generation = runtime._generation
+        announced = runtime.readiness
+        self.assertIsNotNone(announced)
+        self.assertTrue(runtime.wait_ready(0.2))
+        cold = runtime.status(timeout=0.2)
+        self.assertIn(b'"control_ready":true', cold.json)
+        self.assertIn(b'"inference_ready":false', cold.json)
+        self.assertTrue(runtime.ready)
+
+        readiness[0] = True
+        serving = runtime.status(timeout=0.2)
+        self.assertIn(b'"inference_ready":true', serving.json)
+        readiness[0] = False
+        suspended = runtime.status(timeout=0.2)
+        self.assertIn(b'"inference_ready":false', suspended.json)
+        self.assertTrue(runtime.ready)
+        self.assertEqual(runtime._generation, generation)
+        self.assertEqual(runtime.restart_count, 0)
+        self.assertEqual(len(factory.processes), 1)
+        self.assertEqual(runtime.readiness, announced)
 
     def test_release_weights_is_answered_by_the_correlated_status(self):
         def handler(process, message):
@@ -1113,6 +1155,7 @@ class RuntimeTests(unittest.TestCase):
         self.addCleanup(runtime.close)
         process = factory.processes[0]
         request_error = runtime.submit(request(50))
+        capacity = runtime.submit(request(60))
         healthy = runtime.submit(request(70))
 
         process.send(
@@ -1124,12 +1167,29 @@ class RuntimeTests(unittest.TestCase):
                 b"request deadline expired",
             )
         )
+        # Protocol v12 reports capacity through a request error. Unlike the
+        # retired capacity event, this outcome is not retryable and carries
+        # neither page counts nor a microsecond retry delay.
+        process.send(
+            wire.ErrorEvent(
+                wire.FailureClass.REQUEST_ERROR,
+                capacity.request_id,
+                False,
+                b"capacity_exhausted",
+                b"capacity exhausted",
+            )
+        )
         send_success(process, healthy)
 
         with self.assertRaises(engine_runtime.RequestFailed) as caught:
             request_error.result(1.0)
         self.assertTrue(caught.exception.retryable)
         self.assertEqual(caught.exception.code, b"deadline_exceeded")
+        with self.assertRaises(engine_runtime.RequestFailed) as caught:
+            capacity.result(1.0)
+        self.assertFalse(caught.exception.retryable)
+        self.assertEqual(caught.exception.code, b"capacity_exhausted")
+        self.assertEqual(caught.exception.retry_after_seconds, 0)
         self.assertEqual(healthy.result(1.0).completion_tokens, 3)
         self.assertTrue(runtime.ready)
 
@@ -1898,7 +1958,9 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(created.wait(1.0))
         process = factory.processes[0]
         self.assertIsNone(process.poll())
+        self.assertEqual(process.stdin.messages(wire.RequestFrame), [])
         self.assertIsNotNone(process.wait(5.0))
+        self.assertEqual(process.stdin.messages(wire.RequestFrame), [])
         self.assertFalse(runtime.ready)
 
     def test_slow_process_factory_does_not_hold_a_waiter(self):
@@ -2056,7 +2118,7 @@ class RuntimeTests(unittest.TestCase):
                 failure_state.append(type(error))
 
         active = runtime.submit(request(1), on_complete=completed)
-        os.read(read_fd, 65536)  # Drain just the first complete request.
+        os.read(read_fd, 131_072)  # Drain just the first complete request.
         large = request(0, prompt_tokens=tuple(range(131072)), deadline=1.0)
         with ThreadPoolExecutor(max_workers=1) as executor:
             writer = executor.submit(runtime.submit, large)
@@ -2092,7 +2154,7 @@ class RuntimeTests(unittest.TestCase):
         )
         self.addCleanup(runtime.close)
         active = runtime.submit(request(1))
-        os.read(read_fd, 65536)  # Drain just the first complete request.
+        os.read(read_fd, 131_072)  # Drain just the first complete request.
         # A loaded CI runner once took over 0.1 s to start the frame.
         large = request(0, prompt_tokens=tuple(range(131072)), deadline=1.0)
         received = bytearray()

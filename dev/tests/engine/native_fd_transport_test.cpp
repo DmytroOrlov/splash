@@ -14,13 +14,16 @@
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -77,6 +80,8 @@ struct Harness final {
   test::TestKvStorage storage{8, 4096, 1};
   KvPool pool{storage, 8};
   engine::Cache resources{pool, nullptr, nullptr};
+  // The retained persistence queue this loop's Engine borrows.
+  test::RetainedPersistence persistence{resources};
   // No request gets a lane: one waits for it until its deadline.
   test::Executor executor{0};
   engine::FdTransport transport;
@@ -89,7 +94,7 @@ struct Harness final {
        .metrics = &metrics,
        .weights = &weights,
        .weightAdmission = test::admitAll, .growthAdmission = test::admitAll},
-      metal::kResidencyKeepAliveSeconds, resources, executor, transport.outputSink(),
+      metal::kResidencyKeepAliveSeconds, resources, persistence, executor, transport.outputSink(),
       [this] { return status(); }, protocol::ProtocolLimits{}};
 };
 
@@ -111,6 +116,7 @@ struct PersistentHarness final {
   KvPool pool{storage, 0};
   test::TestKvTier tier{true};
   engine::Cache resources{pool, &tier, nullptr};
+  test::RetainedPersistence persistence{resources};
   test::Executor executor;
   engine::FdTransport transport{pipes.input[0], pipes.output[1]};
   RuntimeMetrics metrics;
@@ -120,7 +126,7 @@ struct PersistentHarness final {
        .metrics = &metrics,
        .weights = &weights,
        .weightAdmission = test::admitAll, .growthAdmission = test::admitAll},
-      metal::kResidencyKeepAliveSeconds, resources, executor, transport.outputSink(),
+      metal::kResidencyKeepAliveSeconds, resources, persistence, executor, transport.outputSink(),
       test::readyStatusJson, protocol::ProtocolLimits{}};
 };
 
@@ -269,6 +275,164 @@ void testShutdownRequestAndControlContinuation() {
   }
 }
 
+// A callback can arrive during control while the reader is still collecting
+// input. The next iteration must refuse that input before control takes Battery.
+void testPendingBatteryRefusesInputBeforeControl() {
+  using namespace std::chrono_literals;
+  Harness harness;
+  require(harness.loop.hasEngine() && harness.loop.admissionOpen(),
+          "the pending Battery test needs a published Engine and open admission");
+  auto mailbox = std::make_shared<PendingPowerObservation>(
+      harness.transport.controlNotifier());
+  mailbox->recordInitial(LifecyclePower::AC);
+  require(mailbox->take() == LifecyclePower::AC, "initial AC was not recorded");
+  harness.loop.setPowerObservation(mailbox);
+
+  struct Gate final {
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool released = false;
+    void release() {
+      { std::lock_guard lock(mutex); released = true; }
+      changed.notify_all();
+    }
+  } gate;
+  std::promise<void> entered, consumed;
+  auto firstPass = entered.get_future();
+  auto batteryConsumed = consumed.get_future();
+  std::atomic<int> passes{0};
+  bool gateTimedOut = false;
+  bool refusedWhilePending = false;
+  bool consumedBattery = false;
+  protocol::peer::EventReader reader;
+  std::vector<protocol::EngineEvent> events;
+  // This decoder persists across the control-pass witness and later status.
+  auto readOutput = [&](int timeout) {
+    pollfd descriptor{harness.pipes.output[0], POLLIN, 0};
+    if (poll(&descriptor, 1, timeout) <= 0)
+      return false;
+    std::array<uint8_t, 4096> bytes{};
+    const auto count = read(descriptor.fd, bytes.data(), bytes.size());
+    if (count <= 0)
+      throw std::runtime_error("pending Battery output read failed");
+    auto decoded = reader.feed(std::span<const uint8_t>(bytes.data(), count));
+    events.insert(events.end(), decoded.begin(), decoded.end());
+    return true;
+  };
+  harness.transport.setControlHandler([&] {
+    if (++passes == 1) {
+      std::unique_lock lock(gate.mutex);
+      entered.set_value();
+      gateTimedOut = !gate.changed.wait_for(lock, 5s, [&] { return gate.released; });
+      // Deliberately leave the callback's observation for the following pass.
+      return false;
+    }
+    if (passes == 2) {
+      // Input has already reached handleRequest in this iteration. Read the
+      // actual wire refusal while the mailbox is *still* pending, before take().
+      while (readOutput(0)) {}
+      {
+        auto power = mailbox->guard();
+        refusedWhilePending = power.pending() && !power.allowsAdmission() &&
+            harness.loop.hasEngine() && harness.loop.admissionOpen() &&
+            harness.loop.snapshot().submitted == 0 &&
+            harness.loop.requestDrain().records == 0 &&
+            std::count_if(events.begin(), events.end(), [](const auto &event) {
+              const auto *error = std::get_if<protocol::ErrorEvent>(&event);
+              return error && error->requestId == 701 &&
+                     error->code == "inference_unavailable";
+            }) == 1;
+      }
+      consumedBattery = mailbox->take() == LifecyclePower::Battery;
+      consumed.set_value();
+    }
+    return false;
+  });
+
+  std::future<engine::NativeProcessExit> loop;
+  // Established before async work: release the gate, stop and bounded-join
+  // before any captured fixture fields or the future can be destroyed.
+  struct Cleanup final {
+    Gate &gate;
+    Harness &harness;
+    std::future<engine::NativeProcessExit> &loop;
+    ~Cleanup() {
+      gate.release();
+      harness.transport.requestShutdown();
+      if (loop.valid() && loop.wait_for(3s) != std::future_status::ready)
+        abandon("pending Battery transport did not stop during cleanup");
+    }
+  } cleanup{gate, harness, loop};
+  harness.transport.controlNotifier()();
+  loop = start(harness);
+  require(firstPass.wait_for(2s) == std::future_status::ready,
+          "pending Battery transport did not enter the first control pass");
+  mailbox->record(LifecyclePower::Battery);
+  const auto request = protocol::peer::serialize(requestFrame(701, 30'000'000));
+  writeAll(harness.pipes.input[1], request);
+  auto awaitPipeDrained = [&] {
+    const auto deadline = std::chrono::steady_clock::now() + 1s;
+    do {
+      int available = -1;
+      require(ioctl(harness.pipes.input[0], FIONREAD, &available) == 0,
+              "pending Battery input FIONREAD failed");
+      if (available == 0)
+        return;
+      std::this_thread::yield();
+    } while (std::chrono::steady_clock::now() < deadline);
+    throw std::runtime_error("pending Battery reader did not collect input");
+  };
+  awaitPipeDrained();
+  // An empty pipe alone could catch read() before enqueue. A *second* read
+  // proves the first read was enqueued: InputReader queues each chunk before
+  // reading again. The parked owner cannot take that queue yet.
+  writeAll(harness.pipes.input[1],
+           protocol::peer::serialize(protocol::CancelFrame{799}));
+  awaitPipeDrained();
+  gate.release();
+  require(batteryConsumed.wait_for(2s) == std::future_status::ready,
+          "the following control pass did not consume Battery");
+  require(!gateTimedOut && passes == 2 && refusedWhilePending && consumedBattery,
+          "request was not refused on the wire before control consumed Battery");
+
+  wakeWithStatusRequest(harness, 702);
+  auto answered = [&] {
+    return std::any_of(events.begin(), events.end(), [](const auto &event) {
+      const auto *status = std::get_if<protocol::StatusJsonEvent>(&event);
+      return status && status->correlationId == 702;
+    });
+  };
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (!answered() && std::chrono::steady_clock::now() < deadline)
+    readOutput(10);
+  require(answered(), "status did not respond after Battery consumption");
+  harness.transport.requestShutdown();
+  require(loop.wait_for(3s) == std::future_status::ready,
+          "pending Battery transport did not stop");
+  require(loop.get() == engine::NativeProcessExit::CleanEof,
+          "pending Battery transport did not exit cleanly");
+  while (readOutput(0)) {}
+  size_t errors = 0, starts = 0, dones = 0;
+  for (const auto &event : events) {
+    if (const auto *error = std::get_if<protocol::ErrorEvent>(&event);
+        error && error->requestId == 701) {
+      ++errors;
+      require(error->code == "inference_unavailable",
+              "pending Battery returned the wrong refusal code");
+    }
+    if (const auto *start = std::get_if<protocol::StartEvent>(&event);
+        start && start->requestId == 701) ++starts;
+    if (const auto *done = std::get_if<protocol::DoneEvent>(&event);
+        done && done->requestId == 701) ++dones;
+  }
+  require(errors == 1 && starts == 0 && dones == 0,
+          "pending Battery did not emit exactly one refusal without Start/Done");
+  require(harness.loop.snapshot().submitted == 0 &&
+              harness.loop.requestDrain().drained() &&
+              harness.executor.lastBeginId == 0,
+          "pending Battery reached the Engine or committed request telemetry");
+}
+
 // A control notification that arrives while a command is in flight runs
 // only once the loop has consumed the command.
 void testControlWaitsForTheCommandInFlight() {
@@ -342,6 +506,7 @@ void testLoopWakesForAnEngineDeadline() {
   test::TestKvStorage storage{8, 4096, 1};
   KvPool pool{storage, 8};
   engine::Cache resources{pool, nullptr, nullptr};
+  test::RetainedPersistence persistence(resources);
   // No request gets a lane.
   test::Executor executor{0};
   engine::FdTransport transport{pipes.input[0], pipes.output[1]};
@@ -353,7 +518,7 @@ void testLoopWakesForAnEngineDeadline() {
        .metrics = &metrics,
        .weights = &weights,
        .weightAdmission = test::admitAll, .growthAdmission = test::admitAll},
-      metal::kResidencyKeepAliveSeconds, resources, executor,
+      metal::kResidencyKeepAliveSeconds, resources, persistence, executor,
       [&](std::span<const uint8_t> bytes) {
         for (const auto &event : protocol::peer::decodeEvents(bytes)) {
           if (const auto *error = std::get_if<protocol::ErrorEvent>(&event)) {
@@ -618,6 +783,174 @@ void testCleanEofAndProtocolFailure() {
           "malformed input did not return protocol failure");
 }
 
+// [T027 / U-04] A Battery-suspended retained graph: the Engine is detached at
+// the owner's safe point, its Cache and persistence queue stay retained, and the
+// transport's OWN timed poll — no control notification, no input — reaches the
+// control handler, starts the due restore point there, and the queue settles on
+// the wake that lands the write, with admission never opened again.
+void testDetachedStratumWakesForADueRestorePoint() {
+  // PersistentHarness with the monotonic clock the test drives: the queue's
+  // ten-second delay becomes a bounded wait on the loop's clock, and nothing
+  // sleeps for it.
+  struct Suspended final {
+    // The loop's clock: the awake clock under an offset this test shifts, so
+    // the queue's ten-second delay becomes a bounded wait without a sleep.
+    std::atomic<double> clockOffset{0.0};
+    Pipes pipes;
+    test::TestKvStorage storage{72, 4096, 4};
+    KvPool pool{storage, 0};
+    test::TestKvTier tier{true};
+    engine::Cache resources{pool, &tier, nullptr};
+    test::RetainedPersistence persistence{resources};
+    test::Executor executor;
+    engine::FdTransport transport{pipes.input[0], pipes.output[1]};
+    RuntimeMetrics metrics;
+    test::Weights weights;
+    engine::NativeRuntime loop{
+        {.engine = test::engineConfig(),
+         .metrics = &metrics,
+         .weights = &weights,
+         .weightAdmission = test::admitAll, .growthAdmission = test::admitAll,
+         .monotonicMilliseconds = [this] { return clockOffset.load() + awakeMilliseconds(); }},
+        metal::kResidencyKeepAliveSeconds, resources, persistence, executor,
+        transport.outputSink(), test::readyStatusJson, protocol::ProtocolLimits{}};
+    Suspended() {
+      storage.commandInFlight = [this] { return loop.commandInFlight(); };
+      tier.transferLimit = 64;
+      tier.capacity = 128;
+      executor.prefillAnchor = true;
+      executor.keptTier = std::make_shared<test::OffloadControl>();
+    }
+  };
+
+  Suspended harness;
+  harness.loop.announceReady();
+  protocol::RequestFrame frame = requestFrame(1, 30'000'000);
+  frame.promptTokens.assign(2060, 7);
+  require(harness.loop.receive(protocol::peer::serialize(frame)),
+          "the request whose point is left suspended was refused");
+  for (uint32_t step = 0;
+       step < 512 &&
+       (!harness.persistence.snapshot().waiting ||
+        !harness.loop.requestDrain().drained());
+       ++step)
+    static_cast<void>(harness.loop.tick());
+  require(harness.persistence.snapshot().waiting == 1,
+          "the replay point did not wait to be written");
+  require(harness.loop.requestDrain().drained(),
+          "the request side never gave the loop its drain");
+  // Where the loop's clock stood when the point was found waiting: its due time
+  // is that plus the queue's delay, on the same clock.
+  const double publishedAt = harness.loop.monotonicMilliseconds();
+
+  // The suspension's safe point: the graph's transfers land, and the stratum
+  // moves out to the worker that would destroy it. The Cache and its queue
+  // stay behind, with the point and its due time.
+  harness.tier.complete();
+  static_cast<void>(harness.resources.pollTransfers());
+  require(harness.resources.retainedIoIdle(),
+          "the retained graph still owes IO at the safe point");
+  const auto detached = harness.loop.destroyEngine();
+  require(detached && !harness.loop.hasEngine(),
+          "the stratum was not detached at the safe point");
+  require(harness.persistence.snapshot().waiting == 1,
+          "detaching the Engine dropped the retained queue or its point");
+  // The point's due time is the queue's delay after it started waiting, which
+  // the detach left unchanged; the loop's clock is still the awake clock, so
+  // shifting it by that delay less 150 ms leaves the point due 150 ms away
+  // in loop time, and the wake below is that bounded poll expiring on its own.
+  harness.clockOffset.store(publishedAt +
+                            engine::WriteBehind::kDelayMilliseconds - 150.0 -
+                            awakeMilliseconds());
+
+  uint32_t controlPasses = 0;
+  bool dueUnderControl = false;
+  std::promise<void> startedUnderControl;
+  std::shared_future<void> started = startedUnderControl.get_future().share();
+  std::promise<void> release;
+  const std::shared_future<void> released = release.get_future().share();
+  std::promise<void> queueSettled;
+  const std::shared_future<void> queueClear = queueSettled.get_future().share();
+  bool reportedSettled = false;  // read and written only on the loop's thread
+  harness.transport.setControlHandler([&harness, &controlPasses, &dueUnderControl,
+                                       &startedUnderControl, &queueSettled,
+                                       &reportedSettled, released] {
+    ++controlPasses;
+    // What the lifecycle owner's control pass runs at the Owner safe point.
+    bool progressed = harness.loop.serviceRetainedPersistence();
+    if (controlPasses == 1) {
+      // Read here, on the loop's own thread: the point is still queued and
+      // the write its due time started is still owed to the tier. The pass
+      // then holds where a long pass does, so the test's completion of that
+      // write lands while nothing in the loop is inside the tier.
+      dueUnderControl = harness.tier.inFlight() >= 1 &&
+                        harness.persistence.snapshot().waiting == 1;
+      startedUnderControl.set_value();
+      released.wait_for(std::chrono::seconds(30));
+      // The rest of the chain, and the wake each landing sends, as the tier's
+      // side does them: the state copy this fixture writes lands under its
+      // own control, the KV copies under the tier's.
+      harness.executor.keptTier->ready = true;
+      harness.tier.complete();
+      harness.transport.controlNotifier()();
+      // A started write is not a settled point: this pass claims none.
+      return false;
+    }
+    if (harness.tier.inFlight() >= 1 || harness.resources.retainedIo().stateWrites) {
+      harness.executor.keptTier->ready = true;
+      harness.tier.complete();
+      harness.transport.controlNotifier()();
+      progressed = true;
+    }
+    if (!reportedSettled && harness.persistence.snapshot().waiting == 0) {
+      reportedSettled = true;
+      queueSettled.set_value();
+    }
+    return progressed;
+  });
+  alarm(10);
+  auto loop = std::async(std::launch::async, [&harness] {
+    return harness.transport.run(harness.loop);
+  });
+  const bool woken =
+      started.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+  // The completion of that write, and the wake its landing sends: here an
+  // input frame wakes the loop, as a landing transfer's completion does.
+  harness.executor.keptTier->ready = true;
+  harness.tier.complete();
+  writeAll(harness.pipes.input[1],
+           protocol::peer::serialize(protocol::StatusRequestFrame{21}));
+  release.set_value();
+  const bool answered =
+      awaitStatus(harness.pipes.output[0], 21, std::chrono::seconds(5));
+  // The queue settles under the loop's own wakes before the input is ended.
+  const bool settledUnderWakes =
+      queueClear.wait_for(std::chrono::seconds(5)) ==
+      std::future_status::ready;
+  harness.pipes.closeInputWriter();
+  const auto exit = finish(loop);
+  alarm(0);
+
+  const auto settled = harness.persistence.snapshot();
+  require(woken && dueUnderControl,
+          "the transport's timed poll did not reach the control handler");
+  require(settledUnderWakes,
+          "the suspended queue never settled on the wakes its own writes send");
+  require(controlPasses >= 1 && controlPasses <= 12,
+          "the control seam did not settle the queue in the wakes asked for");
+  require(exit == engine::NativeProcessExit::CleanEof && answered,
+          "the suspended loop did not end clean with its control plane alive");
+  require(settled.waiting == 0 && settled.durable == 1 && settled.refused == 0,
+          "the retained queue did not settle the point it woke for");
+  require(std::any_of(harness.tier.writes.begin(), harness.tier.writes.end(),
+                     [](const auto &write) {
+                       return write.write == engine::WriteClass::Persist;
+                     }),
+          "no persistence write of the restore point was started");
+  require(!harness.loop.admissionOpen(),
+          "servicing suspended persistence reopened inference");
+}
+
 // A clean stop's flush ends at once with no restore point waiting, and
 // stops at its deadline while the writes it started have not landed.
 void testFlushEndsOrStopsAtItsDeadline() {
@@ -649,6 +982,7 @@ int main() {
     testTransportNeedsRoomForInput();
     testCleanEofAndProtocolFailure();
     testShutdownRequestAndControlContinuation();
+    testPendingBatteryRefusesInputBeforeControl();
     testControlWaitsForTheCommandInFlight();
     testLoopRecordsItsLongestTick();
     testLoopWakesForAnEngineDeadline();
@@ -657,6 +991,7 @@ int main() {
     testShutdownJoinsTheReader();
     testInputEndsAfterItsBytes();
     testShutdownInterruptsABlockedOutputWrite();
+    testDetachedStratumWakesForADueRestorePoint();
     testFlushEndsOrStopsAtItsDeadline();
     std::cout << "native fd transport tests passed\n";
     return EXIT_SUCCESS;

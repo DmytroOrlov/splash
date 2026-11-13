@@ -310,15 +310,15 @@ private struct ActivityFigures: View {
     let context: Int?
 
     var body: some View {
-        let latency = activity.firstToken.map(Format.latency)
+        let latency = activity.firstToken.map { Format.latency($0) }
         let memory = activity.memory.map { Format.parts(Format.size($0)) }
         HStack(spacing: 0) {
-            Figure(value: activity.generation.map(Format.whole), unit: "tok/s", caption: "Answering",
+            Figure(value: activity.generation.map { Format.whole($0) }, unit: "tok/s", caption: "Answering",
                    help: "Average since the model started")
-            Figure(value: activity.reading.map(Format.whole), unit: "tok/s", caption: "Reading prompts",
+            Figure(value: activity.reading.map { Format.whole($0) }, unit: "tok/s", caption: "Reading prompts",
                    help: "Average since the model started")
             Figure(value: latency?.0, unit: latency?.1, caption: "To first token", help: "Median since the model started")
-            Figure(value: context.map(ContextLength.figure), caption: "Context limit", help: "The tokens a conversation can hold")
+            Figure(value: context.map { ContextLength.figure($0) }, caption: "Context limit", help: "The tokens a conversation can hold")
             Figure(value: memory?.0, unit: memory?.1, caption: "Memory", help: "What the engine holds in memory now")
         }
         .padding(.vertical, 6)
@@ -522,7 +522,7 @@ private struct ModelRow: View {
 
     var body: some View {
         let selected = state.selection == model.id
-        let detail = ([model.id, model.missing ? "Not found" : model.bytes.map(Format.size)] as [String?])
+        let detail = ([model.id, model.missing ? "Not found" : model.bytes.map { Format.size($0) }] as [String?])
             .compactMap { $0 }.joined(separator: " · ")
         Button { state.selection = model.id } label: {
             HStack(spacing: 8) {

@@ -2,15 +2,19 @@
 #include "TestMetalMemory.hpp"
 #include "TestModel.hpp"
 #include "engine/MemoryGovernor.hpp"
+#include "engine/Engine.hpp"
 #include "engine/MemoryPlan.hpp"
+#include "engine/ResourceDomainLease.hpp"
 
 #include <cstdlib>
 #include <functional>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 using namespace splash;
 using namespace splash::engine;
@@ -688,6 +692,31 @@ void testRequestInServiceGrowsThroughHostPressure() {
           "the mark of a request in service outlived it");
 }
 
+void testEssentialScopeRestoresAdmissionPolicy() {
+  test::metalStatistics() = {};
+  metal::MetalBackend backend("unused");
+  MemoryGovernor governor(backend, kGiB, 2 * kGiB, 2 * kGiB,
+                          [] { return std::optional<HostMemory>(HostMemory{8 * kGiB, 0}); }, 0);
+  const std::function<bool(bool)> mark = [&](bool value) { return governor.setServing(value); };
+  require(!admit(governor, 1), "idle required allocation ignored spare reserve");
+  struct Cancelled {};
+  try {
+    Serving essential(mark, true);
+    require(static_cast<bool>(admit(governor, 1)), "essential allocation was refused");
+    require(!governor.growthAdmission()(1, [] {}), "essential scope admitted optional growth");
+    require(!admit(governor, kGiB + 1), "essential scope bypassed the budget");
+    governor.setPressure(MemoryPressure::Critical);
+    require(!admit(governor, 1), "essential scope bypassed critical pressure");
+    governor.setPressure(MemoryPressure::Normal);
+    throw Cancelled{};
+  } catch (const Cancelled &) {}
+  require(!admit(governor, 1), "exception left essential mode enabled");
+  governor.setServing(true);
+  { Serving essential(mark, true); }
+  require(static_cast<bool>(admit(governor, 1)), "scope did not restore prior true mode");
+  governor.setServing(false);
+}
+
 // A Mac shared with other applications: their anonymous memory makes the
 // available memory, which counts compressing it 2:1, much larger than the
 // spare memory, which counts half of that credit. Growth that no request in
@@ -884,6 +913,285 @@ void testGrowthCreditCountsOnlyTheRest() {
           "the credit outlived its clearing");
 }
 
+// The exclusive resource-domain lease (T015/FR-005) over this governor: one
+// holder at a time. The Owner thread's admissions and marks run; after a
+// witnessed transfer, a callback captured BEFORE the transfer and every
+// mutation from the former Owner thread are refused, while snapshot() stays
+// a passive answer. The four witnesses here are fixtures for this fixture;
+// the production receipts are owed to T016-T019 and claimed nowhere else.
+void testResourceDomainAuthorityGovernsTheLedger() {
+  static_assert(!std::is_copy_constructible_v<ResourceDomainLease>);
+  static_assert(!std::is_copy_assignable_v<ResourceDomainLease>);
+  static_assert(std::is_move_constructible_v<ResourceDomainLease>);
+  static_assert(!std::is_copy_constructible_v<Quiescence>);
+  static_assert(!std::is_copy_constructible_v<WorkerHandoff>);
+
+  test::metalStatistics() = {};
+  metal::MetalBackend backend("unused");
+  const uint64_t hostReserve = 64 * 1024, limit = 64 * 1024;
+  MemoryGovernor governor(backend, limit, hostReserve, hostReserve,
+                          [] { return hostMemory(hostReserve + 3 * kGiB); }, 0);
+  require(static_cast<bool>(admit(governor, 1024)),
+          "an unbound governor changed its behavior");
+
+  // Binding changes nothing for the Owner thread and nothing for readers.
+  ResourceDomainLease lease = ResourceDomainLease::acquireForOwner();
+  lease.attach(governor);
+  lease.attach(backend);
+  require(!lease.obtainQuiescence().has_value(),
+          "authority could migrate before its quiescence witnesses existed");
+  const auto captured = governor.allocationAdmission();  // captured now, below
+  require(static_cast<bool>(captured(1024, [] { allocate(1024); })),
+          "an authorized admission was refused while the Owner interval held");
+  require(static_cast<bool>(governor.growthAdmission()(1024, [] {})),
+          "an authorized growth admission was refused");
+  governor.setPressure(MemoryPressure::Normal);
+  governor.setServing(false);
+  require(governor.snapshot().limitBytes == limit, "the passive read moved");
+
+  // Owner → Worker on a real second thread: the ledger keeps one writer,
+  // deterministic signal pairs (no sleeps, no races as evidence).
+  bool admissionReady = true;
+  lease.setAdmissionWitness([&] { return admissionReady; });
+  lease.setRequestDrainWitness([] { return true; });
+  lease.setRetainedIoWitness([] { return true; });
+  lease.setCallbackRetirementWitness([] { return true; });
+  std::thread witnessIntruder([&] {
+    rejects([&] { lease.setAdmissionWitness([] { return true; }); }, "does not hold",
+            "non-Owner thread registered a witness");
+  });
+  witnessIntruder.join();
+  auto stale = lease.obtainQuiescence();
+  governor.setPressure(MemoryPressure::Normal);
+  admissionReady = false;
+  rejects([&] { (void)lease.transferToWorker(std::move(*stale)); }, "fresh quiescence",
+          "Owner mutation left a proof usable");
+  require(!lease.obtainQuiescence(), "proof reminted before quiescence was re-established");
+  admissionReady = true;
+  require(lease.obtainQuiescence().has_value(), "quiescent Owner stayed permanently blocked");
+  auto registrationStale = lease.obtainQuiescence();
+  lease.setAdmissionWitness([] { return true; });
+  rejects([&] { (void)lease.transferToWorker(std::move(*registrationStale)); }, "fresh quiescence",
+          "witness replacement left a proof usable");
+  auto callbackStale = lease.obtainQuiescence();
+  bool callbackRan = false;
+  require(static_cast<bool>(captured(1, [&] {
+    callbackRan = true;
+    rejects([&] { (void)lease.transferToWorker(std::move(*callbackStale)); }, "fresh quiescence",
+            "callback transferred authority with reservation outstanding");
+    require(!lease.obtainQuiescence(), "proof minted during admission interval");
+  })), "bounded callback admission failed");
+  require(callbackRan && governor.snapshot().headroomBytes == limit - 1024,
+          "reservation cleanup did not restore the ledger");
+  // Reentrant witnesses cannot certify the state preceding their own mutation.
+  lease.setAdmissionWitness([&] { governor.setPressure(MemoryPressure::Normal); return true; });
+  require(!lease.obtainQuiescence(), "mutating witness minted a stale proof");
+  lease.setAdmissionWitness([] { return true; });
+  auto proof = lease.obtainQuiescence();
+  require(proof.has_value(), "the fixture witnesses did not mint a proof");
+  Quiescence moved(std::move(*proof));
+  auto assignmentSource = lease.obtainQuiescence();
+  moved = std::move(*assignmentSource);
+  rejects([&] { (void)lease.transferToWorker(std::move(*assignmentSource)); }, "of this authority",
+          "move-assigned source retained its proof");
+  rejects([&] { (void)lease.transferToWorker(std::move(*proof)); }, "of this authority",
+          "move-constructed source retained its proof");
+  auto handoff = lease.transferToWorker(std::move(moved));
+  require(lease.holder() == ResourceDomainAuthority::Holder::Worker,
+          "transfer did not move the holder to Worker");
+
+  rejects([&] { governor.setPressure(MemoryPressure::Warning); }, "resource-domain authority refused",
+          "former Owner mutated governor before worker claim");
+  rejects([&] { lease.returnToOwner(std::move(handoff)); }, "Parked",
+          "unclaimed Worker returned directly to Owner");
+  rejects([&] { (void)std::move(handoff).park(); }, "park() needs",
+          "former Owner parked an unclaimed token");
+  std::promise<WorkerHandoff *> claimed;
+  auto claim = claimed.get_future();
+  std::promise<void> probesDone;
+  auto probesReady = probesDone.get_future();
+  std::promise<WorkerHandoff> handedBack;
+  auto handedBackToken = handedBack.get_future();
+  std::string workerError;
+  std::thread worker(
+      [token = std::move(handoff), &governor, &captured, &claimed, &probesReady,
+       &handedBack, &workerError]() mutable {
+        try {
+          token.claim();
+          rejects([&] { token.claim(); }, "unclaimed", "worker token claimed twice");
+          if (!captured(1024, [] { allocate(1024); }))
+            throw std::runtime_error("the Worker interval refused its own admission");
+          governor.setRequestWaiting(true);
+        } catch (const std::exception &error) {
+          workerError = error.what();
+        }
+        claimed.set_value(&token);
+        probesReady.wait();
+          // Snapshot and mutation may overlap; ledger serialization, rather
+          // than the worker pause below, protects every governor field.
+          for (unsigned i = 0; i < 128; ++i)
+            governor.setPressure(i & 1 ? MemoryPressure::Warning : MemoryPressure::Normal);
+        governor.setPressure(MemoryPressure::Normal);
+        handedBack.set_value(std::move(token).park());
+      });
+  auto *activeToken = claim.get();
+  rejects([&] { lease.returnToOwner(std::move(*activeToken)); }, "Parked",
+          "active Worker returned directly to Owner");
+  rejects([&] { (void)std::move(*activeToken).park(); }, "park() needs",
+          "former Owner parked the active worker token");
+  rejects([&] { lease.setAdmissionWitness([] { return true; }); }, "does not hold",
+          "former Owner replaced Worker witnesses");
+  require(workerError.empty(), "the worker thread could not use the ledger: " + workerError);
+  // This (former Owner) thread is now refused: the callback captured BEFORE
+  // the transfer cannot mutate the ledger across holders...
+  rejects([&] { (void)captured(1024, [] {}); }, "resource-domain authority refused",
+          "a captured admission callback mutated the ledger from an unauthorized holder");
+  rejects([&] { governor.setPressure(MemoryPressure::Warning); }, "resource-domain authority refused",
+          "an unauthorized mutation marked the ledger");
+  rejects([&] { (void)governor.evaluate(); }, "resource-domain authority refused",
+          "the control pass bypassed the authority");
+  // ...and yet every reader still answers, unchanged.
+  require(governor.snapshot().limitBytes == limit &&
+              governor.snapshot().deniedReservations == 0,
+          "the passive read stopped answering beside a non-owner holder");
+  probesDone.set_value();
+  for (unsigned i = 0; i < 128; ++i)
+    require(governor.snapshot().limitBytes == limit, "concurrent snapshot corrupted");
+  worker.join();
+
+  // Parked stays exclusive, then the Owner interval returns to this thread.
+  auto tokenBack = handedBackToken.get();
+
+  rejects([&] { (void)captured(1024, [] {}); }, "resource-domain authority refused",
+          "parked authority let the ledger move");
+  rejects([&] { governor.setRequestWaiting(false); }, "resource-domain authority refused",
+          "parked authority marked the ledger");
+  WorkerHandoff parkedMoved(std::move(tokenBack));
+  rejects([&] { lease.returnToOwner(std::move(tokenBack)); }, "another resource domain",
+          "moved-from parked token returned authority");
+  ResourceDomainLease foreignOwner = ResourceDomainLease::acquireForOwner();
+  rejects([&] { foreignOwner.returnToOwner(std::move(parkedMoved)); }, "another resource domain",
+          "foreign return consumed the parked token");
+  lease.returnToOwner(std::move(parkedMoved));
+  rejects([&] { (void)lease.transferToWorker(std::move(moved)); }, "of this authority",
+          "spent proof reactivated after return");
+  rejects([&] { (void)lease.transferToWorker(std::move(*assignmentSource)); }, "of this authority",
+          "moved-from proof reactivated after return");
+  rejects([&] { (void)lease.transferToWorker(std::move(*stale)); }, "fresh quiescence",
+          "old-generation proof reactivated after return");
+  require(lease.holder() == ResourceDomainAuthority::Holder::Owner,
+          "returnToOwner did not restore the Owner interval");
+  require(static_cast<bool>(captured(1024, [] { allocate(1024); })) &&
+              governor.snapshot().deniedReservations == 0 &&
+              governor.evaluate().hostMeasurementValid,
+          "the returned Owner ledger refused its writer or its control pass");
+
+  // Exactly one authority per domain: a second Owner lease refuses the bound
+  // governor.
+  ResourceDomainLease rival = ResourceDomainLease::acquireForOwner();
+  rejects([&] { rival.attach(governor); }, "another resource domain",
+          "a second Owner lease attached authority over the same governor");
+}
+
+// Assigning over a handle that still holds the authority is refused before
+// either side is consumed. The discarded handle is what its destructor checks
+// and what unbinds the surfaces the domain covers, so overwriting a live Owner
+// handle would destroy its authority unseen and leave the governor and backend
+// it attached ungated. Moving into an emptied handle stays supported.
+void testAssigningOverALiveLeaseHandleRefuses() {
+  static_assert(std::is_move_constructible_v<ResourceDomainLease>);
+  static_assert(std::is_move_assignable_v<ResourceDomainLease>);
+  static_assert(!std::is_nothrow_move_assignable_v<ResourceDomainLease>);
+
+  test::metalStatistics() = {};
+  metal::MetalBackend backend("unused");
+  const uint64_t hostReserve = 64 * 1024, limit = 64 * 1024;
+  MemoryGovernor governor(backend, limit, hostReserve, hostReserve,
+                          [] { return hostMemory(hostReserve + 3 * kGiB); }, 0);
+  ResourceDomainLease owner = ResourceDomainLease::acquireForOwner();
+  owner.attach(governor);
+  owner.attach(backend);
+  ResourceDomainLease replacement = ResourceDomainLease::acquireForOwner();
+
+  rejects([&] { owner = std::move(replacement); }, "move-assign over a handle",
+          "assigning over a live Owner lease discarded its authority");
+  // The refused assignment consumed neither authority: the old domain still
+  // gates the governor it attached (this is the ungated-backend hole), and
+  // the replacement handle still holds its own authority and is still refused
+  // over the already-bound governor rather than reporting a dead handle.
+  std::thread outsider([&] {
+    rejects([&] { governor.setPressure(MemoryPressure::Normal); },
+            "resource-domain authority refused",
+            "the refused assignment unbound the governor the domain covers");
+  });
+  outsider.join();
+  rejects([&] { replacement.attach(governor); }, "another resource domain",
+          "the refused assignment emptied the replacement handle's authority");
+  require(owner.holder() == ResourceDomainAuthority::Holder::Owner &&
+              replacement.holder() == ResourceDomainAuthority::Holder::Owner,
+          "assigning over a live handle moved a holder interval");
+  require(static_cast<bool>(admit(governor, 1024, [] { allocate(1024); })),
+          "the refused assignment left its owner unable to charge the ledger");
+
+  // The same handle still accepts its legitimate moves: into an emptied handle
+  // and out of it again, with the same authority and the same surfaces bound.
+  ResourceDomainLease carried = std::move(owner);
+  rejects([&] { carried = std::move(replacement); }, "move-assign over a handle",
+          "the moved-to handle let itself be overwritten");
+  owner = std::move(carried);
+  require(owner.holder() == ResourceDomainAuthority::Holder::Owner &&
+              replacement.holder() == ResourceDomainAuthority::Holder::Owner,
+          "restoring a moved-from lease handle refused or misdirected the authority");
+  require(governor.snapshot().limitBytes == limit &&
+              governor.snapshot().headroomBytes == limit - 1024,
+          "the moved handle stopped gating its surfaces");
+}
+
+// A live Worker or Parked token is the only handle on its interval: assigning
+// over it would strand that interval with no way to claim, park or return it.
+void testAssigningOverALiveWorkerTokenRefuses() {
+  static_assert(!std::is_nothrow_move_assignable_v<WorkerHandoff>);
+
+  ResourceDomainLease left = ResourceDomainLease::acquireForOwner();
+  ResourceDomainLease right = ResourceDomainLease::acquireForOwner();
+  for (ResourceDomainLease *handle : {&left, &right}) {
+    handle->setAdmissionWitness([] { return true; });
+    handle->setRequestDrainWitness([] { return true; });
+    handle->setRetainedIoWitness([] { return true; });
+    handle->setCallbackRetirementWitness([] { return true; });
+  }
+  auto leftToken = left.transferToWorker(std::move(*left.obtainQuiescence()));
+  auto rightToken = right.transferToWorker(std::move(*right.obtainQuiescence()));
+  require(left.holder() == ResourceDomainAuthority::Holder::Worker &&
+              right.holder() == ResourceDomainAuthority::Holder::Worker,
+          "the fixture handoffs did not move both authorities to Worker");
+
+  rejects([&] { leftToken = std::move(rightToken); }, "still holds authority",
+          "assigning over a live worker token orphaned its Worker interval");
+  // The Owner-side handle of a Worker interval is live too: overwriting it
+  // would leave the token's interval with no owner to return it to.
+  rejects([&] { left = std::move(right); }, "move-assign over a handle",
+          "assigning over a Worker-interval lease handle orphaned that domain");
+  require(leftToken.holder() == ResourceDomainAuthority::Holder::Worker &&
+              rightToken.holder() == ResourceDomainAuthority::Holder::Worker,
+          "the refused assignments consumed or moved a token");
+
+  // Both domains still complete their round trips: claim, park, return.
+  leftToken.claim();
+  rightToken.claim();
+  auto parkedLeft = std::move(leftToken).park();
+  auto parkedRight = std::move(rightToken).park();
+  rejects([&] { parkedLeft = std::move(parkedRight); }, "still holds authority",
+          "assigning over a parked token stranded the Parked interval");
+  WorkerHandoff restored = std::move(parkedLeft);
+  parkedLeft = std::move(restored);
+  left.returnToOwner(std::move(parkedLeft));
+  right.returnToOwner(std::move(parkedRight));
+  require(left.holder() == ResourceDomainAuthority::Holder::Owner &&
+              right.holder() == ResourceDomainAuthority::Holder::Owner,
+          "the refused assignments did not leave both authorities returnable");
+}
+
 } // namespace
 
 int main() {
@@ -903,10 +1211,14 @@ int main() {
     testOnlyAWaitingRequestHoldsGrowth();
     testOnlyATargetedPassWaitsToSettle();
     testRequestInServiceGrowsThroughHostPressure();
+    testEssentialScopeRestoresAdmissionPolicy();
     testOptionalGrowthKeepsTheSpareReserve();
     testSystemWarningGivesCacheBack();
     testOnlyAShortHostTakesTheExpertStore();
     testGrowthCreditCountsOnlyTheRest();
+    testResourceDomainAuthorityGovernsTheLedger();
+    testAssigningOverALiveLeaseHandleRefuses();
+    testAssigningOverALiveWorkerTokenRefuses();
     std::cout << "memory governor tests passed\n";
     return EXIT_SUCCESS;
   } catch (const std::exception &error) {

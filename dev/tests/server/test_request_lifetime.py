@@ -107,7 +107,7 @@ class RequestLifetimeTests(unittest.TestCase):
                 else:
                     count = 0
                     if outcome == "callback_error":
-                        process.send(wire.StartEvent(call.request_id, 0, 0))
+                        process.send(wire.StartEvent(call.request_id, 0, 0, 131_072))
                         process.send(wire.TokensEvent(call.request_id, 0, (4,)))
                         process.stdin.wait_for(wire.CancelFrame)
                         count = 1
@@ -222,7 +222,7 @@ class RequestLifetimeTests(unittest.TestCase):
         job.constraint = Constraint()
         backend.submit(job)
         call = backend.active[job.request_id].call
-        process.send(wire.StartEvent(call.request_id, 0, 0))
+        process.send(wire.StartEvent(call.request_id, 0, 0, 131_072))
         process.send(wire.MaskRequestEvent(call.request_id, 88, 2, ()))
         self.assertTrue(entered.wait(1))
         backend.cancel(job)
@@ -280,7 +280,7 @@ class RequestLifetimeTests(unittest.TestCase):
         job.constraint = Constraint()
         backend.submit(job)
         call = backend.active[job.request_id].call
-        process.send(wire.StartEvent(call.request_id, 0, 0))
+        process.send(wire.StartEvent(call.request_id, 0, 0, 131_072))
         process.send(wire.TokensEvent(call.request_id, 0, (4,)))
         self.assertTrue(entered.wait(1))
         # The failure starts a replacement engine with a reader of its own.

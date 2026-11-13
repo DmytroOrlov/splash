@@ -245,3 +245,13 @@ release-check: preflight
 		git status --short >&2; \
 		exit 1; \
 	}
+
+# Explicitly opt-in executable: production main.o is never compiled with this seam.
+$(BUILD)/splash-integration-main.o: runtime/main.mm dev/tests/integration/test_power_source.hpp $(BUILD_ID_HEADER)
+	@mkdir -p $(dir $@)
+	$(CXX) $(ENGINE_OBJCXXFLAGS) -DSPLASH_INTEGRATION_TEST_POWER \
+		-include $(BUILD_ID_HEADER) -c $< -o $@
+
+$(BUILD)/splash-integration: $(BUILD)/splash-integration-main.o $(ENGINE_LIBRARY) $(LIB) | $(HOST_STEP_LIB)
+	$(CXX) $(ENGINE_OBJCXXFLAGS) $(BUILD)/splash-integration-main.o \
+		$(ENGINE_LIBRARY) $(ENGINE_LINKFLAGS) -o $@

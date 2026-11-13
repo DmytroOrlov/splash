@@ -111,7 +111,7 @@ struct MenuBarPanel: View {
         let memory = activity.memory.map { Format.parts(Format.size($0)) }
         return VStack(spacing: 10) {
             HStack(spacing: 0) {
-                Figure(value: activity.generation.map(Format.whole), unit: "tok/s", caption: "Answering", compact: true)
+                Figure(value: activity.generation.map { Format.whole($0) }, unit: "tok/s", caption: "Answering", compact: true)
                 Figure(value: activity.served.formatted(), caption: "Requests", compact: true)
                 Figure(value: memory?.0, unit: memory?.1, caption: "Memory", compact: true)
             }

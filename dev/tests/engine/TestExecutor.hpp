@@ -81,6 +81,8 @@ private:
 struct OffloadControl {
   bool ready = false;
   bool released = false;
+  // The transfer's write itself fails: its disk copy must not be published.
+  bool success = true;
 };
 
 // A state write in flight; its disk copy is a DiskState.
@@ -89,7 +91,7 @@ public:
   explicit OffloadTicket(std::shared_ptr<OffloadControl> control)
       : control_(std::move(control)) {}
   bool ready() const noexcept override { return control_->ready; }
-  bool finish() override { return true; }
+  bool finish() override { return control_->success; }
   const std::shared_ptr<const CompositeState> &state() const noexcept override {
     return disk_;
   }
@@ -232,6 +234,20 @@ public:
   explicit Executor(
       uint32_t maximumLanes = model::ExecutionLimits::maximumBatchWidth)
       : maximumLanes(maximumLanes) {}
+
+  // [Gate 4 / U-01] What this model still owes its caller's resource domain
+  // (`Model::descendants`, the receipt an Engine folds into its own
+  // callback/descendant witness): the backend's GPU and host-step closures,
+  // the Neural Engine's unreported evaluations and the ANE service queue's
+  // posted work. A test sets these to hold that fourth witness open beside a
+  // graph that is otherwise idle; left alone they report none, which is exactly
+  // what this fake's inherited default reported.
+  metal::CallbackRetirement owedGpu;
+  uint32_t owedAgentJobs = 0;
+  uint32_t owedServiceWork = 0;
+  [[nodiscard]] model::Model::Descendants descendants() const noexcept override {
+    return {owedGpu, owedAgentJobs, owedServiceWork};
+  }
 
   void checkHealth() override {
     if (healthCheck)

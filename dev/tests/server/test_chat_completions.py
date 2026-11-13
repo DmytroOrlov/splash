@@ -1,6 +1,7 @@
 import json
 import unittest
 from dataclasses import replace
+from unittest.mock import patch
 
 from dev.tests.server_fixtures import (
     FakeRuntime,
@@ -151,12 +152,16 @@ class ChatCompletionTests(HarnessTestCase):
             FakeRuntime(Plan([[1], [26], [27]])),
             chat_format=replace(QWEN, think_end_id=26),
         )
-        with openai_client(harness) as client:
-            response = client.chat.completions.create(
-                model="test-model",
-                messages=[{"role": "user", "content": "hello"}],
-                temperature=0,
-            )
+        # This test exercises usage accounting, not status expiry. Keep its
+        # ready snapshot fresh regardless of client construction or scheduling.
+        with patch("server.backend.STATUS_LIFECYCLE_FRESHNESS_SECONDS", float("inf")):
+            harness.backend.status()
+            with openai_client(harness) as client:
+                response = client.chat.completions.create(
+                    model="test-model",
+                    messages=[{"role": "user", "content": "hello"}],
+                    temperature=0,
+                )
         self.assertEqual(response.choices[0].message.content, "answer\n")
         self.assertEqual(
             response.usage.completion_tokens_details.reasoning_tokens,

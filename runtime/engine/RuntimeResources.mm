@@ -23,6 +23,7 @@
 #include <span>
 #include <sstream>
 #include <utility>
+#include <type_traits>
 
 namespace splash::engine {
 namespace {
@@ -202,14 +203,6 @@ std::string calibrationKey(std::span<const ops::SwiGluProjections> layers) {
       key += " " + std::to_string(projection->outputSize) + "x" + std::to_string(projection->inputSize) + ":g" +
              std::to_string(projection->blocks().segments.front().formatId);
   return key;
-}
-
-// The split's part of what the engine gives back while idle, if it runs one.
-std::optional<ReleasableMemory::Split> idleSplit(ops::AneFfn *split) {
-  if (!split)
-    return std::nullopt;
-  return ReleasableMemory::Split{[split] { return split->release(); },
-                                 [split] { split->restore(); }};
 }
 
 // The SSD cache tier as a start opens its files (openDiskTier): its budget,
@@ -598,62 +591,157 @@ RuntimeResourcesError::RuntimeResourcesError(RuntimeResourceStage stage,
     : std::runtime_error(std::move(message)), stage_(stage), failure_(failure),
       budgetDescription_(std::move(budgetDescription)) {}
 
+// Plans die before LoadedModel. LoadedModel destroys vision/draft/target
+// views (including model-only stores, which drain their reads) before images;
+// images own the source-writer closures and weight allocations. Shared SSD
+// readers are not owned here: all stream shares refer to the retained pool.
+// Once synchronization constructs, resource assembly only performs these
+// nonthrowing moves; a constructor failure cannot strand a model borrow.
+static_assert(std::is_nothrow_move_constructible_v<model::LoadedModel>);
+static_assert(std::is_nothrow_move_constructible_v<ops::ExecutionPlans>);
+static_assert(std::is_nothrow_move_constructible_v<EngineMemoryPlan>);
+static_assert(std::is_nothrow_move_constructible_v<RuntimeCacheIdentity>);
+static_assert(std::is_nothrow_move_constructible_v<PersistentCacheFiles>);
+static_assert(std::is_nothrow_move_constructible_v<ReleasableMemory>);
+static_assert(std::is_nothrow_move_constructible_v<AneFfnOutcome>);
+
+struct ModelResidency::Storage final {
+  // Declaration order is the destruction order reversed: ReleasableMemory's
+  // images/store pointers and split callbacks die before the split's program,
+  // the plans, and the model's images, streamed stores and writer closures.
+  model::LoadedModel model;
+  ops::ExecutionPlans operators;
+  std::unique_ptr<ops::AneFfn> aneFfn;
+  ReleasableMemory releasable;
+
+  Storage(model::LoadedModel &&loadedModel, ops::ExecutionPlans &&plans,
+          std::unique_ptr<ops::AneFfn> &&split);
+};
+
+// The split's part of what the engine gives back while idle, borrowing the
+// split owned beside it in Storage; the callbacks never outlive it.
+static std::optional<ReleasableMemory::Split> splitOf(ops::AneFfn *split) {
+  if (!split)
+    return std::nullopt;
+  return ReleasableMemory::Split{[split] { return split->release(); },
+                                 [split] { split->restore(); }};
+}
+
+ModelResidency::Storage::Storage(model::LoadedModel &&loadedModel,
+                                 ops::ExecutionPlans &&plans,
+                                 std::unique_ptr<ops::AneFfn> &&split)
+    : model(std::move(loadedModel)), operators(std::move(plans)),
+      aneFfn(std::move(split)),
+      // Built last from members already in place: the images and expert store
+      // it borrows, and the split's callbacks. Its parts vector may throw
+      // before ReleasableMemory itself is entered, unwinding the moves already
+      // made into the partially built Storage.
+      releasable({model.images.get(), model.expertStore()}, splitOf(aneFfn.get())) {}
+
+ModelResidency::ModelResidency(model::LoadedModel &&model,
+                               ops::ExecutionPlans &&operators,
+                               std::unique_ptr<ops::AneFfn> &&aneFfn)
+    // Allocate before moving: a failed allocation (Storage's new, or its
+    // ReleasableMemory's parts) leaves the caller's model, plans and split
+    // intact until they unwind, in their own local destruction order.
+    : storage_(std::make_unique<Storage>(std::move(model), std::move(operators),
+                                         std::move(aneFfn))) {}
+ModelResidency::ModelResidency(ModelResidency &&) noexcept = default;
+ModelResidency &ModelResidency::operator=(ModelResidency &&) noexcept = default;
+ModelResidency::~ModelResidency() = default;
+model::LoadedModel &ModelResidency::model() noexcept { return storage_->model; }
+const model::LoadedModel &ModelResidency::model() const noexcept { return storage_->model; }
+const ops::ExecutionPlans &ModelResidency::operators() const noexcept {
+  return storage_->operators;
+}
+ops::AneFfn *ModelResidency::aneFfn() noexcept {
+  return storage_ ? storage_->aneFfn.get() : nullptr;
+}
+const ops::AneFfn *ModelResidency::aneFfn() const noexcept {
+  return storage_ ? storage_->aneFfn.get() : nullptr;
+}
+ReleasableMemory *ModelResidency::releasableMemory() noexcept {
+  return storage_ ? &storage_->releasable : nullptr;
+}
+const ReleasableMemory *ModelResidency::releasableMemory() const noexcept {
+  return storage_ ? &storage_->releasable : nullptr;
+}
+
 RuntimeResources::RuntimeResources(
-    PersistentCacheFiles persistentCache,
-    std::unique_ptr<metal::MetalBackend> backend, std::shared_ptr<model::SsdReaders> readers,
-    model::LoadedModel model, ops::ExecutionPlans operators, EngineMemoryPlan memoryPlan,
-    RuntimeCacheIdentity cacheIdentity,
-    std::unique_ptr<MemoryGovernor> memoryGovernor,
-    std::unique_ptr<kv::PageStorage> kvPages,
-    std::unique_ptr<model::QwenStateStorage> stateStorage,
-    std::unique_ptr<KvPageTier> kvTier, std::unique_ptr<DiskSpace> diskSpace,
-    std::unique_ptr<KvPool> kvPool, std::unique_ptr<engine::Cache> cache,
-    std::unique_ptr<ops::AneFfn> aneFfn, AneFfnOutcome aneFfnOutcome,
-    std::unique_ptr<model::KvBlockCache> blockCache,
-    std::unique_ptr<model::KvHistoryStream> historyStream, bool spillAlways,
+    PersistentCacheFiles &&persistentCache,
+    std::unique_ptr<metal::MetalBackend> &&backend, std::shared_ptr<model::SsdReaders> &&readers,
+    ModelResidency &&residency, EngineMemoryPlan &&memoryPlan,
+    RuntimeCacheIdentity &&cacheIdentity,
+    std::unique_ptr<MemoryGovernor> &&memoryGovernor,
+    std::unique_ptr<kv::PageStorage> &&kvPages,
+    std::unique_ptr<model::QwenStateStorage> &&stateStorage,
+    std::unique_ptr<KvPageTier> &&kvTier, std::unique_ptr<DiskSpace> &&diskSpace,
+    std::unique_ptr<KvPool> &&kvPool, std::unique_ptr<engine::Cache> &&cache,
+    std::unique_ptr<WriteBehind> &&writeBehind,
+    AneFfnOutcome &&aneFfnOutcome,
+    std::unique_ptr<model::KvBlockCache> &&blockCache,
+    std::unique_ptr<model::KvHistoryStream> &&historyStream, bool spillAlways,
     model::VerifyRows verifyRows)
     : persistentCache_(std::move(persistentCache)),
-      backend_(std::move(backend)), readers_(std::move(readers)), model_(std::move(model)),
-      operators_(std::move(operators)),
+      backend_(std::move(backend)), readers_(std::move(readers)),
       memoryPlan_(std::move(memoryPlan)),
       cacheIdentity_(std::move(cacheIdentity)),
-      memoryGovernor_(std::move(memoryGovernor)), kvPages_(std::move(kvPages)),
+      memoryGovernor_(std::move(memoryGovernor)),
+      // The Owner interval of this graph's resource domain, bound to the
+      // thread assembling it.
+      resourceAuthority_(ResourceDomainLease::acquireForOwner()),
+      kvPages_(std::move(kvPages)),
       stateStorage_(std::move(stateStorage)), kvTier_(std::move(kvTier)),
       diskSpace_(std::move(diskSpace)), kvPool_(std::move(kvPool)),
-      cache_(std::move(cache)), aneFfn_(std::move(aneFfn)),
+      cache_(std::move(cache)), writeBehind_(std::move(writeBehind)),
       blockCache_(std::move(blockCache)), historyStream_(std::move(historyStream)),
-      releasableMemory_({model_.images.get(), model_.expertStore()}, idleSplit(aneFfn_.get())),
-      aneFfnOutcome_(std::move(aneFfnOutcome)), spillAlways_(spillAlways), verifyRows_(verifyRows) {}
+      residency_(std::move(residency)), aneFfnOutcome_(std::move(aneFfnOutcome)),
+      spillAlways_(spillAlways), verifyRows_(verifyRows) {
+  // Both mutation surfaces of the domain answer to the Owner lease from here
+  // on: submit/allocate/prepare/release and the governor's mutations and
+  // admission callbacks demand this thread until a handoff transfers the
+  // lease; passive reads never do.
+  resourceAuthority_.attach(*backend_);
+  resourceAuthority_.attach(*memoryGovernor_);
+}
 
-std::unique_ptr<RuntimeResources>
-RuntimeResources::create(const RuntimeResourcesConfig &config,
-                         uint32_t requestedContextTokens) {
-  if (config.metallibPath.empty() || config.modelRoot.empty() ||
-      !kv::validFormat(config.kvFormat) || !ops::validFormat(config.stateFormat) ||
-      !config.model.valid() || !config.hostMemory || !config.diskVolume ||
-      config.buildId.empty() || !config.maximumImagePatches ||
-      config.maximumImagePatches % 4 ||
-      config.maximumImagePatches > ops::kMaximumImagePatches) {
-    throw RuntimeResourcesError(
-        RuntimeResourceStage::Configuration,
-        "metallib path, model root, a valid model layout, KV and state format, "
-        "host memory and volume probes, build id and a merge-aligned image "
-        "patch limit no larger than the protocol's are required");
-  }
-  std::unique_ptr<metal::MetalBackend> backend;
-  try {
-    backend = std::make_unique<metal::MetalBackend>(config.metallibPath.string(),
-                                                    config.idleReleaseSeconds);
-  } catch (const metal::MetalAllocationError &error) {
-    throw RuntimeResourcesError(RuntimeResourceStage::BackendCreation,
-                                error.what(), {},
-                                resourceAllocationFailure(error.failure()));
-  } catch (const std::exception &error) {
-    throw RuntimeResourcesError(RuntimeResourceStage::BackendCreation,
-                                error.what());
-  }
+// [T031 prerequisite] The model-bound stratum of one construction: the loaded
+// model (its images and streamed stores as loaded), the execution plans, the
+// prefill FFN's Neural Engine split and the plan/identity that sized them,
+// plus what a FIRST assembly opens its SSD cache tier with. Declaration order
+// is the destruction order reversed (split -> plans -> model), so a failure
+// anywhere in the loader retires exactly what it allocated, in the order
+// ModelResidency's own Storage gives back nothing it does not own.
+struct ModelStratum final {
+  std::shared_ptr<model::SsdReaders> readers;
+  model::LoadedModel loaded;
+  std::optional<ops::ExecutionPlans> operators;
+  std::unique_ptr<ops::AneFfn> split;
+  AneFfnOutcome outcome;
+  std::optional<EngineMemoryPlan> plan;
+  RuntimeCacheIdentity identity;
+  DiskTier disk;
+  kv::Layout kvLayout;
+  uint64_t stateStagingBytes = 0;
+};
 
-  const DeviceCapabilities &device = backend->capabilities();
+// [T031 prerequisite] The ONE model-bound phase: the streamed-store plan, the
+// load (once, or again where the arenas give a part another store), the plan
+// with the parts as loaded, the cache identity and the split. create() runs it
+// with `retained` null to assemble a graph for the first time; RuntimeResources-
+// :buildModelResidency runs the SAME loader against a RETAINED graph, which
+// reuses that graph's backend and SSD readers, reports its already-open tier
+// instead of opening another, and allocates nothing retained and no governor.
+// Nothing here mutates the retained graph's residency, admission or serving
+// state; allocations it performs answer to the calling thread's authority over
+// that domain, exactly as a first assembly's answer to its Owner interval.
+ModelStratum RuntimeResources::loadModelStratum(metal::MetalBackend &backend,
+                                                const RuntimeResourcesConfig &config,
+                                                uint32_t requestedContextTokens,
+                                                const std::function<bool()> &cancelled,
+                                                const RuntimeResources *retained) {
+  ModelStratum stratum;
+  const DeviceCapabilities &device = backend.capabilities();
   if (auto error = device.validationError()) {
     throw RuntimeResourcesError(RuntimeResourceStage::CapabilityValidation,
                                 *error);
@@ -662,9 +750,10 @@ RuntimeResources::create(const RuntimeResourcesConfig &config,
   const uint64_t hostReserveBytes =
       EngineMemoryPolicy::hostAvailableReserveBytes(device.physicalMemoryBytes);
   // Startup work stops on cancellation and keeps its reserve of host memory.
-  const auto throwIfCancelled = [cancelled = config.cancelled] {
+  const auto throwIfCancelled = [cancelled, retained] {
     if (cancelled && cancelled())
-      throw metal::MetalBackendError("startup cancelled");
+      throw metal::MetalBackendError(retained ? "recovery construction cancelled"
+                                              : "startup cancelled");
   };
   const auto currentPressure = [pressure = config.memoryPressure] {
     return pressure ? pressure() : MemoryPressure::Normal;
@@ -674,10 +763,19 @@ RuntimeResources::create(const RuntimeResourcesConfig &config,
     throwIfCancelled();
     requireStartupHeadroom(hostMemory, hostReserveBytes, currentPressure());
   };
-  backend->setOperationGuard(admitMetalOperation);
-  // A synchronous command wait gives up when the process shuts down, also
-  // after startup.
-  backend->setWaitInterrupt(config.cancelled);
+  if (!retained) {
+    backend.setOperationGuard(admitMetalOperation);
+    // A synchronous command wait gives up when the process shuts down, also
+    // after startup.
+    backend.setWaitInterrupt(config.cancelled);
+  } else {
+    // The rebuild runs on the RETAINED backend, whose per-operation startup
+    // guard the lifecycle cleared at Ready: the operation's cooperative
+    // cancellation fences its command waits for the construction (the caller
+    // restores the graph's own predicate), and the boundaries below keep
+    // checking the host's reserve as the residency grows.
+    backend.setWaitInterrupt(cancelled);
+  }
   // One disk quota serves KV pages and states. Without room for a state,
   // disk KV cannot preserve a restorable prefix, so the tier stays off, and
   // no state's write needs the staging buffer the plan would set aside. The
@@ -714,7 +812,8 @@ RuntimeResources::create(const RuntimeResourcesConfig &config,
   // The one pool of SSD readers, which the model's streamed weights and the
   // reads of the KV the tier holds share. It goes after the model and the
   // tier, which read on it.
-  auto readers = std::make_shared<model::SsdReaders>(model::kSsdReaders);
+  auto readers = retained ? retained->readers_
+                          : std::make_shared<model::SsdReaders>(model::kSsdReaders);
 
   // One plan (planStreamedMemory) sizes the parts of the weights that may
   // stream from the SSD, a MoE target's routed experts and a GGUF's PLE
@@ -887,8 +986,8 @@ RuntimeResources::create(const RuntimeResourcesConfig &config,
       // which may have held a PLE table whole that now streams through a
       // row cache the audit's budget for Metal leaves out.
       loaded = {};
-      backend->restartPeaks();
-      loaded = model::loadModel(*backend, config.modelRoot, config.model, loadOptions);
+      backend.restartPeaks();
+      loaded = model::loadModel(backend, config.modelRoot, config.model, loadOptions);
       requireLoadedModel(loaded);
       const std::chrono::duration<double> loading = AwakeClock::now() - started;
       logLine("Weights loaded ", again ? "again " : "", "in ", std::fixed, std::setprecision(2), loading.count(),
@@ -927,6 +1026,7 @@ RuntimeResources::create(const RuntimeResourcesConfig &config,
     }
   };
   load(false);
+  throwIfCancelled();
 
   // The engine's memory plan, with `stagingBytes` set aside for the disk
   // tier's state staging and `aneFfnBytes` for the prefill FFN's Neural Engine
@@ -1003,7 +1103,7 @@ RuntimeResources::create(const RuntimeResourcesConfig &config,
   reportVerifyRows(loaded, config.verifyRows);
   // The model's side of the split (startAneFfn).
   const AneFfnModel splitModel =
-      aneFfnModel(*backend, loaded, operators, config.kvFormat, config.buildId, config.cancelled);
+      aneFfnModel(backend, loaded, operators, config.kvFormat, config.buildId, cancelled);
 
   // The automatic tier keeps its staging only where the plan holds the model
   // and the requested context beside it, the parts as they load. The split
@@ -1073,12 +1173,17 @@ RuntimeResources::create(const RuntimeResourcesConfig &config,
     const model::SlotFile::Options kvFileOptions{.segments = kvFormat.segments(),
                                                  .deferWrites = readers->criticalBusyProbe()};
     const model::SlotFile::Options stateFileOptions{.deferWrites = readers->criticalBusyProbe()};
-    DiskTier disk = openDiskTier(config, cacheNamespace, stateStagingBytes ? cacheDiskBytes : 0, kvSlotBytes,
-                                 kvSlotLabelBytes(kvLayout.windowedLayers != 0), kvFileOptions, stateBytes,
-                                 stateFileOptions, relaunchContext && memoryPlan.breakdown().kvSpill.enabled);
+    DiskTier disk;
+    if (!retained)
+      disk = openDiskTier(config, cacheNamespace, stateStagingBytes ? cacheDiskBytes : 0, kvSlotBytes,
+                          kvSlotLabelBytes(kvLayout.windowedLayers != 0), kvFileOptions, stateBytes,
+                          stateFileOptions, relaunchContext && memoryPlan.breakdown().kvSpill.enabled);
     if (memoryPlan.breakdown().kvSpill.enabled) {
-      kvFileOpen = disk.kv != nullptr;
-      if (disk.budget)
+      // A rebuild reports the RETAINED tier as it already stands: a plan that
+      // spills was assembled where its KV file opened, and the graph it was
+      // assembled for still holds that file; no second tier opens here.
+      kvFileOpen = retained ? retained->kvTier_ != nullptr : disk.kv != nullptr;
+      if (!retained && disk.budget)
         activeLimitBytes = std::min(activeLimitBytes, disk.budget->activeLimitBytes());
       memoryPlan = requirePlan();
     }
@@ -1088,16 +1193,24 @@ RuntimeResources::create(const RuntimeResourcesConfig &config,
     // allocator reserves, so memory outside the backend's buffers is charged
     // only beyond them, and elastic state and KV never grow into them. The
     // split only moves bytes from KV to fixed runtime memory, so the governor
-    // is the same with it or without.
-    auto memoryGovernor = std::make_unique<MemoryGovernor>(*backend, memoryPlan.breakdown(), config.hostMemory);
-    if (config.memoryPressure)
-      memoryGovernor->setPressure(config.memoryPressure());
-    // What the start allocates, the KV runway, the arenas and the warmup, is
-    // memory a request in service needs: like loading, it needs only the
-    // reserve macOS keeps short of critical pressure, which every Metal
-    // operation checks. The host's margins and macOS's warning hold back
-    // only what serving adds (beginServing).
-    memoryGovernor->setServing(true);
+    // is the same with it or without. A FIRST assembly makes its own, which
+    // create() hands to the graph it assembles; a recovery rebuild allocates
+    // its stratum on the RETAINED backend's own peak accounting, and what
+    // adopts it is charged to that graph's governor (T031/T033's rebind), so
+    // no second governor exists for one domain.
+    std::unique_ptr<MemoryGovernor> memoryGovernor;
+    if (!retained) {
+      memoryGovernor = std::make_unique<MemoryGovernor>(backend, memoryPlan.breakdown(),
+                                                        config.hostMemory);
+      if (config.memoryPressure)
+        memoryGovernor->setPressure(config.memoryPressure());
+      // What the start allocates, the KV runway, the arenas and the warmup, is
+      // memory a request in service needs: like loading, it needs only the
+      // reserve macOS keeps short of critical pressure, which every Metal
+      // operation checks. The host's margins and macOS's warning hold back
+      // only what serving adds (beginServing).
+      memoryGovernor->setServing(true);
+    }
     logLine("Kernel policy for GPU family ", device.appleGpuFamily,
             " with ", device.gpuCoreCount, " cores.");
     if (const model::RopeScaling &rope = config.model.ropeScaling; rope.yarn())
@@ -1110,7 +1223,8 @@ RuntimeResources::create(const RuntimeResourcesConfig &config,
         requestedContextTokens ? RequestedContext{.tokens = requestedContextTokens}
                                : RequestedContext{.tokens = config.relaunchContext,
                                                   .relaunch = config.relaunchContext != 0};
-    AneFfnStart aneFfn = startAneFfn(splitModel, config.aneFfn, splitContext, planMemory, config.cancelled);
+    throwIfCancelled();
+    AneFfnStart aneFfn = startAneFfn(splitModel, config.aneFfn, splitContext, planMemory, cancelled);
     if (aneFfn.plan)
       memoryPlan = std::move(*aneFfn.plan);
     const EngineMemoryBreakdown &budget = memoryPlan.breakdown();
@@ -1123,7 +1237,99 @@ RuntimeResources::create(const RuntimeResourcesConfig &config,
       if (config.sparseKvMemory)
         logLine("--sparse-kv-memory ignored: ", config.model.name, " keeps its KV in memory, ", spillOff, ".");
     }
+    stratum.readers = std::move(readers);
+    stratum.loaded = std::move(loaded);
+    stratum.operators = std::make_optional(std::move(operators));
+    stratum.split = std::move(aneFfn.split);
+    stratum.outcome = std::move(aneFfn.outcome);
+    stratum.plan = std::make_optional(std::move(memoryPlan));
+    stratum.identity = std::move(cacheIdentity);
+    stratum.disk = std::move(disk);
+    stratum.kvLayout = kvLayout;
+    stratum.stateStagingBytes = stateStagingBytes;
+    return stratum;
+  } catch (const RuntimeResourcesError &) {
+    throw;
+  } catch (const metal::MetalAllocationError &error) {
+    throw RuntimeResourcesError(RuntimeResourceStage::StorageAllocation,
+                                error.what(),
+                                memoryPlan.breakdown().describe(),
+                                resourceAllocationFailure(error.failure()));
+  } catch (const std::exception &error) {
+    throw RuntimeResourcesError(RuntimeResourceStage::StorageAllocation,
+                                error.what(),
+                                memoryPlan.breakdown().describe());
+  }
+}
 
+std::unique_ptr<RuntimeResources>
+RuntimeResources::create(const RuntimeResourcesConfig &config,
+                         uint32_t requestedContextTokens) {
+  if (config.metallibPath.empty() || config.modelRoot.empty() ||
+      !kv::validFormat(config.kvFormat) || !ops::validFormat(config.stateFormat) ||
+      !config.model.valid() || !config.hostMemory || !config.diskVolume ||
+      config.buildId.empty() || !config.maximumImagePatches ||
+      config.maximumImagePatches % 4 ||
+      config.maximumImagePatches > ops::kMaximumImagePatches) {
+    throw RuntimeResourcesError(
+        RuntimeResourceStage::Configuration,
+        "metallib path, model root, a valid model layout, KV and state format, "
+        "host memory and volume probes, build id and a merge-aligned image "
+        "patch limit no larger than the protocol's are required");
+  }
+  std::unique_ptr<metal::MetalBackend> backend;
+  try {
+    backend = std::make_unique<metal::MetalBackend>(config.metallibPath.string(),
+                                                    config.idleReleaseSeconds);
+  } catch (const metal::MetalAllocationError &error) {
+    throw RuntimeResourcesError(RuntimeResourceStage::BackendCreation,
+                                error.what(), {},
+                                resourceAllocationFailure(error.failure()));
+  } catch (const std::exception &error) {
+    throw RuntimeResourcesError(RuntimeResourceStage::BackendCreation,
+                                error.what());
+  }
+
+  ModelStratum stratum;
+  try {
+    stratum = loadModelStratum(*backend, config, requestedContextTokens, config.cancelled, nullptr);
+  } catch (const RuntimeResourcesError &) {
+    throw;
+  } catch (const metal::MetalAllocationError &error) {
+    throw RuntimeResourcesError(RuntimeResourceStage::ModelLoading, error.what(), {},
+                                resourceAllocationFailure(error.failure()));
+  } catch (const std::exception &error) {
+    throw RuntimeResourcesError(RuntimeResourceStage::ModelLoading, error.what());
+  }
+
+  // What a first assembly allocates around its stratum. These locals keep the
+  // names this phase already reads: the graph borrows them until the constructor
+  // below takes ownership, exactly as before the phase was shared with recovery.
+  EngineMemoryPlan memoryPlan = std::move(*stratum.plan);
+  const kv::Layout kvLayout = stratum.kvLayout;
+  const kv::SlotFormat kvFormat(kvLayout);
+  auto readers = std::move(stratum.readers);
+  DiskTier &disk = stratum.disk;
+  model::LoadedModel &loaded = stratum.loaded;
+  const EngineMemoryBreakdown &budget = memoryPlan.breakdown();
+  const KvSpillPlan &spill = budget.kvSpill;
+  std::unique_ptr<MemoryGovernor> memoryGovernor;
+  try {
+    // The governor holds the complete Metal footprint to the hard budget. The
+    // plan budgets pipelines and driver allocations inside the pipeline and
+    // allocator reserves, so memory outside the backend's buffers is charged
+    // only beyond them, and elastic state and KV never grow into them. The
+    // split only moves bytes from KV to fixed runtime memory, so the governor
+    // is the same with it or without.
+    memoryGovernor = std::make_unique<MemoryGovernor>(*backend, budget, config.hostMemory);
+    if (config.memoryPressure)
+      memoryGovernor->setPressure(config.memoryPressure());
+    // What the start allocates, the KV runway, the arenas and the warmup, is
+    // memory a request in service needs: like loading, it needs only the
+    // reserve macOS keeps short of critical pressure, which every Metal
+    // operation checks. The host's margins and macOS's warning hold back
+    // only what serving adds (beginServing).
+    memoryGovernor->setServing(true);
     // Page ids for every extent the hard budget could hold, of the smallest
     // pages the pool takes: Index pages where spilled pages hold only their
     // index, Slim ones where pages every window has passed hold the layers
@@ -1155,6 +1361,9 @@ RuntimeResources::create(const RuntimeResourcesConfig &config,
       windowPolicy = CacheWindowPolicy{.windowPages = kvLayout.windowPages(),
                                        .trim = kvLayout.slimmable() && config.kvWindowTrim};
     auto cache = std::make_unique<engine::Cache>(*kvPool, kvTier.get(), disk.budget, spillPolicy, windowPolicy);
+    // Allocate the queue before any retained ownership transfer: its containers
+    // may throw on construction. The owner then moves only the unique_ptr.
+    auto writeBehind = std::make_unique<WriteBehind>(*cache);
     if (disk.space)
       cache->setDiskMeasure([space = disk.space.get()] { space->measure(); });
     // A target whose KV spills reads it back through one hot block cache and
@@ -1188,12 +1397,22 @@ RuntimeResources::create(const RuntimeResourcesConfig &config,
           "base Metal allocation exceeds immutable hard budget");
     }
 
+    // Finish every throwing model/callback allocation while all retained
+    // locals are still owned here. The constructor below only transfers
+    // ownership after its synchronization primitives construct. Arguments
+    // borrow locals until then, including on allocation failure of its new.
+    // The residency takes the split with the model and plans it borrows and
+    // builds ReleasableMemory over them inside its Storage: a later failure
+    // or teardown destroys that as one unit, callbacks before program,
+    // plans and model images/stores/writers.
+    ModelResidency residency(std::move(stratum.loaded), std::move(*stratum.operators),
+                             std::move(stratum.split));
     auto result = std::unique_ptr<RuntimeResources>(new RuntimeResources(
-        std::move(disk.persistent), std::move(backend), std::move(readers), std::move(loaded),
-        std::move(operators), std::move(memoryPlan), std::move(cacheIdentity),
+        std::move(disk.persistent), std::move(backend), std::move(readers),
+        std::move(residency), std::move(memoryPlan), std::move(stratum.identity),
         std::move(memoryGovernor), std::move(kvPages), std::move(stateStorage),
         std::move(kvTier), std::move(disk.space), std::move(kvPool), std::move(cache),
-        std::move(aneFfn.split), std::move(aneFfn.outcome), std::move(blockCache),
+        std::move(writeBehind), std::move(stratum.outcome), std::move(blockCache),
         std::move(historyStream), config.kvSpillAlways, config.verifyRows));
     result->adoptPersistentCache();
     return result;
@@ -1229,6 +1448,10 @@ void RuntimeResources::adoptPersistentCache() {
   for (const model::SlotRecord &record : persistentCache_.kv->records())
     blocks.push_back({record.label, [this, record] { return kvTier_->adopt(record); }});
   std::vector<PersistedState> states;
+  // T006's state adoption still reads synchronously through existing staging
+  // before finishAdoption(). T035 must validate SlotFile-adoption ordering,
+  // staging/write sequencing and failed/cancelled restores; T007 changes none
+  // of those semantics and its ownership tests do not establish their safety.
   for (const model::SlotRecord &record : persistentCache_.states->records())
     states.push_back({record.label, [this, record](uint32_t tokens) {
                         return stateStorage_->adopt(record, tokens);
@@ -1244,6 +1467,8 @@ void RuntimeResources::adoptPersistentCache() {
 
 void RuntimeResources::beginServing() {
   memoryGovernor_->setServing(false);
+  if (beginServingTest_)
+    beginServingTest_();
   CacheDirectory *directory = persistentCache_.directory.get();
   if (!directory)
     return;
@@ -1310,14 +1535,44 @@ bool RuntimeResources::closePersistentCache() {
   return true;
 }
 
-model::RuntimeContext RuntimeResources::modelContext() noexcept {
-  return {
+std::optional<model::RuntimeContext> RuntimeResources::modelContext() noexcept {
+  if (!residency_.storage_)
+    return std::nullopt;
+  return model::RuntimeContext{
       *backend_,
-      model_,
+      residency_.model(),
       *kvPages_,
       *stateStorage_,
-      operators_,
-      aneFfn_.get(),
+      residency_.operators(),
+      residency_.aneFfn(),
+      blockCache_.get(),
+      historyStream_.get(),
+      verifyRows_,
+      memoryGovernor_->growthAdmission(),
+  };
+}
+
+ReleasableMemory *RuntimeResources::releasableMemory() noexcept {
+  return residency_.releasableMemory();
+}
+
+// [T031 prerequisite] The same RuntimeContext over one private residency this
+// owner does not hold: ONLY the model, plans and ANE split are the candidate's;
+// the backend, KV pages, state storage, block cache, history stream, verify
+// rows and the retained governor's growth admission stay this graph's, so a
+// RuntimeModel built here executes against the retained storage exactly as
+// the published one does. Absent private residency reports absence.
+std::optional<model::RuntimeContext>
+RuntimeResources::modelContext(ModelResidency &privateResidency) noexcept {
+  if (!privateResidency.storage_)
+    return std::nullopt;
+  return model::RuntimeContext{
+      *backend_,
+      privateResidency.model(),
+      *kvPages_,
+      *stateStorage_,
+      privateResidency.operators(),
+      privateResidency.aneFfn(),
       blockCache_.get(),
       historyStream_.get(),
       verifyRows_,
@@ -1345,35 +1600,145 @@ std::optional<KvSpillStatus> RuntimeResources::kvSpillStatus() const {
 }
 
 std::optional<model::SparseRowStats> RuntimeResources::streamedTableStats() const {
-  if (const model::SparseRowStore *table = model_.streamedTable()) return table->stats();
+  // Absent residency is reported as "no table", like modelResident() being
+  // false; a present one distinguishes a genuine no-table model (also nullopt)
+  // via modelResident().
+  if (!residency_.storage_)
+    return std::nullopt;
+  if (const model::SparseRowStore *table = residency_.model().streamedTable()) return table->stats();
   return std::nullopt;
 }
 
 std::optional<model::ExpertStoreStats> RuntimeResources::streamedExpertStats() const {
-  if (const model::ExpertStore *experts = model_.expertStore()) return experts->stats();
+  if (!residency_.storage_)
+    return std::nullopt;
+  if (const model::ExpertStore *experts = residency_.model().expertStore()) return experts->stats();
   return std::nullopt;
 }
 
+// [T024] The lifecycle safe point's hand-off to the designated disposal path:
+// the model-bound stratum (loaded model, plans, ANE split, idle-weight
+// callbacks) moves out as one unit, in the same reverse-destruction order the
+// class comment gives (callbacks -> ANE program -> plans -> model), and this
+// residency keeps reporting absence (the T009 absence contract) until the
+// recovery adoption protocol establishes one again. Only the residency-worker
+// disposal destroys what came out, under its claimed Worker interval; nothing
+// here drains, destroys or adopts anything by itself.
+ModelResidency RuntimeResources::releaseModelResidency() noexcept {
+  return std::move(residency_);
+}
+
+// [T031 prerequisite] The private residency a recovery assembles against this
+// retained graph, for a candidate to carry while the published slot stays
+// empty. The backend and governor demand this thread's authority over the
+// domain, so the construction runs only under a claimed interval of this
+// graph's lease (Worker, when a residency operation built it); a first
+// construction's own Owner interval is the only other lawful holder, and that
+// path belongs to create(). The shared loader reports the RETAINED tier rather
+// than opening another, reuses the retained SSD readers, and allocates only
+// this stratum: any failure retires exactly what it allocated, in the split
+// -> plans -> model order, with every retained object untouched. The gate below
+// REFUSES a rebuild whose model/KV/state identity does not match this graph's
+// before anything can move anywhere: recovery never rebuilds retained storage.
+ModelResidency RuntimeResources::buildModelResidency(const RuntimeResourcesConfig &config,
+                                                     uint32_t requestedContextTokens,
+                                                     const std::function<bool()> &cancelled) {
+  ModelStratum stratum;
+  try {
+    stratum = loadModelStratum(*backend_, config, requestedContextTokens, cancelled, this);
+  } catch (...) {
+    // The construction's cooperative wait interrupt goes back to the graph's
+    // own startup predicate, whatever the load, plan or split threw.
+    backend_->setWaitInterrupt(config.cancelled);
+    throw;
+  }
+  backend_->setWaitInterrupt(config.cancelled);
+  const EngineMemoryBreakdown &kept = memoryPlan_.breakdown();
+  // The gate a rebuild must pass before it exists as anything: this graph's
+  // identity (model manifests, build, KV layout, RoPE) and the retained
+  // geometry the plan was assembled with -- one lane's state, the KV page and
+  // extent geometry, the SSD cache's state staging, the streamed table's charge
+  // and the spill policy. A mismatch fails closed here; recovery never rebuilds
+  // retained storage, and the disposable stratum retires in the loader's own
+  // order.
+  if (!stratum.plan)
+    throw RuntimeResourcesError(RuntimeResourceStage::MemoryPlanning,
+                                "a recovery residency built without a memory plan",
+                                kept.describe(), RuntimeResourceFailure::EngineCapacity);
+  const EngineMemoryBreakdown &made = stratum.plan->breakdown();
+  if (!(stratum.identity == cacheIdentity_) || made.laneStateBytes != kept.laneStateBytes ||
+      made.kvPageBytes != kept.kvPageBytes || made.kvExtentPages != kept.kvExtentPages ||
+      made.kvExtentBytes != kept.kvExtentBytes || made.stateStagingBytes != kept.stateStagingBytes ||
+      made.streamedTableBytes != kept.streamedTableBytes ||
+      made.kvSpill.enabled != kept.kvSpill.enabled) {
+    throw RuntimeResourcesError(
+        RuntimeResourceStage::MemoryPlanning,
+        "a recovery residency is incompatible with this graph: its rebuilt model identity or "
+        "KV/state geometry does not match the retained one",
+        kept.describe(), RuntimeResourceFailure::EngineCapacity);
+  }
+  return ModelResidency(std::move(stratum.loaded), std::move(*stratum.operators),
+                        std::move(stratum.split));
+}
+
+// [T031 prerequisite] The checked gate before a residency move into this
+// owner's EMPTY slot: the candidate must hold a stratum, that stratum's loaded
+// model must carry `expectedIdentity` -- the identity its own construction
+// reported against -- and this graph must agree with that identity; the slot
+// must be empty, since an adoption never replaces a live stratum. Non-throwing:
+// a malformed candidate, an unknown identity or a live slot all refuse, and the
+// caller's residency stays intact for the rollback path.
+bool RuntimeResources::canAdoptModelResidency(const ModelResidency &candidate,
+                                              const RuntimeCacheIdentity &expectedIdentity) const noexcept {
+  if (!candidate.storage_ || residency_.storage_)
+    return false;
+  try {
+    const model::LoadedModel &loaded = candidate.model();
+    requireLoadedModel(loaded);
+    const auto identity = makeRuntimeCacheIdentity(
+        loaded.manifestFingerprintSha256, loaded.targetManifestFingerprint(),
+        expectedIdentity.buildId, loaded.targetKvLayout(expectedIdentity.kvLayout.format),
+        loaded.descriptor.ropeScaling);
+    return identity == expectedIdentity && identity == cacheIdentity_;
+  } catch (...) {
+    return false;
+  }
+}
+
+// Moves a private residency into the empty slot only through that gate: false
+// with the candidate untouched when it refuses. What an adoption rebinds or
+// announces beyond this move is T031/T033's; nothing is opened here.
+bool RuntimeResources::adoptModelResidency(ModelResidency &&candidate,
+                                           const RuntimeCacheIdentity &expectedIdentity) noexcept {
+  if (!canAdoptModelResidency(candidate, expectedIdentity))
+    return false;
+  residency_ = std::move(candidate);
+  return true;
+}
+
 AneFfnSnapshot RuntimeResources::aneFfnSnapshot() const {
-  if (!aneFfn_)
+  if (!residency_.aneFfn())
     return {.reason = aneFfnOutcome_.reason};
-  const bool stopped = aneFfn_->retired();
-  const ops::AneFfn::Served &served = aneFfn_->served();
+  const auto *split = residency_.aneFfn();
+  const bool stopped = split->retired();
+  const ops::AneFfn::Served &served = split->served();
   return {stopped ? AneFfnSnapshot::State::Stopped : AneFfnSnapshot::State::Split,
-          stopped ? aneFfn_->reason() : aneFfnOutcome_.reason,
-          aneFfn_->share(),
-          aneFfn_->minimumRows(),
+          stopped ? split->reason() : aneFfnOutcome_.reason,
+          split->share(),
+          split->minimumRows(),
           served.commands,
           served.evaluations,
           served.milliseconds};
 }
 
-ActualMemoryReport RuntimeResources::actualMemoryReport(
-    const model::ModelMemoryActual &modelMemory) const {
+std::optional<ActualMemoryReport>
+RuntimeResources::actualMemoryReport(const model::ModelMemoryActual &modelMemory) const {
+  if (!residency_.storage_)
+    return std::nullopt;
   ActualMemoryReport report;
-  report.targetWeightsBytes = model_.targetActualAllocatedBytes();
-  report.draftWeightsBytes = model_.draft.actualAllocatedBytes;
-  report.visionWeightsBytes = model_.vision.actualAllocatedBytes;
+  report.targetWeightsBytes = residency_.model().targetActualAllocatedBytes();
+  report.draftWeightsBytes = residency_.model().draft.actualAllocatedBytes;
+  report.visionWeightsBytes = residency_.model().vision.actualAllocatedBytes;
   report.stateAllocatedBytes = modelMemory.stateActualAllocatedBytes;
   report.sharedPrefillBytes = modelMemory.sharedPrefillActualAllocatedBytes;
   report.sharedDecodeBytes = modelMemory.sharedDecodeActualAllocatedBytes;
@@ -1386,7 +1751,7 @@ ActualMemoryReport RuntimeResources::actualMemoryReport(
   if (historyStream_)
     report.kvHistoryStagingBytes = historyStream_->stats().stagingBytes;
   report.stateStagingBytes = modelMemory.stateStagingBytes;
-  report.aneFfnBytes = aneFfn_ ? aneFfn_->allocatedBytes() : 0;
+  if (const auto *split = residency_.aneFfn()) report.aneFfnBytes = split->allocatedBytes();
   if (const auto table = streamedTableStats()) report.streamedTableBytes = table->cacheBytes;
   // Optional warmup may end with a rolled-back allocation and no subsequent
   // command. Refresh the current counts after that rollback; peaks stay intact.

@@ -81,6 +81,7 @@ OPTIONS = {
     "--state-format": values(
         "--state-format", {"fp32": "fp32", "bf16": "bf16"}, ("fp16", "int8")
     ),
+    "--pause-on-battery": ([(["--pause-on-battery"], True)], []),
     "--disable-ane": ([(["--disable-ane"], True)], []),
     "--verify-rows": values(
         "--verify-rows",
@@ -415,6 +416,17 @@ class ServeOptionsTests(unittest.TestCase):
             for value in ("-1", "65536"):
                 with self.assertRaises(SystemExit):
                     api.parse_args([*required, "--port", value])
+
+    def test_battery_flag_on_native_start_and_relaunch(self):
+        for enabled in (False, True):
+            args = api.parse_args(
+                [*SERVER_ARGS, *(["--pause-on-battery"] if enabled else [])]
+            )
+            for context in (None, 61433):
+                command = api._native_command(args, args.model_root, context)
+                self.assertEqual(command.count("--pause-on-battery"), int(enabled))
+                if enabled:
+                    self.assertEqual(command[-1], "--pause-on-battery")
 
     def test_native_command_passes_each_serve_option(self):
         model = "community/custom-splash"

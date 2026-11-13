@@ -69,9 +69,9 @@ std::string resourceTimeoutMessage(metal::AllocationFailure failure) {
   return message;
 }
 
-Engine::Engine(EngineConfig config, Cache &cache, model::Model &model,
-               EngineEventSink &events)
-    : config_(config), cache_(cache), writeBehind_(cache), model_(model),
+Engine::Engine(EngineConfig config, Cache &cache, WriteBehind &writeBehind,
+               model::Model &model, EngineEventSink &events)
+    : config_(config), cache_(cache), writeBehind_(writeBehind), model_(model),
       events_(events), scheduler_(config_.decodeShare, config_.maximumPrefillAttentionPairs) {
   if (!config_.maxContext || !config_.vocabularySize) {
     throw std::invalid_argument("context and vocabulary sizes must be positive");
@@ -175,8 +175,76 @@ void Engine::provideMask(uint64_t id, std::span<const uint32_t> words) {
 }
 
 void Engine::setCompletionNotifier(std::function<void()> notifier) {
-  completionNotifier_ = std::move(notifier);
+  {
+    std::lock_guard lock(notifier_->bodyMutex);
+    // [Gate 4 / U-01] The binding is a slot, replaced wholesale: every hand-off
+    // bound from here on is given this closure, while a closure a holder
+    // already keeps running stays bound to the one it was given, which that
+    // binding's slot keeps alive for it.
+    notifier_->bodySlot =
+        std::make_shared<const std::function<void()>>(std::move(notifier));
+  }
+  // [Gate 4 / U-01] Binding never disables the notifier: the tracker keeps the
+  // closure, and every copy the machinery below makes is a seat it owes until
+  // its holder let go.
+  const BoundNotifier bound{notifier_};
+  completionNotifier_ = std::function<void()>(bound);
   cache_.setCompletionNotifier(completionNotifier_);
+}
+
+// [T031] Every allocation the ordinary setter performs is taken up front: the
+// shared body (one copy of `notifier`) and the three closure copies this
+// binding installs — the Engine's own slot plus its Cache's and the StateCache's,
+// one tracker seat each — so installation can be a rollback-safe swap. The
+// recipient freezing and the tracker's seat accounting work exactly as
+// setCompletionNotifier's chain does; the copies all share this binding's body.
+Engine::PreparedCompletionBinding Engine::prepareCompletionBinding(const std::function<void()> &notifier) {
+  PreparedCompletionBinding prepared;
+  prepared.bodySlot_ = std::make_shared<const std::function<void()>>(notifier);
+  const BoundNotifier bound{notifier_, prepared.bodySlot_};
+  std::function<void()> boundFunction{bound};
+  prepared.engineSlot_ = std::function<void()>(boundFunction);
+  prepared.cacheSlot_ = std::function<void()>(boundFunction);
+  prepared.stateSlot_ = std::function<void()>(boundFunction);
+  return prepared;
+}
+
+// [T031] Swaps the prepared slots in and the previous ones out, all by moves:
+// the body under the tracker's own mutex (the same single-writer edge
+// setCompletionNotifier uses), the Engine's slot, then the Cache's and the
+// StateCache's. Nothing allocates after the first swap, which is what lets
+// NativeRuntime's rollback reinstall the displaced binding through this very
+// call.
+Engine::PreparedCompletionBinding Engine::installCompletionBinding(PreparedCompletionBinding &&prepared) noexcept {
+  PreparedCompletionBinding displaced;
+  {
+    std::lock_guard lock(notifier_->bodyMutex);
+    displaced.bodySlot_ = std::move(notifier_->bodySlot);
+    notifier_->bodySlot = std::move(prepared.bodySlot_);
+  }
+  displaced.engineSlot_ = std::move(completionNotifier_);
+  completionNotifier_ = std::move(prepared.engineSlot_);
+  const auto graphDisplaced = cache_.installCompletionSlots(std::move(prepared.cacheSlot_), std::move(prepared.stateSlot_));
+  displaced.cacheSlot_ = std::move(graphDisplaced.first);
+  displaced.stateSlot_ = std::move(graphDisplaced.second);
+  return displaced;
+}
+
+void Engine::BoundNotifier::operator()() const {
+  if (!body_ || !*body_)
+    return;
+  // [Gate 4 / U-01] One run stands until the body returned, whatever the body
+  // starts: a notifier that borrows, or hands off further work, keeps the
+  // receipt pending across that window. The recipient is this binding's own
+  // slot, shared by every copy of it and never rewritten, so nothing is copied
+  // under a lock here and no callback runs under one the Engine, the tier or
+  // the cache takes.
+  ++tracker_->runs;
+  struct Returned final {
+    std::atomic<uint32_t> &runs;
+    ~Returned() { --runs; }
+  } returned{tracker_->runs};
+  (*body_)();
 }
 
 bool Engine::flushRestorePoints() {
@@ -473,6 +541,84 @@ ResourceWaitSnapshot Engine::resourceWaitSnapshot(double now) const {
   return result;
 }
 
+// [Gate 2 / FR-009] The request-side drain witness (T016). Every category is a
+// request-side owner of Engine state, read from the machinery that owns it
+// (`requests_`, the scheduler's phase, `pending_` and its ticket, and each
+// Request's own mask wait, pass state, restore ticket and pending end), and
+// counted separately so a refusal names the owner that stands instead of
+// collapsing to one boolean. A request the scheduler has already ended, or one
+// finalized and not yet swept, counts as a completion record: its terminal
+// event has been emitted, and until sweepTerminal takes it the engine still
+// holds its telemetry (emitted tokens, score logits, failed restores) and
+// everything the record has not given back. A phase is never read as another
+// category's evidence: this witness says nothing about GPU/host callbacks,
+// completion notifiers or ANE descendants (Gate 4, T017), nor about KV and
+// state writes (Gate 3, T018), which is why all four witnesses are required.
+Engine::RequestDrain Engine::requestDrain() const {
+  RequestDrain drain;
+  for (const auto &[id, active] : requests_) {
+    if (active.pendingEnd)
+      ++drain.ends;
+    if (active.restore)
+      ++drain.restores;
+    if (active.maskRequestedMilliseconds)
+      ++drain.masks;
+    if (active.passCommand)
+      ++drain.tickets;
+    if (active.finalized) {
+      ++drain.records;
+      continue;
+    }
+    switch (scheduler_.phase(id)) {
+    case Phase::Queued:
+    case Phase::WaitingResources:
+    case Phase::WaitingPrefix:
+      ++drain.queued;
+      break;
+    case Phase::Prefill:
+    case Phase::Decode:
+    case Phase::WaitingMask:
+      ++drain.resident;
+      break;
+    default:
+      // Expired by the scheduler, awaiting the settle sweepTerminal runs.
+      ++drain.records;
+      break;
+    }
+  }
+  if (pending_) {
+    ++drain.commands;
+    // A ticket the model has not retired: its command is parked, and the
+    // lanes it holds cannot end before it does.
+    if (!pending_->ticket->ready())
+      ++drain.tickets;
+  }
+  return drain;
+}
+
+// [Gate 4 / U-01] The callback/descendant receipt, read from the owners of the
+// work: the model's backend and Neural Engine (Model::descendants, whose default
+// reports none for a model with neither) and this Engine's bound completion
+// notifier. The notifier's seats are its live copies less the bindings that are
+// actually installed — this Engine's slot plus Cache::notifierBindings() — so a
+// transient copy reads as owed (fail closed) and a setup that never completed
+// one of its three assignments can never read a borrowed closure as retired.
+// Nothing here waits, starts or releases a callback, and no count consults a
+// request, a lease or the GPU: this is Gate 4's own evidence.
+Engine::CallbackRetirement Engine::callbackRetirement() const {
+  const model::Model::Descendants owed = model_.descendants();
+  CallbackRetirement receipt;
+  receipt.gpu = owed.gpu;
+  receipt.agentJobs = owed.agentJobs;
+  receipt.serviceWork = owed.serviceWork;
+  const uint32_t copies = notifier_->seats.load(std::memory_order_relaxed);
+  const uint32_t bindings =
+      (completionNotifier_ ? 1u : 0u) + cache_.notifierBindings();
+  receipt.notifierSeats = copies > bindings ? copies - bindings : 0u;
+  receipt.notifierRuns = notifier_->runs.load(std::memory_order_relaxed);
+  return receipt;
+}
+
 bool Engine::admitQueued(double now) {
   const std::optional<RequestPriority> tier = suspendedTier();
   // Once pressure has preempted work, let resident lanes finish while memory
@@ -755,7 +901,17 @@ bool Engine::admit(Request &active, double now) {
           ? CacheLookup{}
           : cache_.lookup(modelRequest.prompt, promptIdentity(active.request),
                           active.admissionProbe ? &*active.admissionProbe
-                                                : nullptr);
+                                                : nullptr,
+                          active.failedRestores);
+  // A state of the matched chain is being written to the disk tier: its copy
+  // is not acquirable until the transfer lands, so the request waits for it
+  // (bounded like every resource wait) rather than recompute the prefix.
+  if (!lookup.state && lookup.stateOffloadPending) {
+    active.refusedResources = true;
+    scheduler_.waitForResources(active.request.id);
+    deferResourceRetry(active, now, Denial{.pending = true}, StateFailure::MemoryPressure);
+    return false;
+  }
   // Only unstarted requests wait for a resident producer. Recheck planned
   // boundaries each step so producer loss leaves no stale dependency or lease.
   if (!resuming && pendingSharedPrefill(active, lookup.resumeBoundary())) {
@@ -834,8 +990,25 @@ bool Engine::admit(Request &active, double now) {
   cache_.beginRequest(requestId, active.kvMode);
   active.lane = *state.admission.lane;
   active.admission = ++admissions_;
-  if (droppedLease)
-    lookup = cache_.lookup(modelRequest.prompt, promptIdentity(active.request));
+  if (droppedLease) {
+    // The reclaim that freed the memory this start gave up its own lease for
+    // may have written that state to the disk tier. Its transfer lands only
+    // in pollTransfers(): take what is ready, then match the prompt again.
+    static_cast<void>(cache_.pollTransfers());
+    lookup = cache_.lookup(modelRequest.prompt, promptIdentity(active.request),
+                           nullptr, active.failedRestores);
+    if (!lookup.state && lookup.stateOffloadPending) {
+      // The write is still going: the start waits for the copy it reclaimed
+      // instead of recomputing the prefix it wrote. Bounded as any resource
+      // wait; the transfer's completion wakes this lane.
+      vacateLane(active, resuming);
+      active.refusedResources = true;
+      scheduler_.waitForResources(active.request.id);
+      deferResourceRetry(active, now, Denial{.pending = true},
+                         StateFailure::MemoryPressure);
+      return false;
+    }
+  }
   // The commitment covers the chain it restores too, once the lookup is
   // final. Writes a reclaim started may have taken the quota admitSpill
   // found, or the chain found again may have fewer copies: the start waits.
@@ -1183,12 +1356,12 @@ bool Engine::pollRestores(double now) {
       completeAdmission(active, restore.lookup, std::move(restore.draft));
       continue;
     }
-    // The prefix could not be brought back. What failed is gone from the
-    // cache, so the next attempt matches the prefix that remains.
-    if (!stateRestored) {
-      cache_.discardState(restore.lookup.state->kvBlock(),
-                          restore.lookup.state->state().get());
-    }
+    // A destination restore failure does not prove the immutable source is
+    // bad. Keep it in the cache for a later request; this request excludes
+    // that block from its own next lookup and starts below it, so the retry
+    // cannot repeat the read that just failed.
+    if (!stateRestored && restore.lookup.state)
+      active.failedRestores.push_back(restore.lookup.state->kvBlock());
     restore.ticket.reset();
     restore.lookup = {};
     vacateLane(active, scheduler_.suspended(id));

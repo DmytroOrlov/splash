@@ -18,7 +18,7 @@
 // pins the bytes both sides agree on.
 namespace splash::protocol {
 
-inline constexpr uint16_t kProtocolVersion = 11;
+inline constexpr uint16_t kProtocolVersion = 12;
 // A frame is its header, the magic "SPLH", the u16 protocol version, the
 // u16 FrameType and the u64 payload length, then the payload.
 inline constexpr size_t kFrameHeaderBytes = 16;
@@ -247,10 +247,15 @@ struct ReadyEvent {
 };
 
 struct StartEvent {
-  uint64_t requestId = 0;
-  uint32_t lane = 0;
+  StartEvent(uint64_t request, uint32_t laneValue, uint32_t matched, uint32_t capacity)
+      : requestId(request), lane(laneValue), matchedPromptTokens(matched),
+        capacityTokens(capacity) {}
+
+  uint64_t requestId;
+  uint32_t lane;
   // The cached prefix the request starts from; zero for a cold start.
-  uint32_t matchedPromptTokens = 0;
+  uint32_t matchedPromptTokens;
+  uint32_t capacityTokens;
 
   bool operator==(const StartEvent &) const = default;
 };

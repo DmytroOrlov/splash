@@ -27,6 +27,12 @@ namespace splash::test {
   return config;
 }
 
+// The persistence queue a test retains beside its Cache: declared after that
+// Cache and before every Engine that takes it, so it outlives each borrower
+// and dies with the Cache. One per retained Cache lifetime, shared by every
+// Engine over that Cache, which borrows it rather than owning one.
+using RetainedPersistence = engine::WriteBehind;
+
 // The weights of a native loop under test: three images of a gibibyte that
 // count what the loop does with them, each restored under the admission the
 // loop passes.

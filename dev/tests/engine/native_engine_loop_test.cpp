@@ -1,11 +1,14 @@
 #include "AllocationFailure.hpp"
 #include "ProtocolPeer.hpp"
 #include "TestChecks.hpp"
+#include "TestCache.hpp"
 #include "TestEngine.hpp"
 #include "TestExecutor.hpp"
 #include "TestKvPool.hpp"
+#include "TestKvTier.hpp"
 #include "TestMetalMemory.hpp"
 #include "TestStatus.hpp"
+#include "TestWriteBudget.hpp"
 #include "engine/Cache.hpp"
 #include "engine/MemoryControl.hpp"
 #include "engine/NativeRuntime.hpp"
@@ -13,16 +16,21 @@
 #include "metal/CommandWatchdog.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cstdlib>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <utility>
+#include <vector>
+#include <unistd.h>
 
 using namespace splash;
 using namespace splash::engine;
@@ -97,11 +105,13 @@ struct PoolShape {
 struct LoopFixture {
   explicit LoopFixture(NativeLoopConfig config = {}, PoolShape shape = {},
                        protocol::ProtocolLimits limits = {},
-                       double idleReleaseSeconds = metal::kResidencyKeepAliveSeconds)
+                       double idleReleaseSeconds = metal::kResidencyKeepAliveSeconds,
+                       bool useConfigClocks = false)
       : storage(shape.pages, 4096, shape.extentPages),
         pool(storage, shape.runwayPages), cache(pool, nullptr, nullptr),
-        loop(
-            clocked(std::move(config)), idleReleaseSeconds, cache, executor,
+        persistence(cache),
+        loop(clocked(std::move(config), useConfigClocks), idleReleaseSeconds, cache, persistence,
+            executor,
             [this](std::span<const uint8_t> bytes) {
               if (writeFailure)
                 throw *writeFailure;
@@ -116,7 +126,7 @@ struct LoopFixture {
     return protocol::peer::decodeEvents(output);
   }
 
-  NativeLoopConfig clocked(NativeLoopConfig config) {
+  NativeLoopConfig clocked(NativeLoopConfig config, bool useConfigClocks) {
     config.engine = test::engineConfig(std::move(config.engine));
     if (!config.metrics)
       config.metrics = &metrics;
@@ -126,14 +136,20 @@ struct LoopFixture {
       config.weightAdmission = test::admitAll;
     if (!config.growthAdmission)
       config.growthAdmission = test::admitAll;
-    config.unixMicros = [] { return uint64_t{1'000'000}; };
-    config.monotonicMilliseconds = [this] { return monotonic += clockStep; };
+    if (!useConfigClocks) {
+      config.unixMicros = [] { return uint64_t{1'000'000}; };
+      config.monotonicMilliseconds = [this] { return monotonic += clockStep; };
+    }
     return config;
   }
 
   test::TestKvStorage storage;
   KvPool pool;
   engine::Cache cache;
+  // The persistence queue this loop's Engine borrows: retained beside the
+  // Cache, declared after it and before the loop, as every Engine over this
+  // Cache shares it.
+  test::RetainedPersistence persistence;
   Executor executor;
   std::vector<uint8_t> output;
   // Thrown by every write while set, as by a closed output pipe.
@@ -261,6 +277,73 @@ void testSnapshotReportsLiveRequests() {
   *commandsReady = true;
   runUntilIdle(loop);
   require(loop.statusSnapshot().activeRequests.empty(), "a finished request is still reported");
+}
+
+void testPendingRestoreLifecycle(bool closeAdmission) {
+  LoopFixture fixture;
+  auto &loop = fixture.loop;
+  auto &executor = fixture.executor;
+  auto write = std::make_shared<test::OffloadControl>();
+  write->ready = true;
+  const auto prompt = request(801).promptTokens;
+  fixture.cache.beginRequest(800);
+  require(fixture.cache.ensureTokens(800, 64).granted(), "restore fixture KV failed");
+  fixture.cache.publishCompositeState(test::publishBlocks(fixture.cache, 800, prompt, 64),
+                                      std::make_shared<test::OffloadState>(write), false);
+  fixture.cache.endRequest(800);
+  executor.beginGrowthBlocked = [&] { return fixture.cache.snapshot().stateCache.bytes != 0; };
+  loop.announceReady();
+  require(loop.receive(protocol::peer::serialize(request(801))), "restore request failed");
+  for (int i = 0; i < 8 && executor.diskReads == 0; ++i)
+    static_cast<void>(loop.tick());
+  require(executor.diskReads == 1 && executor.requests.contains(801) &&
+              executor.requests.at(801).resident && !loop.destroyEngine() && loop.hasEngine(),
+          "pending restore did not retain its lane and Engine");
+  if (closeAdmission) {
+    loop.closeAdmission();
+    require(loop.receive(protocol::peer::serialize(request(802))), "closed request broke framing");
+    unsigned errors = 0;
+    for (const auto &event : fixture.events())
+      if (const auto *error = std::get_if<protocol::ErrorEvent>(&event);
+          error && error->requestId == 802 && error->code == "inference_unavailable")
+        ++errors;
+    require(errors == 1 && executor.diskReads == 1 && !executor.requests.contains(802) &&
+                executor.requests.at(801).resident && loop.engineHealthy() && !loop.destroyEngine(),
+            "closed admission disturbed the pending restore");
+  }
+  require(loop.receive(protocol::peer::serialize(protocol::CancelFrame{801})), "cancel failed");
+  static_cast<void>(loop.tick());
+  require(executor.restoreControl->cancelled && executor.requests.contains(801) &&
+              executor.requests.at(801).resident && !loop.destroyEngine(),
+          "cancel released the lane before restore drained");
+  if (closeAdmission) {
+    for (const auto &event : fixture.events()) {
+      const auto *done = std::get_if<protocol::DoneEvent>(&event);
+      const auto *error = std::get_if<protocol::ErrorEvent>(&event);
+      require((!done || done->requestId != 801) && (!error || error->requestId != 801),
+              "pending restore emitted a terminal event before draining");
+    }
+  }
+  executor.restoreControl->ready = true;
+  for (int i = 0; i < 8 && !idle(loop); ++i)
+    static_cast<void>(loop.tick());
+  require(idle(loop) && !executor.requests.contains(801), "restore did not drain");
+  if (closeAdmission) {
+    unsigned cancelled = 0;
+    unsigned errors = 0;
+    unsigned doneCount = 0;
+    for (const auto &event : fixture.events()) {
+      if (const auto *done = std::get_if<protocol::DoneEvent>(&event); done && done->requestId == 801) {
+        ++doneCount;
+        cancelled += done->reason == EngineFinishReason::Cancelled;
+      }
+      if (const auto *error = std::get_if<protocol::ErrorEvent>(&event); error && error->requestId == 801)
+        ++errors;
+    }
+    require(doneCount == 1 && cancelled == 1 && errors == 0,
+            "drained restore did not emit exactly one cancelled completion");
+  }
+  require(static_cast<bool>(loop.destroyEngine()) && !loop.hasEngine(), "drained Engine did not detach");
 }
 
 void testWireLifecycleAndCacheHit() {
@@ -580,6 +663,10 @@ void testCommandWatchdogAndPendingHealthWake() {
     double &now = fixture.monotonic;
     now = 0.0;
     const auto commandReady = executor.holdCommands();
+    // The model lane each request holds, given back: once, at its terminal
+    // boundary (and never while its command is still parked).
+    uint32_t laneReleases = 0;
+    executor.laneReleased = [&] { ++laneReleases; };
     metal::CommandWatchdog watchdog(120.0);
     executor.submitObserver = [&] { watchdog.start(1, now / 1000.0); };
     executor.healthCheck = [&] {
@@ -592,6 +679,13 @@ void testCommandWatchdogAndPendingHealthWake() {
     input.remainingDeadlineMicros = 600'000'000;
     require(loop.receive(protocol::peer::serialize(input)) && loop.tick(),
             "watchdog fixture did not submit its command");
+    // The held ModelBatchTicket keeps its admitted lane: the request reached the
+    // model, the Engine still owns it, and nothing has given the lane back.
+    // That the Engine cannot be destroyed under that pending ticket is the drain
+    // barrier's proof (T016/T024), which this gate-only loop has no seam for yet.
+    require(loop.commandInFlight() && !idle(loop) &&
+                executor.beganFlags.contains(1) && laneReleases == 0,
+            "held ModelBatchTicket did not retain its admitted model lane");
     require(loop.receive(protocol::peer::serialize(protocol::CancelFrame{1})) &&
                 loop.millisecondsUntilNextWakeup() == 1000.0,
             "cancelled in-flight command lost its bounded health wake");
@@ -607,6 +701,8 @@ void testCommandWatchdogAndPendingHealthWake() {
               "a model-side wait was mistaken for a pending GPU command");
       *commandReady = true;
       require(loop.tick() && idle(loop), "completed GPU ownership did not drain");
+      require(laneReleases == 1,
+              "terminal ModelBatchTicket retained the request lane");
     } else {
       uint32_t errors = 0;
       for (const auto &message : fixture.events()) {
@@ -767,28 +863,63 @@ void testInvalidLimitsAreRejectedAtConstruction() {
           "the loop accepted invalid protocol limits");
 }
 
-// The loop refuses a config without the metrics, the weights or their
-// admission the bootstrap always gives it; each case lacks one of them.
+// The loop refuses a config without its metrics, their admissions or its clocks
+// (NativeRuntime's constructor). Its weights may be absent, which is the
+// residency-conditional contract T009 settled and `runtime-resources`' own
+// null-weights case proves: a loop built without weights is built, not refused.
 void testLoopNeedsItsComponents() {
   for (const int lacking : {0, 1, 2, 3}) {
     test::TestKvStorage storage(8, 4096, 4);
     KvPool pool(storage, 8);
     engine::Cache cache(pool, nullptr, nullptr);
+    test::RetainedPersistence persistence(cache);
     Executor executor;
     RuntimeMetrics runtimeMetrics;
-    Weights weights;
     NativeLoopConfig config{.engine = test::engineConfig(),
                             .metrics = lacking == 0 ? nullptr : &runtimeMetrics,
-                            .weights = lacking == 1 ? nullptr : &weights,
-                            .weightAdmission = lacking == 2 ? nullptr : test::admitAll,
-                            .growthAdmission = lacking == 3 ? nullptr : test::admitAll};
+                            .weightAdmission = lacking == 1 ? nullptr : test::admitAll,
+                            .growthAdmission = lacking == 2 ? nullptr : test::admitAll,
+                            .unixMicros = lacking == 3 ? std::function<uint64_t()>()
+                                                       : [] { return uint64_t{1'000'000}; }};
     rejects([&] {
       engine::NativeRuntime(std::move(config), metal::kResidencyKeepAliveSeconds, cache,
-                            executor, [](std::span<const uint8_t>) {},
+                            persistence, executor, [](std::span<const uint8_t>) {},
                             test::readyStatusJson, protocol::ProtocolLimits{});
     }, "the native engine loop lacks a component it needs",
-            "a loop without its metrics, its weights or their admissions was built");
+            "a loop without its metrics, their admissions or its clocks was built");
   }
+  // Absent weights, every other component there: built, and its weights paths
+  // stay absent-safe.
+  test::TestKvStorage storage(32, 4096, 4);
+  KvPool pool(storage, 32);
+  engine::Cache cache(pool, nullptr, nullptr);
+  test::RetainedPersistence persistence(cache);
+  Executor executor;
+  RuntimeMetrics runtimeMetrics;
+  engine::NativeRuntime loop(
+      NativeLoopConfig{.engine = test::engineConfig(),
+                       .metrics = &runtimeMetrics,
+                       .weightAdmission = test::admitAll,
+                       .growthAdmission = test::admitAll,
+                       .unixMicros = [] { return uint64_t{1'000'000}; },
+                       .monotonicMilliseconds = [] { return 100.0; }},
+      metal::kResidencyKeepAliveSeconds, cache, persistence, executor,
+      [](std::span<const uint8_t>) {}, test::readyStatusJson,
+      protocol::ProtocolLimits{});
+  loop.announceReady();
+  require(loop.receive(protocol::peer::serialize(request(1))),
+          "a loop without weights refused an admitted request");
+  runUntilIdle(loop);
+  require(loop.snapshot().submitted == 1 && loop.snapshot().completed == 1 &&
+              !loop.weightsSnapshot().restoring && loop.engineHealthy() &&
+              !loop.connectionMustClose(),
+          "the weights-free loop served its request other than normally");
+  loop.closeAdmission();
+  require(!loop.admissionOpen() && loop.receive(protocol::peer::serialize(request(2))) &&
+              loop.snapshot().submitted == 1,
+          "the weights-free loop lost its admission boundary");
+  loop.openAdmission();
+  require(loop.admissionOpen(), "the weights-free loop could not reopen admission");
 }
 
 // An exception while the engine admits a request is engine-fatal: nothing
@@ -2629,6 +2760,1309 @@ void testRestoreTakesChunksOnlyFromAHostWithRoomToSpare() {
   }
 }
 
+// ---------------------------------------------------------------------------
+//
+// The admission boundary (Gate 1's structure, FR-005/FR-009): the loop holds
+// the gate's mutex from the closed check through `Engine::submit`, so closure
+// and submission race on the real handover. These cases re-home the historical
+// Battery gate cases (`testLifecycleAdmissionGateIsFinalNativeBoundary` and
+// `testAdmissionCloseRejectsLaterRequestWhileAdmittedRestoreDrains`) onto the
+// current request path and fixtures; the historical `destroyEngine`/`hasEngine`
+// refusals, and `testCancelledRestoreRetainsEngineUntilTicketDrains`, belong to
+// the drain barriers and the published-Engine seams (T016/T024) and are not
+// claimed here: nothing below proves a request drain, IO quiescence or a
+// callback retirement.
+
+// How the loop answered one request id: its own frames, and whether the Engine
+// ever started or finished it.
+struct AdmissionAnswer final {
+  // `inference_unavailable` errors for that id.
+  uint32_t refused = 0;
+  // Every other error for it.
+  uint32_t otherErrors = 0;
+  uint32_t starts = 0;
+  uint32_t terminals = 0;
+};
+
+AdmissionAnswer answeredFor(const std::vector<protocol::EngineEvent> &events,
+                            uint64_t requestId) {
+  AdmissionAnswer answered;
+  for (const auto &message : events) {
+    if (const auto *error = std::get_if<protocol::ErrorEvent>(&message)) {
+      if (error->requestId != requestId)
+        continue;
+      if (error->code == "inference_unavailable")
+        ++answered.refused;
+      else
+        ++answered.otherErrors;
+    } else if (const auto *start = std::get_if<protocol::StartEvent>(&message))
+      answered.starts += start->requestId == requestId;
+    else if (const auto *done = std::get_if<protocol::DoneEvent>(&message))
+      answered.terminals += done->requestId == requestId;
+  }
+  return answered;
+}
+
+// The historical case: the gate is the last thing the native loop decides about
+// a request frame, and around it the loop serves exactly as it did before the
+// gate existed.
+void testAdmissionGateIsFinalNativeBoundary() {
+  std::vector<bool> keepAwake;
+  engine::NativeLoopConfig config;
+  config.engine.maxContext = 1024;
+  config.holdingRequests = [&](bool holding) { keepAwake.push_back(holding); };
+  LoopFixture fixture(config);
+  engine::NativeRuntime &loop = fixture.loop;
+  const auto send = [&](uint64_t id) {
+    require(loop.receive(protocol::peer::serialize(request(id))),
+            "an admission frame closed the protocol connection");
+  };
+  loop.announceReady();
+  require(loop.admissionOpen(), "normal startup closed inference admission");
+
+  loop.closeAdmission();
+  require(!loop.admissionOpen(), "closing admission did not take effect");
+  send(91);
+  require(loop.snapshot().submitted == 0 && idle(loop),
+          "a closed admission gate admitted inference work");
+  const auto refused = answeredFor(fixture.events(), 91);
+  require(refused.refused == 1 && refused.otherErrors == 0 &&
+              refused.starts == 0 && refused.terminals == 0,
+          "the closed gate did not answer the request with one unavailable frame");
+  require(loop.engineHealthy() && !loop.connectionMustClose() && keepAwake.empty() &&
+              fixture.metrics.snapshot().prefillInputTokens == 0 &&
+              fixture.metrics.snapshot().ttftSamples == 0,
+          "an admission refusal disturbed the loop, its keep-awake or its metrics");
+
+  loop.openAdmission();
+  require(loop.admissionOpen(), "an explicit reopen did not take effect");
+  send(92);
+  runUntilIdle(loop);
+  require(loop.snapshot().submitted == 1 && loop.snapshot().completed == 1 &&
+              answeredFor(fixture.events(), 92).starts == 1 &&
+              answeredFor(fixture.events(), 92).terminals == 1,
+          "an open gate did not serve the request normally");
+  require(keepAwake == std::vector<bool>{true, false},
+          "the served request lost its keep-awake transitions");
+  loop.closeAdmission();
+  send(93);
+  require(loop.snapshot().submitted == 1 && loop.snapshot().completed == 1 &&
+              answeredFor(fixture.events(), 93).refused == 1 &&
+              answeredFor(fixture.events(), 93).starts == 0 &&
+              answeredFor(fixture.events(), 93).terminals == 0 &&
+              keepAwake == std::vector<bool>{true, false},
+          "a closed gate allowed a later frame through");
+}
+
+// A closure that wins before submission starts nothing on the loop's behalf:
+// no Engine admission, no weight restore, no metrics, no keep-awake edge.
+void testCloseBeforeSubmitStartsNothing() {
+  LoopFixture fixture;
+  engine::NativeRuntime &loop = fixture.loop;
+  loop.announceReady();
+  require(loop.receive(protocol::peer::serialize(request(1))), "the warm request failed");
+  runUntilIdle(loop);
+  require(releaseAnswer(fixture, 11).released, "the release did not give the weights back");
+
+  const auto counts = loop.snapshot();
+  const auto weightsBefore = loop.weightsSnapshot();
+  const auto metricsBefore = fixture.metrics.snapshot();
+  loop.closeAdmission();
+  require(loop.receive(protocol::peer::serialize(request(2))),
+          "refusing a request closed the protocol connection");
+  require(!loop.tick(), "the closed gate put work in the Engine anyway");
+
+  const auto after = loop.snapshot();
+  require(after.submitted == counts.submitted && after.completed == counts.completed &&
+              after.cancelled == counts.cancelled && after.failed == counts.failed &&
+              after.activeRequests.empty(),
+          "the closed gate admitted inference work");
+  const auto weights = loop.weightsSnapshot();
+  require(weights.released && !weights.restoring &&
+              weights.restores == weightsBefore.restores &&
+              weights.restoreFailures == weightsBefore.restoreFailures,
+          "the refusal wrote the weights back, or counted a restore for them");
+  const auto metrics = fixture.metrics.snapshot();
+  require(metrics.prefillInputTokens == metricsBefore.prefillInputTokens &&
+              metrics.decodeOutputTokens == metricsBefore.decodeOutputTokens &&
+              metrics.ttftSamples == metricsBefore.ttftSamples &&
+              metrics.itlSamples == metricsBefore.itlSamples &&
+              metrics.capacityFailures == metricsBefore.capacityFailures,
+          "the refusal left serving telemetry behind");
+  const auto answered = answeredFor(fixture.events(), 2);
+  require(answered.refused == 1 && answered.otherErrors == 0 && answered.starts == 0 &&
+              answered.terminals == 0 && loop.engineHealthy() &&
+              !loop.connectionMustClose() && !loop.commandInFlight(),
+          "the refusal was not the request's own single frame");
+}
+
+// A submission that wins the race keeps its request owned: closure afterwards
+// refuses later frames, never takes the admitted request's completion away,
+// and an explicit reopen resumes serving.
+void testSubmitBeforeCloseKeepsTheAdmittedRequest() {
+  LoopFixture fixture;
+  engine::NativeRuntime &loop = fixture.loop;
+  loop.announceReady();
+  const auto commandReady = fixture.executor.holdCommands();
+  require(loop.receive(protocol::peer::serialize(request(801))) && loop.tick(),
+          "the admitted request did not submit its command");
+  const auto admitted = loop.snapshot();
+  require(admitted.submitted == 1 && admitted.activeRequests.size() == 1 &&
+              admitted.activeRequests.front().id == 801 && loop.commandInFlight(),
+          "the request was not admitted and running when closure began");
+
+  loop.closeAdmission();
+  const auto held = loop.snapshot();
+  require(held.submitted == 1 && held.completed == 0 && held.cancelled == 0 &&
+              held.failed == 0 && held.activeRequests.size() == 1 &&
+              held.activeRequests.front().id == 801 && loop.commandInFlight() &&
+              answeredFor(fixture.events(), 801).starts == 1 &&
+              answeredFor(fixture.events(), 801).terminals == 0,
+          "closure took ownership of the already-admitted request");
+
+  require(loop.receive(protocol::peer::serialize(request(802))),
+          "a later frame closed the connection");
+  const auto refused = answeredFor(fixture.events(), 802);
+  require(loop.snapshot().submitted == 1 && refused.refused == 1 &&
+              refused.starts == 0 && refused.terminals == 0 &&
+              loop.engineHealthy() && !loop.connectionMustClose() &&
+              loop.snapshot().activeRequests.size() == 1 &&
+              loop.snapshot().activeRequests.front().id == 801,
+          "the later frame reached the model or disturbed request 801");
+
+  *commandReady = true;
+  runUntilIdle(loop);
+  const auto terminal = answeredFor(fixture.events(), 801);
+  require(terminal.starts == 1 && terminal.terminals == 1 &&
+              loop.snapshot().completed == 1 && loop.snapshot().failed == 0,
+          "closure took the admitted request's one terminal frame away");
+
+  loop.openAdmission();
+  require(loop.receive(protocol::peer::serialize(request(803))),
+          "the explicit reopen did not serve");
+  runUntilIdle(loop);
+  require(loop.snapshot().completed == 2, "reopened admission did not resume serving");
+}
+
+// A closure and a submission racing each other have exactly one winner: the
+// loser waits on the same mutex the submission runs under.
+void testCloseAndSubmitHaveOneWinner() {
+  for (uint32_t round = 0; round < 32; ++round) {
+    LoopFixture fixture;
+    engine::NativeRuntime &loop = fixture.loop;
+    loop.announceReady();
+    const std::vector<uint8_t> frame = protocol::peer::serialize(request(1));
+    std::atomic<bool> go(false);
+    // An exception escaping a thread would end the process: the frame's own
+    // answer is checked on the thread that owns the fixture.
+    std::atomic<bool> framingKept(false);
+    std::thread submit([&] {
+      while (!go.load(std::memory_order_acquire))
+        std::this_thread::yield();
+      framingKept.store(loop.receive(frame), std::memory_order_release);
+    });
+    std::thread closer([&] {
+      while (!go.load(std::memory_order_acquire))
+        std::this_thread::yield();
+      loop.closeAdmission();
+    });
+    // Both are released together; which one takes the mutex first is left to
+    // the race, and no assertion below depends on how long either waits.
+    go.store(true, std::memory_order_release);
+    submit.join();
+    closer.join();
+    require(framingKept.load(), "the racing request frame closed the connection");
+
+    const auto counts = loop.snapshot();
+    const auto answered = answeredFor(fixture.events(), 1);
+    const bool submitted = counts.submitted == 1;
+    const bool refused = answered.refused == 1;
+    require(submitted != refused && answered.otherErrors == 0 &&
+                counts.completed + counts.cancelled + counts.failed == 0 &&
+                loop.engineHealthy() && !loop.connectionMustClose(),
+            "the close/submit race showed two winners, or none");
+    if (submitted) {
+      // The submission won: the request it admitted stays owned and runs out.
+      runUntilIdle(loop);
+      require(loop.snapshot().completed + loop.snapshot().cancelled +
+                  loop.snapshot().failed == 1,
+              "the winning request did not reach its terminal boundary");
+    } else {
+      require(idle(loop), "the losing submission left work behind");
+    }
+    // Closure is closed at the join either way, and it stays closed.
+    require(loop.receive(protocol::peer::serialize(request(2))) &&
+                loop.snapshot().submitted == counts.submitted &&
+                answeredFor(fixture.events(), 2).refused == 1,
+            "the race left admission open");
+  }
+}
+
+// What the client read is an observation of a moment, not a capability it keeps
+// across it: a request queued on `inference_ready=true` still meets the native
+// gate once closure has landed.
+void testStaleReadyObservationCannotBypassTheGate() {
+  LoopFixture fixture;
+  engine::NativeRuntime &loop = fixture.loop;
+  loop.announceReady();
+  require(loop.receive(protocol::peer::serialize(protocol::StatusRequestFrame{11})) &&
+              answeredStatus(fixture, 11),
+          "the client's readiness read failed");
+  const bool clientObservedReady = loop.admissionOpen();
+  require(clientObservedReady, "the client did not observe admission open");
+
+  loop.closeAdmission();
+  // The request the client queued on that observation, sent after closure.
+  require(loop.receive(protocol::peer::serialize(request(7))),
+          "the queued request closed the connection");
+  const auto answered = answeredFor(fixture.events(), 7);
+  require(loop.snapshot().submitted == 0 && answered.refused == 1 &&
+              answered.starts == 0 && answered.terminals == 0 &&
+              loop.engineHealthy() && !loop.connectionMustClose(),
+          "a stale ready observation bypassed the native gate");
+
+  // The status read that follows closure answers, and reopens nothing.
+  require(loop.receive(protocol::peer::serialize(protocol::StatusRequestFrame{12})) &&
+              answeredStatus(fixture, 12) && !loop.admissionOpen(),
+          "a status read reopened admission");
+  require(loop.receive(protocol::peer::serialize(request(8))) &&
+              loop.snapshot().submitted == 0 &&
+              answeredFor(fixture.events(), 8).refused == 1,
+          "the read after closure reopened admission");
+}
+
+// Admission closed is not the connection closed, nor the control path closed:
+// status, control work, mask replies and cancellation keep working, and only
+// request frames are refused.
+void testControlAndCancellationSurviveClosedAdmission() {
+  LoopFixture fixture;
+  engine::NativeRuntime &loop = fixture.loop;
+  loop.announceReady();
+  const auto commandReady = fixture.executor.holdCommands();
+  require(loop.receive(protocol::peer::serialize(request(801))) && loop.tick(),
+          "the admitted request did not start");
+  loop.closeAdmission();
+
+  require(loop.receive(protocol::peer::serialize(protocol::StatusRequestFrame{12})) &&
+              answeredStatus(fixture, 12),
+          "a status frame was refused with admission closed");
+  require(loop.runControl([] { return true; }),
+          "the control pass was refused with admission closed");
+  // A mask reply for a request the loop never asked a mask for is ignored
+  // rather than answered as a protocol failure, closed or open.
+  require(loop.receive(protocol::peer::serialize(
+              protocol::MaskResponseFrame{999, 1, {1, 0, 0, 0}})) &&
+              loop.engineHealthy() && !loop.connectionMustClose(),
+          "a stray mask reply disturbed the closed loop");
+  require(loop.receive(protocol::peer::serialize(protocol::CancelFrame{801})) &&
+              loop.engineHealthy() && !loop.connectionMustClose() &&
+              loop.commandInFlight() && loop.snapshot().activeRequests.size() == 1,
+          "the admitted request could not be cancelled with admission closed");
+  // A request frame is still refused while that cancellation retires.
+  require(loop.receive(protocol::peer::serialize(request(802))) &&
+              loop.snapshot().submitted == 1 &&
+              answeredFor(fixture.events(), 802).refused == 1,
+          "a request frame got in while admission was closed");
+  *commandReady = true;
+  runUntilIdle(loop);
+  const auto cancelled = [&] {
+    uint32_t terminals = 0;
+    for (const auto &message : fixture.events())
+      if (const auto *done = std::get_if<protocol::DoneEvent>(&message);
+          done && done->requestId == 801)
+        terminals += done->reason == EngineFinishReason::Cancelled;
+    return terminals;
+  }();
+  require(cancelled == 1 && loop.snapshot().cancelled == 1 &&
+              answeredFor(fixture.events(), 802).refused == 1 &&
+              !loop.admissionOpen(),
+          "the closed loop lost the cancelled request's one terminal frame");
+}
+
+// Only the loop's own operation opens admission again: reads, answered frames,
+// a completed request, a weights restore and an idle release reopen nothing.
+void testReopenIsExplicit() {
+  LoopFixture fixture;
+  engine::NativeRuntime &loop = fixture.loop;
+  loop.announceReady();
+  require(loop.receive(protocol::peer::serialize(request(1))) && loop.tick(),
+          "the first request did not start");
+  runUntilIdle(loop);
+  require(releaseAnswer(fixture, 11).released, "the weights were not released");
+  const auto commandReady = fixture.executor.holdCommands();
+  require(loop.receive(protocol::peer::serialize(request(2))),
+          "the second request was not admitted before closure");
+  const auto weightsBefore = loop.weightsSnapshot();
+  loop.closeAdmission();
+
+  // The restore the already-admitted request needs runs with admission closed.
+  require(loop.tick() && loop.weightsSnapshot().restoring,
+          "the admitted request did not begin its weights restore");
+  *commandReady = true;
+  for (uint32_t step = 0; step < 8 && loop.weightsSnapshot().restoring; ++step)
+    require(loop.tick(), "the restore under closed admission stalled");
+  runUntilIdle(loop);
+  require(loop.snapshot().completed == 2 &&
+              loop.weightsSnapshot().restores == weightsBefore.restores + 1 &&
+              !loop.weightsSnapshot().released,
+          "the request admitted before closure did not run once the weights came back");
+
+  // Nothing that reads, answers, restores or idles reopens the gate.
+  require(loop.receive(protocol::peer::serialize(protocol::StatusRequestFrame{13})) &&
+              answeredStatus(fixture, 13), "a status read failed");
+  static_cast<void>(loop.snapshot());
+  static_cast<void>(loop.statusSnapshot());
+  static_cast<void>(loop.weightsSnapshot());
+  static_cast<void>(loop.resourceWaitSnapshot());
+  static_cast<void>(loop.millisecondsUntilNextWakeup());
+  loop.releaseIdleWeights();
+  loop.openAdmission();
+  loop.closeAdmission();
+  require(!loop.admissionOpen(), "a read, an answered frame or a restore reopened admission");
+  require(loop.receive(protocol::peer::serialize(request(3))) &&
+              loop.snapshot().completed == 2 &&
+              answeredFor(fixture.events(), 3).refused == 1,
+          "an implicit path admitted a request after closure");
+
+  loop.openAdmission();
+  require(loop.receive(protocol::peer::serialize(request(4))),
+          "the explicit reopen did not serve");
+  runUntilIdle(loop);
+  require(loop.snapshot().completed == 3,
+          "the explicit reopen did not resume normal serving");
+}
+
+// ---- T010 correction: the injectable clocks are callbacks, and they run
+// outside the gate's mutex. A callback that queries or closes admission
+// returns instead of reentering the nonrecursive lock; a closure landing
+// inside the clock is seen by that same frame's own gate check.
+// `alarm` turns a reentering lock into a failed run, never a hang.
+
+// A clock pair that reads the gate through a loop the config cannot name yet.
+struct GateProbe final {
+  engine::NativeRuntime *loop = nullptr;
+  double now = 100.0;
+  uint64_t gateQueries = 0;
+};
+
+void testClockCallbacksQueryAdmissionWithoutReenteringTheGate() {
+  alarm(10);
+  GateProbe probe;
+  engine::NativeLoopConfig config;
+  config.engine.maxContext = 1024;
+  config.unixMicros = [&probe] {
+    if (probe.loop) {
+      ++probe.gateQueries;
+      static_cast<void>(probe.loop->admissionOpen());
+    }
+    return uint64_t{1'000'000};
+  };
+  config.monotonicMilliseconds = [&probe] {
+    if (probe.loop)
+      static_cast<void>(probe.loop->admissionOpen());
+    return probe.now;
+  };
+  LoopFixture fixture(config, {}, {}, metal::kResidencyKeepAliveSeconds, true);
+  probe.loop = &fixture.loop;
+  engine::NativeRuntime &loop = fixture.loop;
+  loop.announceReady();
+  require(loop.receive(protocol::peer::serialize(request(91))),
+          "the clock-querying frame closed the connection");
+  runUntilIdle(loop);
+  require(probe.gateQueries > 0, "the submission path never read admission from its clock");
+  require(loop.snapshot().submitted == 1 &&
+              answeredFor(fixture.events(), 91).starts == 1 &&
+              answeredFor(fixture.events(), 91).terminals == 1,
+          "a clock that queries admission disturbed the submission it served");
+  // Closed: the same clock queries again under no lock and the frame is refused.
+  loop.closeAdmission();
+  require(loop.receive(protocol::peer::serialize(request(92))) &&
+              answeredFor(fixture.events(), 92).refused == 1 &&
+              loop.snapshot().submitted == 1,
+          "the closed gate let the clock-querying frame through or disturbed it");
+  alarm(0);
+}
+
+// A closure that lands inside an injected clock is already visible to that
+// request's own gate check: the clock runs before the mutex is taken, so the
+// close wins the whole frame, and later submissions stay refused.
+void testCloseInsideTheClockRefusesThatRequest() {
+  alarm(10);
+  struct Closer final {
+    engine::NativeRuntime *loop = nullptr;
+    bool armed = false;
+    bool closed = false;
+  } probe;
+  engine::NativeLoopConfig config;
+  config.engine.maxContext = 1024;
+  config.unixMicros = [] { return uint64_t{1'000'000}; };
+  config.monotonicMilliseconds = [&probe] {
+    if (probe.loop && probe.armed && !probe.closed) {
+      probe.closed = true;
+      probe.loop->closeAdmission();
+    }
+    return 100.0;
+  };
+  LoopFixture fixture(config, {}, {}, metal::kResidencyKeepAliveSeconds, true);
+  probe.loop = &fixture.loop;
+  engine::NativeRuntime &loop = fixture.loop;
+  loop.announceReady();
+  require(loop.admissionOpen(), "startup did not open admission");
+  probe.armed = true;
+  require(loop.receive(protocol::peer::serialize(request(91))),
+          "the closing-clock frame closed the connection");
+  const auto answered = answeredFor(fixture.events(), 91);
+  require(probe.closed && !loop.admissionOpen(),
+          "the clock closure did not land before the gate check");
+  require(answered.refused == 1 && answered.starts == 0 && answered.terminals == 0 &&
+              loop.snapshot().submitted == 0 && idle(loop),
+          "a close landing inside the clock did not refuse that request's frame");
+  require(loop.receive(protocol::peer::serialize(request(92))) &&
+              answeredFor(fixture.events(), 92).refused == 1 &&
+              loop.snapshot().submitted == 0,
+          "the clock closure left admission open for later submissions");
+  alarm(0);
+}
+
+// The close thread is released by the submission's own clock read: it starts
+// at the last moment before that submission reaches the gate. Either side may
+// legally take the mutex first, and exactly one of them wins every round; a
+// submission that wins keeps its request owned to its normal terminal event.
+void testCloseStartedInsideTheClockRacesTheSubmission() {
+  for (uint32_t round = 0; round < 16; ++round) {
+    struct Racer final {
+      engine::NativeRuntime *loop = nullptr;
+      bool armed = false;
+      bool launched = false;
+      std::thread closer;
+    } probe;
+    engine::NativeLoopConfig config;
+    config.engine.maxContext = 1024;
+    config.unixMicros = [] { return uint64_t{1'000'000}; };
+    config.monotonicMilliseconds = [&probe] {
+      if (probe.loop && probe.armed && !probe.launched) {
+        probe.launched = true;
+        probe.closer = std::thread([runtime = probe.loop] { runtime->closeAdmission(); });
+      }
+      return 100.0;
+    };
+    LoopFixture fixture(config, {}, {}, metal::kResidencyKeepAliveSeconds, true);
+    probe.loop = &fixture.loop;
+    engine::NativeRuntime &loop = fixture.loop;
+    loop.announceReady();
+    probe.armed = true;
+    require(loop.receive(protocol::peer::serialize(request(1))),
+            "the racing frame closed the connection");
+    probe.closer.join();
+    const auto counts = loop.snapshot();
+    const auto answered = answeredFor(fixture.events(), 1);
+    const bool submitted = counts.submitted == 1;
+    const bool refused = answered.refused == 1;
+    require(submitted != refused && answered.otherErrors == 0 &&
+                loop.engineHealthy() && !loop.connectionMustClose(),
+            "the clock-released close and the final submission had two winners, or none");
+    if (submitted) {
+      // The submission won: the request it admitted keeps ownership and runs
+      // to its one normal terminal frame despite the close that landed.
+      runUntilIdle(loop);
+      require(answeredFor(fixture.events(), 1).starts == 1 &&
+                  answeredFor(fixture.events(), 1).terminals == 1 &&
+                  loop.snapshot().completed == 1,
+              "the close cut the admitted request's ownership short");
+    } else {
+      require(idle(loop) && answered.starts == 0 && answered.terminals == 0,
+              "the losing submission left work behind");
+    }
+    // Either way admission is closed at the join and stays closed.
+    require(loop.receive(protocol::peer::serialize(request(2))) &&
+                loop.snapshot().submitted == counts.submitted &&
+                answeredFor(fixture.events(), 2).refused == 1,
+            "the race left admission open");
+  }
+}
+
+// ---- T011 (U-04): the poll bound folds every wake source the loop has into
+// the earliest present absolute deadline on the loop's clock.
+
+void testWakeupBoundAggregatesSources() {
+  const auto bound = engine::NativeRuntime::nextWakeupBoundMilliseconds;
+  // No source at all: no deadline, the transport waits on input, completions
+  // or control instead.
+  require(!bound(100.0, std::nullopt, std::nullopt, false),
+          "an idle loop invented a poll bound");
+  // One source: the exact remaining duration.
+  require(bound(100.0, 250.0, std::nullopt, false) == 150.0,
+          "the engine deadline was not the exact bound");
+  require(bound(100.0, std::nullopt, 150.0, false) == 50.0,
+          "the retained persistence deadline was not the exact bound without an engine source");
+  require(bound(100.0, std::nullopt, std::nullopt, true) ==
+              engine::kResourceRetryBackoffMilliseconds,
+          "the deferred restore retry was not its own bounded wake");
+  // Several: the earliest present deadline wins.
+  require(bound(100.0, 250.0, 150.0, false) == 50.0,
+          "a later engine deadline hid the persistence deadline");
+  require(bound(100.0, 120.0, 150.0, true) == 20.0,
+          "engine scheduling hid an earlier source");
+  // Already due: one immediate wake, never a negative timeout.
+  require(bound(100.0, 50.0, std::nullopt, false) == 0.0,
+          "a past engine deadline produced a negative bound");
+  require(bound(100.0, std::nullopt, 50.0, false) == 0.0,
+          "a past persistence deadline produced a negative bound");
+}
+
+// The Engine's own scheduling keeps driving the same bound it had alone:
+// none when idle, the health wake while a command is in flight, none again
+// once it drains. (A non-persistent Cache contributes no persistence source.)
+void testEngineSchedulingStillDrivesTheBound() {
+  LoopFixture fixture;
+  engine::NativeRuntime &loop = fixture.loop;
+  loop.announceReady();
+  require(!loop.millisecondsUntilNextWakeup(),
+          "a fully idle loop with no sources produced a poll bound");
+  const auto commandReady = fixture.executor.holdCommands();
+  require(loop.receive(protocol::peer::serialize(request(1))) && loop.tick(),
+          "the held command was not submitted");
+  require(loop.commandInFlight() &&
+              loop.millisecondsUntilNextWakeup() == 1000.0,
+          "the engine's bounded health wake changed its bound under aggregation");
+  *commandReady = true;
+  runUntilIdle(loop);
+  require(!loop.millisecondsUntilNextWakeup(),
+          "the drained engine kept a poll bound");
+}
+
+// A loop whose Cache has a persistent tier and a test write budget: its
+// requests publish restore points into the retained queue, and that queue's
+// deadlines are the runtime's poll sources with no engine source present.
+struct PersistentLoopFixture final {
+  test::WriteBudget budget;
+  test::TestKvStorage storage{72, 4096, 4};
+  KvPool pool{storage, 0};
+  test::TestKvTier tier{true};
+  engine::Cache cache{pool, &tier, budget.budget};
+  test::RetainedPersistence persistence{cache};
+  Executor executor;
+  std::shared_ptr<test::OffloadControl> offload = std::make_shared<test::OffloadControl>();
+  std::vector<uint8_t> output;
+  double monotonic = 100.0;
+  RuntimeMetrics metrics;
+  Weights weights;
+  engine::NativeRuntime loop{
+      {.engine = test::engineConfig(),
+       .metrics = &metrics,
+       .weights = &weights,
+       .weightAdmission = test::admitAll,
+       .growthAdmission = test::admitAll,
+       .unixMicros = [] { return uint64_t{1'000'000}; },
+       .monotonicMilliseconds = [this] { return monotonic; }},
+      metal::kResidencyKeepAliveSeconds, cache, persistence, executor,
+      [this](std::span<const uint8_t> bytes) {
+        output.insert(output.end(), bytes.begin(), bytes.end());
+      },
+      [] { return test::readyStatusJson(); }, protocol::ProtocolLimits{}};
+
+  PersistentLoopFixture() {
+    storage.commandInFlight = [this] { return loop.commandInFlight(); };
+    tier.transferLimit = 64;
+    tier.capacity = 128;
+    executor.prefillAnchor = true;
+    executor.keptTier = offload;
+  }
+};
+
+// Publishes one 2060-token replay point and drains the request that made it.
+void queueOneReplayPoint(PersistentLoopFixture &fixture) {
+  fixture.loop.announceReady();
+  auto frame = request(1);
+  frame.promptTokens.assign(2060, 7);
+  require(fixture.loop.receive(protocol::peer::serialize(frame)),
+          "the persistence request closed the connection");
+  for (uint32_t step = 0; step < 16 && !fixture.loop.snapshot().writeBehind.waiting; ++step)
+    static_cast<void>(fixture.loop.tick());
+  require(fixture.loop.snapshot().writeBehind.waiting == 1,
+          "the replay point did not wait in the retained queue");
+  runUntilIdle(fixture.loop);
+}
+
+// With the request finished and no command in flight, the Engine has no timed
+// event of its own: the retained queue's next due point alone is the bound,
+// stays representable from the queue itself, and an already-due point wakes
+// the transport at once.
+void testRetainedPersistenceDrivesThePollBound() {
+  PersistentLoopFixture fixture;
+  engine::NativeRuntime &loop = fixture.loop;
+  queueOneReplayPoint(fixture);
+  // The point's due time is the publish moment (the constant test clock)
+  // plus the queue's delay; nothing else has a deadline.
+  const auto bound = loop.millisecondsUntilNextWakeup();
+  require(bound && *bound == engine::WriteBehind::kDelayMilliseconds,
+          "the retained persistence point was not the loop's poll bound");
+  require(fixture.persistence.nextWakeup() ==
+              fixture.monotonic + engine::WriteBehind::kDelayMilliseconds,
+          "the retained queue lost its own absolute deadline");
+  // Already due: the bound is an immediate wake, never negative.
+  fixture.monotonic += engine::WriteBehind::kDelayMilliseconds + 250.0;
+  require(loop.millisecondsUntilNextWakeup() == 0.0,
+          "a due persistence point did not wake the transport at once");
+  // Running it starts the state's write, which the test has not landed: the
+  // step stalls on its completion, and a completion wakes the loop itself,
+  // so the queue holds no further deadline (no busy polling, no re-timing).
+  static_cast<void>(loop.tick());
+  require(!loop.millisecondsUntilNextWakeup() &&
+              fixture.loop.snapshot().writeBehind.waiting == 1 &&
+              fixture.loop.snapshot().writeBehind.durable == 0,
+          "the stalled step was dropped, re-timed or kept busy-polling");
+  fixture.offload->ready = true;
+  for (uint32_t step = 0; step < 16 &&
+                      !fixture.loop.snapshot().writeBehind.durable; ++step) {
+    static_cast<void>(loop.tick());
+    fixture.tier.complete();
+  }
+  require(fixture.loop.snapshot().writeBehind.durable == 1 &&
+              !fixture.persistence.nextWakeup() &&
+              !loop.millisecondsUntilNextWakeup(),
+          "the landed write did not drain the retained point and its source");
+}
+
+// A step the write budget holds back has its next budget admission as the
+// loop's bound: the runtime surfaces the stalled queue's own deadline rather
+// than inventing a poll cadence.
+void testStalledWriteBudgetAdmissionIsTheBound() {
+  PersistentLoopFixture fixture;
+  engine::NativeRuntime &loop = fixture.loop;
+  queueOneReplayPoint(fixture);
+  // Overdraw the budget, then run the due point into it.
+  fixture.budget.spend();
+  fixture.monotonic += engine::WriteBehind::kDelayMilliseconds;
+  static_cast<void>(loop.tick());
+  require(loop.snapshot().writeBehind.waiting == 1 &&
+              loop.snapshot().writeBehind.durable == 0,
+          "the budget-held point was dropped or written");
+  const auto admission = fixture.persistence.nextWakeup();
+  const auto bound = loop.millisecondsUntilNextWakeup();
+  require(admission && bound && std::abs(*admission - test::WriteBudget::kRefillMilliseconds) < 1.0,
+          "the stalled queue did not report the next budget admission");
+  require(*bound == *admission - fixture.monotonic && *bound > 0.0,
+          "the loop's bound is not the stalled queue's next budget admission");
+  // Once the budget admits again, only the in-flight write waits: its
+  // completion wakes the loop, so the poll is unbounded rather than busy.
+  fixture.budget.refill();
+  require(!loop.millisecondsUntilNextWakeup(),
+          "the runtime kept polling while only a landing write waits");
+  fixture.offload->ready = true;
+  for (uint32_t step = 0; step < 16 && !fixture.loop.snapshot().writeBehind.durable; ++step) {
+    static_cast<void>(loop.tick());
+    fixture.tier.complete();
+  }
+  require(fixture.loop.snapshot().writeBehind.durable == 1 &&
+              !fixture.loop.snapshot().writeBehind.waiting,
+          "the admitted write did not drain exactly once");
+}
+
+// [T019 / Gate 1, FR-008, FR-009] The four witnesses the native loop supplies
+// to one owner lease: its own admission gate, its request-side drain (T016),
+// the Cache's retained IO (T018) and the Engine's callbacks and descendants
+// (T017). Every refusal below names a category the owner itself observes at
+// work while the other three are clean, so neither `Engine::idle()` nor a
+// completed GPU ticket stands in for a witness, and nothing is a flag a caller
+// could clear. The owner's preparation closes admission first, and a refusal
+// leaves its Owner interval and the closed gate exactly as they were.
+//
+// The two mutation surfaces of the domain these tests lease: a backend built
+// with no device, and a governor whose mutating operations demand — and record
+// — the lease's current holder thread.
+struct DomainSurfaces final {
+  static constexpr uint64_t kLimitBytes = 40ULL << 30;
+  static constexpr uint64_t kReserveBytes = 2ULL << 30;
+  metal::MetalBackend backend{"unused"};
+  std::optional<uint64_t> available{16ULL << 30};
+  MemoryGovernor governor;
+  // The Owner interval of this domain, bound to the test's thread.
+  ResourceDomainLease authority{ResourceDomainLease::acquireForOwner()};
+
+  DomainSurfaces()
+      : governor{backend, kLimitBytes, kReserveBytes, kReserveBytes,
+                 [this] { return hostMemory(available); }, 0} {
+    authority.attach(backend);
+    authority.attach(governor);
+  }
+};
+
+// A lease with a category nobody supplied, and one whose gate was reopened
+// after its owner closed it: both mint nothing, and an emptied slot counts as
+// absent rather than as passing.
+void testHandoffNeedsEveryWitnessAndAnOpenGateRefuses() {
+  LoopFixture fixture;
+  DomainSurfaces domain;
+  engine::NativeRuntime &loop = fixture.loop;
+  loop.announceReady();
+  require(idle(loop), "the graph was not at rest before its handoff was asked for");
+  require(!domain.authority.obtainQuiescence().has_value(),
+          "an owner lease with an unwitnessed category minted a handoff");
+  // The preparation closes admission at the native boundary before it looks,
+  // so its own look is over a gate it has already closed.
+  require(loop.prepareResourceHandoff(domain.authority).has_value(),
+          "a fully retired graph minted no proof at its first safe point");
+  require(!loop.admissionOpen(), "the preparation left admission open");
+  // The gate witness is evidence about the real gate, not a constant: reopen
+  // it and those same four slots mint nothing.
+  loop.openAdmission();
+  require(loop.admissionOpen() && !domain.authority.obtainQuiescence().has_value(),
+          "a reopened admission gate still minted a handoff");
+  // An emptied category is an absent one.
+  loop.closeAdmission();
+  domain.authority.setRetainedIoWitness({});
+  require(!domain.authority.obtainQuiescence().has_value(),
+          "an empty retained-IO slot minted a handoff");
+  require(domain.authority.holder() == ResourceDomainAuthority::Holder::Owner,
+          "a refused mint moved the owner interval");
+}
+
+// A request the loop admitted but has not finished, and a command parked in the
+// model: the drain's witness refuses, the owner keeps its authority and its
+// closed gate, and the requests the Engine holds stay owned and finish.
+void testHandoffRefusesRequestsStillOwnedByTheEngine() {
+  LoopFixture fixture;
+  DomainSurfaces domain;
+  engine::NativeRuntime &loop = fixture.loop;
+  loop.announceReady();
+  require(loop.receive(protocol::peer::serialize(request(7))), "the queued request was refused");
+  require(!loop.prepareResourceHandoff(domain.authority).has_value(),
+          "a queued request minted a handoff proof");
+  require(!loop.admissionOpen() &&
+              domain.authority.holder() == ResourceDomainAuthority::Holder::Owner,
+          "a refused preparation reopened admission or moved the Owner interval");
+  runUntilIdle(loop);
+  const auto drained = loop.snapshot();
+  require(drained.submitted == 1 && drained.completed == 1,
+          "the refused handoff disturbed the request the loop held");
+  // Parked command: the engine owes its ticket and the drain sees it.
+  loop.openAdmission();
+  const auto commandReady = fixture.executor.holdCommands();
+  require(loop.receive(protocol::peer::serialize(request(8))), "the parked-command request was refused");
+  for (uint32_t step = 0; step < 8 && !loop.commandInFlight(); ++step)
+    static_cast<void>(loop.tick());
+  require(loop.commandInFlight(), "the fixture did not park its command");
+  require(!loop.prepareResourceHandoff(domain.authority).has_value(),
+          "a parked command minted a handoff proof");
+  *commandReady = true;
+  runUntilIdle(loop);
+  require(loop.prepareResourceHandoff(domain.authority).has_value(),
+          "the drained graph still refused a handoff");
+}
+
+// Every request ended, no command in flight, the engine idle: the retained
+// graph is still running a state write, and only landing it and polling it
+// retires that category. The Engine's own counters read clean throughout.
+void testHandoffRefusesIOTheRetainedGraphStillRuns() {
+  PersistentLoopFixture fixture;
+  DomainSurfaces domain;
+  engine::NativeRuntime &loop = fixture.loop;
+  queueOneReplayPoint(fixture);
+  fixture.monotonic += engine::WriteBehind::kDelayMilliseconds;
+  static_cast<void>(loop.tick());
+  const auto io = fixture.cache.retainedIo();
+  require(idle(loop) && !loop.commandInFlight() && !fixture.cache.retainedIoIdle() &&
+              io.stateWrites == 1 && io.owed == 0,
+          "the loop was not idle with exactly the running state write outstanding");
+  require(!loop.prepareResourceHandoff(domain.authority).has_value(),
+          "an idle engine minted a handoff over a running state write");
+  fixture.offload->ready = true;
+  for (uint32_t step = 0; step < 16 && !fixture.loop.snapshot().writeBehind.durable; ++step) {
+    static_cast<void>(loop.tick());
+    fixture.tier.complete();
+  }
+  require(fixture.cache.retainedIoIdle() && idle(loop),
+          "the state write did not land and get polled");
+  require(loop.prepareResourceHandoff(domain.authority).has_value(),
+          "the drained write still refused a handoff");
+}
+
+// The GPU work and the requests are done, yet the graph still owes callbacks
+// and descendants: the Neural Engine jobs its model has not reported, then the
+// completion closure a command its owner has retired still holds. Each alone
+// refuses; neither is visible in any idleness count.
+void testHandoffRefusesClosuresAndDescendantsPastTheGPU() {
+  LoopFixture fixture;
+  DomainSurfaces domain;
+  engine::NativeRuntime &loop = fixture.loop;
+  uint32_t notifierRuns = 0;
+  loop.setCompletionNotifier([&] { ++notifierRuns; });
+  loop.announceReady();
+  fixture.executor.owedServiceWork = 1;
+  require(idle(loop) && !loop.commandInFlight() && fixture.cache.retainedIoIdle(),
+          "the graph was otherwise at rest with one unreported Neural Engine job");
+  require(!loop.prepareResourceHandoff(domain.authority).has_value(),
+          "an unreported Neural Engine job minted a handoff proof");
+  fixture.executor.owedServiceWork = 0;
+  require(loop.prepareResourceHandoff(domain.authority).has_value(),
+          "the reported job still refused a handoff");
+  // The completion closure of a command its owner has retired: the fake keeps
+  // it the way a real model's command state does, past the command's own
+  // completion and past the request's end.
+  auto hold = std::make_shared<std::atomic<bool>>(false);
+  fixture.executor.holdPrefillUntil = hold;
+  loop.openAdmission();
+  require(loop.receive(protocol::peer::serialize(request(9))), "the request was refused");
+  for (uint32_t step = 0; step < 8 && !loop.commandInFlight(); ++step)
+    static_cast<void>(loop.tick());
+  require(loop.commandInFlight() && static_cast<bool>(fixture.executor.heldCompletion),
+          "the fixture did not park its command with its completion held");
+  // The completion handler plays, as Metal's would.
+  fixture.executor.heldCompletion();
+  *hold = true;
+  runUntilIdle(loop);
+  require(idle(loop) && !loop.commandInFlight() && fixture.cache.retainedIoIdle() &&
+              notifierRuns >= 1,
+          "the graph did not drain down to the retained closure alone");
+  require(!loop.prepareResourceHandoff(domain.authority).has_value(),
+          "a completion closure its holder still keeps minted a handoff proof");
+  fixture.executor.heldCompletion = nullptr;
+  require(loop.prepareResourceHandoff(domain.authority).has_value(),
+          "the closure outlived the command that borrowed it");
+}
+
+// All four categories at rest: one proof is minted, transfers once, and the
+// domain comes back to its owner, where the next safe point mints a fresh one.
+void testHandoffMintsOneProofPerSafePoint() {
+  LoopFixture fixture;
+  DomainSurfaces domain;
+  engine::NativeRuntime &loop = fixture.loop;
+  loop.announceReady();
+  auto proof = loop.prepareResourceHandoff(domain.authority);
+  require(proof.has_value(), "a fully retired graph minted no handoff proof");
+  require(!loop.admissionOpen() && !loop.commandInFlight() && idle(loop),
+          "the minting safe point was not a closed-gate quiet one");
+  auto handedOff = domain.authority.transferToWorker(std::move(*proof));
+  require(handedOff.holder() == ResourceDomainAuthority::Holder::Worker,
+          "the transferred authority is not in a worker's hands");
+  rejects([&] { static_cast<void>(domain.authority.transferToWorker(std::move(*proof))); },
+          "unspent quiescence proof",
+          "the same quiescence proof was consumable twice");
+  // The worker claims its own interval, ends it, and the owner takes the
+  // authority back on the thread that will serve again.
+  std::future<WorkerHandoff> parked{std::async(
+      std::launch::async,
+      [token = std::move(handedOff)]() mutable {
+        token.claim();
+        return std::move(token).park();
+      })};
+  auto back = parked.get();
+  require(back.holder() == ResourceDomainAuthority::Holder::Parked,
+          "the handoff the worker published is not Parked");
+  domain.authority.returnToOwner(std::move(back));
+  require(domain.authority.holder() == ResourceDomainAuthority::Holder::Owner,
+          "the returned domain is not owned again");
+  require(!loop.admissionOpen(), "the handoff round trip reopened admission");
+  require(loop.prepareResourceHandoff(domain.authority).has_value(),
+          "the returned domain could not mint a fresh proof at its next safe point");
+}
+
+// A proof minted at a safe point is refused once the owner mutates the domain
+// it leased again; only a proof minted after that mutation transfers.
+void testHandoffProofGoesStaleOnALaterDomainMutation() {
+  LoopFixture fixture;
+  DomainSurfaces domain;
+  engine::NativeRuntime &loop = fixture.loop;
+  loop.announceReady();
+  auto proof = loop.prepareResourceHandoff(domain.authority);
+  require(proof.has_value(), "a fully retired graph minted no handoff proof");
+  // The governor this lease bounds is a mutation surface of this domain: its
+  // mutating operations demand the holder thread and record the holder interval.
+  static_cast<void>(domain.governor.setServing(true));
+  rejects([&] { static_cast<void>(domain.authority.transferToWorker(std::move(*proof))); },
+          "fresh quiescence proof",
+          "a proof outlived a later mutation of its own domain");
+  static_cast<void>(domain.governor.setServing(false));
+  require(domain.authority.holder() == ResourceDomainAuthority::Holder::Owner,
+          "the refused transfer moved the owner interval");
+  auto fresh = loop.prepareResourceHandoff(domain.authority);
+  require(fresh.has_value(), "the domain could not mint at the new safe point");
+  auto handedOff = domain.authority.transferToWorker(std::move(*fresh));
+  std::future<WorkerHandoff> parked{std::async(
+      std::launch::async,
+      [token = std::move(handedOff)]() mutable {
+        token.claim();
+        return std::move(token).park();
+      })};
+  domain.authority.returnToOwner(parked.get());
+  require(domain.authority.holder() == ResourceDomainAuthority::Holder::Owner,
+          "the domain did not return to its owner");
+}
+
+// ---- [T024] publishEngine / tryPublishEngine / destroyEngine ----
+
+// A sink for a test-built Engine adopted through tryPublishEngine: an adopted
+// Engine reaches this shell only as a caller's unique_ptr, and its events go
+// to its own sink.
+struct NullSink final : engine::EngineEventSink {
+  void batchCompleted(WorkKind, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
+                      double, double) override {}
+  void started(uint64_t, uint32_t, uint32_t) override {}
+  void tokens(uint64_t, std::span<const uint32_t>) override {}
+  void maskRequested(uint64_t, std::span<const uint32_t>) override {}
+  void completed(uint64_t, EngineFinishReason, bool, uint32_t, uint32_t, uint32_t,
+                 std::span<const float>, const SpeculativeCounts &) override {}
+  void failed(uint64_t, LaneOutcome, std::string, uint32_t) override {}
+};
+
+// The same retained components as LoopFixture, but the loop starts as the
+// model-less shell: no Engine until the test publishes one.
+struct ShellFixture {
+  explicit ShellFixture(PoolShape shape = {}, protocol::ProtocolLimits limits = {})
+      : storage(shape.pages, 4096, shape.extentPages),
+        pool(storage, shape.runwayPages), cache(pool, nullptr, nullptr),
+        persistence(cache),
+        loop(NativeLoopConfig{.engine = test::engineConfig(),
+                              .metrics = &metrics,
+                              .weights = &weights,
+                              .weightAdmission = test::admitAll,
+                              .growthAdmission = test::admitAll,
+                              .unixMicros = [] { return uint64_t{1'000'000}; },
+                              .monotonicMilliseconds = [this] { return monotonic; }},
+             metal::kResidencyKeepAliveSeconds,
+             [this](std::span<const uint8_t> bytes) {
+               output.insert(output.end(), bytes.begin(), bytes.end());
+             },
+             [this] { return status(); }, limits) {
+    storage.commandInFlight = [this] { return loop.commandInFlight(); };
+  }
+
+  test::TestKvStorage storage;
+  KvPool pool;
+  engine::Cache cache;
+  test::RetainedPersistence persistence;
+  Executor executor;
+  std::vector<uint8_t> output;
+  std::function<std::string()> status = test::readyStatusJson;
+  double monotonic = 100.0;
+  RuntimeMetrics metrics;
+  Weights weights;
+  engine::NativeRuntime loop;
+
+  // Every event the loop has written.
+  std::vector<protocol::EngineEvent> events() const {
+    return protocol::peer::decodeEvents(output);
+  }
+};
+
+// [T024] The Engine-absent shell answers inference requests with the same
+// request-scoped refusal frame the closed gate gives, touches no Engine
+// telemetry, and then — through publishEngine — serves normally, rebinding the
+// loop's stored completion notifier onto the Engine it just published.
+struct ThrowingNotifierCopy {
+  std::shared_ptr<bool> fail;
+  int *calls;
+  ThrowingNotifierCopy(std::shared_ptr<bool> flag, int *count) : fail(std::move(flag)), calls(count) {}
+  ThrowingNotifierCopy(const ThrowingNotifierCopy &other) : fail(other.fail), calls(other.calls) {
+    if (*fail) throw std::runtime_error("injected notifier copy failure");
+  }
+  void operator()() const { ++*calls; }
+};
+
+void testStagedAdoptionBindingsAndPreparationFailure() {
+  ShellFixture fixture({.pages = 512});
+  auto &loop = fixture.loop;
+  loop.closeAdmission();
+  int calls = 0;
+  auto fail = std::make_shared<bool>(false);
+  std::function<void()> notifier = ThrowingNotifierCopy(fail, &calls);
+  loop.setCompletionNotifier(std::move(notifier));
+  auto candidate = loop.makePrivateEngine(test::engineConfig(), fixture.cache,
+                                          fixture.persistence, fixture.executor);
+  auto *original = candidate.get();
+  int oldCalls = 0;
+  candidate->setCompletionNotifier([&oldCalls] { ++oldCalls; });
+  auto oldSlots = fixture.cache.installCompletionSlots({}, {});
+  require(oldSlots.first && oldSlots.second, "original cache bindings absent");
+  auto savedOldCache = oldSlots.first;
+  auto savedOldState = oldSlots.second;
+  static_cast<void>(fixture.cache.installCompletionSlots(std::move(oldSlots.first), std::move(oldSlots.second)));
+  const auto oldBindingCount = fixture.cache.notifierBindings();
+  engine::NativeRuntime::NativeAdoptionInput input;
+  input.engineSlot = &candidate;
+  input.engineConfig = candidate->borrowedConfig();
+  input.cache = &fixture.cache;
+  input.writeBehind = &fixture.persistence;
+  input.weights = &fixture.weights;
+  input.weightAdmission = test::admitAll;
+  input.growthAdmission = test::admitAll;
+  input.engineFailed = [] {};
+  input.authorityHeld = [] { return true; };
+  input.contextCeiling = candidate->maxContextTokens();
+  std::unique_ptr<engine::NativeRuntime::StagedAdoption> staged;
+  input.contextCeiling = 0;
+  require(!loop.stageAdoption(input, staged) && candidate.get() == original && !loop.hasEngine(),
+          "capacity refusal consumed the candidate");
+  input.contextCeiling = candidate->maxContextTokens();
+  *fail = true;
+  require(!loop.stageAdoption(input, staged) && candidate.get() == original && !loop.hasEngine(),
+          "throwing notifier preparation consumed the candidate");
+  *fail = false;
+  require(loop.stageAdoption(input, staged) && !candidate && loop.publishedEngine() == original,
+          "adoption did not stage the candidate");
+  auto stagedSlots = fixture.cache.installCompletionSlots({}, {});
+  require(stagedSlots.first && stagedSlots.second, "staged cache bindings absent");
+  savedOldCache();
+  savedOldState();
+  stagedSlots.first();
+  stagedSlots.second();
+  require(oldCalls == 2 && calls == 2, "staged or captured recipients changed");
+  static_cast<void>(fixture.cache.installCompletionSlots(std::move(stagedSlots.first), std::move(stagedSlots.second)));
+  candidate = loop.rollbackAdoption(std::move(staged));
+  auto restored = fixture.cache.installCompletionSlots({}, {});
+  require(restored.first && restored.second, "rollback did not restore cache bindings");
+  restored.first();
+  restored.second();
+  require(oldCalls == 4 && calls == 2, "rollback restored the wrong recipients");
+  static_cast<void>(fixture.cache.installCompletionSlots(std::move(restored.first), std::move(restored.second)));
+  require(fixture.cache.notifierBindings() == oldBindingCount, "rollback changed binding count");
+  savedOldCache = {};
+  savedOldState = {};
+  require(candidate.get() == original && !loop.hasEngine() && !loop.admissionOpen() &&
+              candidate->callbacksRetired(), "rollback failed to restore the candidate bindings");
+  require(loop.stageAdoption(input, staged), "restored candidate could not be staged again");
+  loop.commitAdoption(std::move(staged));
+  loop.openAdmission();
+  require(loop.receive(protocol::peer::serialize(request(91))), "adopted request was refused");
+  runUntilIdle(loop);
+  require(calls > 0 && loop.snapshot().completed == 1,
+          "adopted Engine did not notify or complete its request");
+}
+
+void testEnginelessShellRefusesThenPublishesAndServes() {
+  ShellFixture fixture({.pages = 512});
+  engine::NativeRuntime &loop = fixture.loop;
+  loop.announceReady();
+  require(!loop.hasEngine(), "the model-less shell started with an Engine");
+  require(loop.receive(protocol::peer::serialize(request(11))),
+          "the shell refused a request by closing the connection");
+  const auto refused = answeredFor(fixture.events(), 11);
+  require(refused.refused == 1 && refused.starts == 0 && refused.terminals == 0 &&
+              !refused.otherErrors,
+          "the Engine-absent shell did not answer one request-scoped frame");
+  require(fixture.metrics.snapshot().prefillInputTokens == 0,
+          "the Engine-absent shell recorded engine telemetry");
+  require(loop.tick() == false && loop.flushRestorePoints(),
+          "the Engine-absent tick made progress, or its flush found a restore point");
+
+  int notified = 0;
+  loop.setCompletionNotifier([&notified] { ++notified; });
+  loop.publishEngine(fixture.cache, fixture.persistence, fixture.executor);
+  require(loop.hasEngine(), "publishEngine bound no Engine");
+  require(loop.receive(protocol::peer::serialize(request(12))),
+          "the published shell refused its first request");
+  runUntilIdle(loop);
+  require(loop.snapshot().submitted == 1 && loop.snapshot().completed == 1,
+          "the published Engine did not serve the request");
+  require(notified >= 1, "publishEngine lost the loop's stored completion notifier");
+
+  bool threw = false;
+  try {
+    loop.publishEngine(fixture.cache, fixture.persistence, fixture.executor);
+  } catch (const std::logic_error &) {
+    threw = true;
+  }
+  require(threw && loop.hasEngine(),
+          "publishEngine published over the published Engine");
+
+  // The detach boundary: the requests this loop holds refuse, then the clean
+  // loop moves the Engine out; the Engine's own life ends on another thread.
+  require(loop.receive(protocol::peer::serialize(request(13))), "a queued request failed");
+  require(!loop.destroyEngine(), "the detach ran with the request side owning work");
+  require(loop.hasEngine() && !loop.admissionOpen(),
+          "the refused detach dropped the Engine or left admission open");
+  runUntilIdle(loop);
+  auto detached = loop.destroyEngine();
+  require(detached && !loop.hasEngine(), "the clean safe point moved no Engine out");
+  require(!loop.admissionOpen(), "the detach left native admission open");
+
+  std::thread::id destructionThread;
+  std::thread destroyer(
+      [engine = std::move(detached), &destructionThread]() mutable {
+        destructionThread = std::this_thread::get_id();
+        engine.reset();
+      });
+  destroyer.join();
+  require(destructionThread != std::this_thread::get_id(),
+          "the detached Engine's life did not end off the safe-point thread");
+
+  // Engine-absent again: release answers the weights as absent, a cancel is
+  // a no-op, and the control plane still answers.
+  std::optional<WeightsSnapshot> reported;
+  fixture.status = [&] {
+    reported = fixture.loop.weightsSnapshot();
+    return test::readyStatusJson();
+  };
+  require(fixture.loop.receive(
+              protocol::peer::serialize(protocol::ReleaseRequestFrame{14})) &&
+              reported,
+          "the Engine-absent loop did not answer a release request with a status document");
+  require(!reported->released, "the Engine-absent loop reported weights released");
+  require(fixture.loop.receive(protocol::peer::serialize(protocol::CancelFrame{999})),
+          "a cancel over an absent Engine closed the connection");
+  require(!loop.connectionMustClose() && loop.engineHealthy(),
+          "the Engine-absent control plane disturbed the loop");
+}
+
+// [T024/T031] A refused adoption consumes nothing: the caller keeps its Engine
+// and destroys it itself; an accepted one binds into the shell without ever
+// re-pointing the shell's witnesses at the candidate's graph.
+void testTryPublishEngineKeepsRefusedCandidatesOwnable() {
+  NullSink sink;
+  // A fresh shell and a live candidate: the adoption is refused because the
+  // shell already publishes an Engine — the adoption is staged on top of
+  // one. The caller's unique_ptr keeps its Engine.
+  ShellFixture publishedEngine({.pages = 512});
+  publishedEngine.loop.publishEngine(publishedEngine.cache,
+                                     publishedEngine.persistence,
+                                     publishedEngine.executor);
+  auto firstCandidate = std::unique_ptr<engine::Engine>(
+      new engine::Engine(test::engineConfig(), publishedEngine.cache,
+                         publishedEngine.persistence, publishedEngine.executor, sink));
+  require(!publishedEngine.loop.tryPublishEngine(firstCandidate),
+          "an already-published shell adopted a second Engine");
+  require(firstCandidate != nullptr && publishedEngine.loop.hasEngine(),
+          "the refused adoption consumed the caller's Engine or replaced the shell's");
+  // The refusal left the caller's Engine intact for the CALLER: destroyed here,
+  // in dependency order, its borrowed components still alive.
+  firstCandidate.reset();
+  // A second fresh shell: an empty adoption publishes nothing...
+  ShellFixture emptyCandidateShell({.pages = 512});
+  std::unique_ptr<engine::Engine> empty;
+  require(!emptyCandidateShell.loop.tryPublishEngine(empty) &&
+              !emptyCandidateShell.loop.hasEngine(),
+          "an empty adoption published something");
+  // ...and the accepted adoption consumes the caller's Engine exactly once.
+  ShellFixture adoptedEngine({.pages = 512});
+  auto liveCandidate = std::unique_ptr<engine::Engine>(
+      new engine::Engine(test::engineConfig(), adoptedEngine.cache,
+                         adoptedEngine.persistence, adoptedEngine.executor, sink));
+  require(adoptedEngine.loop.tryPublishEngine(liveCandidate) &&
+              adoptedEngine.loop.hasEngine() && !liveCandidate,
+          "the accepted adoption did not consume the candidate");
+  // The adopted Engine borrows the candidate graph's Cache; the shell's own
+  // retained-IO witness still names no Cache (only T031's physical adoption
+  // rebinds it), so the detach boundary refuses over it and the adopted
+  // Engine stays intact.
+  require(!adoptedEngine.loop.destroyEngine() &&
+              adoptedEngine.loop.hasEngine(),
+          "the detach ran over an adopted Engine whose witnesses were not rebound");
+}
+
+// [T024] A retained graph still running IO refuses the detach as firmly as the
+// handoff witness set does; when the write lands, the same boundary detaches.
+void testDestroyEngineRefusesRetainedGraphIO() {
+  PersistentLoopFixture fixture;
+  engine::NativeRuntime &loop = fixture.loop;
+  queueOneReplayPoint(fixture);
+  fixture.monotonic += engine::WriteBehind::kDelayMilliseconds;
+  static_cast<void>(loop.tick());
+  require(idle(loop) && !fixture.cache.retainedIoIdle(),
+          "the fixture left no running retained state write");
+  require(!loop.destroyEngine() && loop.hasEngine(),
+          "the detach moved the Engine out over a running state write");
+  fixture.offload->ready = true;
+  for (uint32_t step = 0; step < 16 && !fixture.loop.snapshot().writeBehind.durable;
+       ++step) {
+    static_cast<void>(loop.tick());
+    fixture.tier.complete();
+  }
+  require(fixture.cache.retainedIoIdle() && idle(loop),
+          "the state write did not land and get polled");
+  auto detached = loop.destroyEngine();
+  require(detached && !loop.hasEngine(),
+          "the drained graph still refused the safe-point detach");
+  // The moved-out Engine's life ends off the loop entirely: this fixture's
+  // retained components outlive it exactly as the lifecycle's worker interval
+  // will hold the real one.
+  detached.reset();
+  require(loop.millisecondsUntilNextWakeup().has_value() == false,
+          "the Engine-absent loop still woke for engine events");
+}
+
+// [T030] FR-023 pre-wire (Gate 3): the window the published Engine enforces is
+// the exact number a per-request capacity reader takes, and it is the same
+// number `submit` refuses a longer prompt at -- never a ceiling a ReadyEvent
+// carried, the descriptor's capability, or a caller's hope. The read is absent-
+// safe: a detached shell reports NOTHING. And what a recovery candidate's PRIVATE
+// Engine carries travels with the CANDIDATE alone: building it publishes nothing,
+// so the shell's own read is untouched while its window is not this shell's.
+void testPublishedEngineCapacityIsTheExactWindow() {
+  engine::NativeLoopConfig config;
+  config.engine.maxContext = 1024;
+  LoopFixture fixture(config, {.pages = 512});
+  engine::NativeRuntime &loop = fixture.loop;
+  loop.announceReady();
+  const auto window = loop.publishedContextTokens();
+  require(window.has_value() && *window == 1024 &&
+              *window == loop.snapshot().maximumContextTokens,
+          "the published Engine's window is not what the loop reads for a request");
+
+  // One token past THAT window is refused by the Engine, request-scoped: the
+  // bound the capacity read advertises, enforced by the same config value.
+  auto over = request(21);
+  over.promptTokens.resize(*window + 1);
+  for (uint32_t index = 0; index < over.promptTokens.size(); ++index)
+    over.promptTokens[index] = index + 1;
+  require(loop.receive(protocol::peer::serialize(over)),
+          "an over-window request closed the connection instead of refusing it");
+  runUntilIdle(loop);
+  uint32_t refused = 0, started = 0, otherErrors = 0;
+  for (const auto &message : fixture.events()) {
+    if (const auto *error = std::get_if<protocol::ErrorEvent>(&message)) {
+      if (error->requestId != 21)
+        continue;
+      error->code == "invalid_request" ? ++refused : ++otherErrors;
+    } else if (const auto *start = std::get_if<protocol::StartEvent>(&message))
+      started += start->requestId == 21;
+  }
+  require(refused == 1 && started == 0 && otherErrors == 0,
+          "the Engine did not refuse exactly the window its capacity reported");
+
+  // The safe-point detach: the shell holds no Engine, so it claims no capacity
+  // at all rather than falling back to anything.
+  auto detached = loop.destroyEngine();
+  require(detached && !loop.hasEngine() && !loop.publishedContextTokens().has_value(),
+          "the detached shell still claimed a context capacity");
+
+  // The candidate's Engine: the loop's own event sink over this Cache, its
+  // OWN resolved window, published nowhere. The shell stays Engine-absent and
+  // reports no capacity while the candidate's number stands on its own.
+  engine::EngineConfig candidateConfig = test::engineConfig();
+  candidateConfig.maxContext = 640;
+  auto privateEngine = loop.makePrivateEngine(candidateConfig, fixture.cache,
+                                             fixture.persistence, fixture.executor);
+  require(privateEngine && privateEngine->maxContextTokens() == 640 &&
+              !loop.hasEngine() && !loop.publishedContextTokens().has_value(),
+          "a private Engine was published, or lost the window it was built with");
+  // Candidate order: the Engine dies before the components it borrows, which
+  // outlive it in this fixture exactly as in the lifecycle's worker interval.
+  require(loop.tryPublishEngine(privateEngine), "candidate publication failed");
+  loop.openAdmission();
+  require(loop.publishedContextTokens() == 640, "adopted window differs");
+  auto valid = request(22);
+  require(loop.receive(protocol::peer::serialize(valid)), "valid request failed");
+  runUntilIdle(loop);
+  auto tooLarge = request(23);
+  tooLarge.promptTokens.resize(641, 1);
+  require(loop.receive(protocol::peer::serialize(tooLarge)), "refusal closed connection");
+  runUntilIdle(loop);
+  unsigned readyCount = 0, startCount = 0, refusalCount = 0;
+  for (const auto &event : fixture.events()) {
+    if (const auto *ready = std::get_if<protocol::ReadyEvent>(&event)) {
+      ++readyCount;
+      require(ready->maxContextTokens == 1024, "static ceiling changed");
+    } else if (const auto *start = std::get_if<protocol::StartEvent>(&event)) {
+      if (start->requestId == 22) { ++startCount; require(start->capacityTokens == 640, "wrong adopted capacity"); }
+    } else if (const auto *error = std::get_if<protocol::ErrorEvent>(&event)) {
+      if (error->requestId == 23 && error->code == "invalid_request") ++refusalCount;
+    }
+  }
+  require(readyCount == 1 && startCount == 1 && refusalCount == 1, "adopted capacity proof failed");
+  detached.reset();
+}
+
 } // namespace
 
 int main() {
@@ -2648,6 +4082,27 @@ int main() {
     testCommandWatchdogAndPendingHealthWake();
     testDuplicateLiveRequestClosesWithoutAmbiguousError();
     testCancelledIdIsReusableInTheSameInput();
+    // The historical Battery gate cases, re-homed onto the current request path.
+    testAdmissionGateIsFinalNativeBoundary();
+    testCloseBeforeSubmitStartsNothing();
+    testSubmitBeforeCloseKeepsTheAdmittedRequest();
+    testCloseAndSubmitHaveOneWinner();
+    testStaleReadyObservationCannotBypassTheGate();
+    testControlAndCancellationSurviveClosedAdmission();
+    for (int repetition = 0; repetition < 20; ++repetition) {
+      testPendingRestoreLifecycle(false);
+      testPendingRestoreLifecycle(true);
+    }
+    testReopenIsExplicit();
+    // The T010 clock-reentrancy correction.
+    testClockCallbacksQueryAdmissionWithoutReenteringTheGate();
+    testCloseInsideTheClockRefusesThatRequest();
+    testCloseStartedInsideTheClockRacesTheSubmission();
+    // The T011 (U-04) wake-source aggregation.
+    testWakeupBoundAggregatesSources();
+    testEngineSchedulingStillDrivesTheBound();
+    testRetainedPersistenceDrivesThePollBound();
+    testStalledWriteBudgetAdmissionIsTheBound();
     testControlFailureUsesExecutionBoundary();
     testAdmissionExceptionStopsTheEngineOnce();
     testFrameFailureUsesExecutionBoundary();
@@ -2682,6 +4137,22 @@ int main() {
     testReleaseRequestGivesTheWeightsBackWhenIdle();
     testHoldingRequestsSpansFirstToLastRequest();
     testMemoryStatusReporterLogsTransitionsOnly();
+    // The T019 four-witness handoff precondition at the native boundary (Gate 1
+    // proof), added on top of the upstream and historical registrations above.
+    testHandoffNeedsEveryWitnessAndAnOpenGateRefuses();
+    testHandoffRefusesRequestsStillOwnedByTheEngine();
+    testHandoffRefusesIOTheRetainedGraphStillRuns();
+    testHandoffRefusesClosuresAndDescendantsPastTheGPU();
+    testHandoffMintsOneProofPerSafePoint();
+    testHandoffProofGoesStaleOnALaterDomainMutation();
+    // [T024] The detachable Engine surface: model-less shell publish/refusal frames,
+    // adoption that consumes nothing when refused, and the safe-point detach's
+    // drain barriers with the Engine's life ending off the safe point.
+    testEnginelessShellRefusesThenPublishesAndServes();
+    testStagedAdoptionBindingsAndPreparationFailure();
+    testTryPublishEngineKeepsRefusedCandidatesOwnable();
+    testDestroyEngineRefusesRetainedGraphIO();
+    testPublishedEngineCapacityIsTheExactWindow();
     std::cout << "native engine loop tests passed\n";
     return EXIT_SUCCESS;
   } catch (const std::exception &error) {

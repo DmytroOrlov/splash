@@ -266,7 +266,8 @@ void Cache::refresh(CacheProbe &probe, std::span<const uint32_t> prompt,
 
 CacheLookup Cache::lookup(std::span<const uint32_t> prompt,
                           PromptIdentity identity,
-                          const CacheProbe *probe) {
+                          const CacheProbe *probe,
+                          std::span<const uint64_t> excludedStates) {
   CacheLookup result;
   std::vector<uint64_t> fallback;
   std::span<const uint64_t> blocks;
@@ -287,7 +288,9 @@ CacheLookup Cache::lookup(std::span<const uint32_t> prompt,
     if (resident != blocks.rbegin() && resident != blocks.rend())
       kv_.touch(*resident);
     result.kvBoundary = static_cast<uint32_t>(blocks.size() * KvCache::pageTokens);
-    result.state = states_.acquireDeepest(blocks);
+    result.state = states_.acquireDeepest(blocks, excludedStates);
+    if (!result.state && blocks.size() != 0)
+      result.stateOffloadPending = states_.offloadPending(blocks);
     if (result.kvBoundary > result.resumeBoundary() && kv_.stateBelow(blocks.back()))
       result.junctionBoundary = result.kvBoundary;
   }
@@ -1005,6 +1008,44 @@ bool Cache::transfersInFlight() const noexcept {
   // that spills once its copy lands returns something.
   return !restores_.empty() || writes(WriteClass::Reclaim) || writes(WriteClass::Persist) ||
          states_.writing() || spillingWrites();
+}
+
+// [Gate 3 / U-02] The retained-IO quiescence witness. Every count is read from
+// the machinery that owns the transfer: the tier's own worker and reader
+// records, the cache's `writes_`/`restores_` records, and StateCache's one
+// pending write. `owed` separates a transfer that has landed from one still
+// running: a landed write publishes or discards its disk copy only in
+// pollTransfers()/pollOffload(), a landed read only ends its waiters there,
+// and a landed failure owes exactly the cleanup that keeps invalid disk state
+// unpublished — so none of them is drained before that poll has run. Nothing
+// here consults a request, a command or a callback: this stays FALSE with
+// `Engine::idle()` already TRUE, which is the whole point of keeping it a
+// separate witness.
+Cache::RetainedIo Cache::retainedIo() const noexcept {
+  RetainedIo io;
+  for (const Write &write : writes_) {
+    if (write.write == WriteClass::Spill)
+      ++io.spillWrites;
+    else
+      ++io.kvWrites;
+    if (write.transfer->ready())
+      ++io.owed;
+  }
+  for (const auto &[block, restore] : restores_) {
+    ++io.kvRestores;
+    if (restore.transfer && restore.transfer->ready())
+      ++io.owed;
+  }
+  io.stateWrites = states_.writing() ? 1U : 0U;
+  if (states_.offloadLanded())
+    ++io.owed;
+  if (tier_) {
+    const auto tier = tier_->retainedIo();
+    io.tierWrites = tier.writes;
+    io.tierRestores = tier.restores;
+    io.tierBatches = tier.batches;
+  }
+  return io;
 }
 
 bool Cache::returnsInFlight(const Shortfall &shortfall) const noexcept {

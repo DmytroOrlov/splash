@@ -431,6 +431,16 @@ SERVE_OPTIONS = (
         dict(action="store_true", default=False, help="disable the chat page"),
     ),
     ServeOption(
+        "--pause-on-battery",
+        "memory",
+        dict(
+            action="store_true",
+            default=False,
+            help="release model residency while on battery and recover on AC power "
+            "(opt-in; default: normal serving regardless of power source)",
+        ),
+    ),
+    ServeOption(
         "--max-memory",
         "memory",
         dict(

@@ -1,5 +1,7 @@
 #include "Checked.hpp"
 #include "TestCache.hpp"
+#include "TestEngine.hpp"
+#include "TestExecutor.hpp"
 #include "TestChecks.hpp"
 #include "TestFiles.hpp"
 #include "TestKvPool.hpp"
@@ -7,6 +9,9 @@
 #include "TestWriteBudget.hpp"
 #include "engine/Cache.hpp"
 #include "engine/DiskLabels.hpp"
+#include "engine/NativeRuntime.hpp"
+#include "engine/ResourceDomainLease.hpp"
+#include "engine/Status.hpp"
 #include "engine/WriteBehind.hpp"
 #include "model/SlotFile.hpp"
 
@@ -987,6 +992,91 @@ void testPointsWaitTheirTurn() {
           "the clean stop did not leave every point durable");
 }
 
+// Engines borrow the retained queue: construction, failed construction and
+// destruction must neither flush it nor replace its deadlines/counters.
+class PersistenceEvents final : public EngineEventSink {
+public:
+  void batchCompleted(WorkKind, uint32_t, uint32_t, uint32_t, uint32_t,
+                      uint32_t, double, double) override {}
+  void started(uint64_t, uint32_t, uint32_t) override {}
+  void tokens(uint64_t, std::span<const uint32_t>) override {}
+  void maskRequested(uint64_t, std::span<const uint32_t>) override {}
+  void completed(uint64_t, EngineFinishReason, bool, uint32_t, uint32_t,
+                 uint32_t, std::span<const float>, const SpeculativeCounts &) override {}
+  void failed(uint64_t, LaneOutcome, std::string, uint32_t) override {}
+};
+
+void testEnginesBorrowRetainedPersistence() {
+  // Same dependency order as RuntimeResources; the borrower dies first,
+  // then WriteBehind, then Cache (and its pool/tier/storage).
+  Process process(true);
+  WriteBehind writes(process.cache);
+  test::Executor model;
+  PersistenceEvents events;
+  const auto first = process.cachePrompt(1, promptOf(1000, 2));
+  process.publish(first[1]);
+  const auto second = process.cachePrompt(2, promptOf(2000, 1));
+  process.publish(second[0]);
+  const double due = WriteBehind::kDelayMilliseconds + 100;
+  auto unchanged = [&](const Engine &engine) {
+    const auto snapshot = engine.snapshot().writeBehind;
+    require(snapshot.waiting == 2 && snapshot.durable == 0 &&
+                snapshot.unneeded == 0 && snapshot.refused == 0 &&
+                writes.nextWakeup() == due && !process.tier.demotions,
+            "Engine replacement changed retained intent, deadline or counters");
+  };
+  {
+    Engine engine(test::engineConfig(), process.cache, writes, model, events);
+    writes.published(first[1], WriteBehind::kMinimumTokens, 100);
+    writes.published(second[0], WriteBehind::kMinimumTokens, 200);
+    writes.published(first[1], WriteBehind::kMinimumTokens, 300);
+    static_cast<void>(engine.tick(due - 1));
+    unchanged(engine);
+  }
+  require(writes.snapshot().waiting == 2 && writes.nextWakeup() == due &&
+              !process.tier.demotions,
+          "destroying Engine flushed or discarded retained intent");
+  try {
+    Engine invalid({}, process.cache, writes, model, events);
+    require(false, "invalid Engine unexpectedly constructed");
+  } catch (const std::invalid_argument &) {
+  }
+  {
+    Engine engine(test::engineConfig(), process.cache, writes, model, events);
+    unchanged(engine);
+    static_cast<void>(engine.tick(due));
+    require(process.tier.demotions == 2 && writes.snapshot().waiting == 2 &&
+                !writes.nextWakeup(),
+            "replacement Engine did not start the original front point at its due time");
+  }
+  // Replace again with a stalled write; no reset, reordering or retiming.
+  {
+    Engine engine(test::engineConfig(), process.cache, writes, model, events);
+    require(engine.snapshot().writeBehind.waiting == 2 && !writes.nextWakeup(),
+            "replacement lost the stalled write");
+    process.tier.complete();
+    static_cast<void>(engine.tick(due + 1));
+    require(engine.snapshot().writeBehind.durable == 1 &&
+                writes.snapshot().waiting == 1 && writes.nextWakeup() == due + 100 &&
+                process.tier.demotions == 2,
+            "tick changed publication order, second deadline or durable counters");
+  }
+  {
+    Engine engine(test::engineConfig(), process.cache, writes, model, events);
+    require(engine.snapshot().writeBehind.durable == 1 && writes.snapshot().waiting == 1,
+            "new Engine reset nonzero retained counters");
+    // Clean stop alone flushes the second point before its due time.
+    require(!engine.flushRestorePoints() && process.tier.demotions == 3,
+            "Engine clean stop did not start the retained pending point");
+    process.tier.complete();
+    require(engine.flushRestorePoints() && engine.snapshot().writeBehind.durable == 2 &&
+                !writes.snapshot().waiting,
+            "Engine clean stop did not finish retained persistence");
+  }
+  require(!writes.nextWakeup() && writes.snapshot().durable == 2,
+          "borrower destruction invalidated the retained queue");
+}
+
 // While the write budget is spent a due point waits, nothing of it written,
 // and run() is woken when the budget has room again; then its state is
 // written, and its pages after it. A clean stop writes whatever the budget.
@@ -1264,6 +1354,270 @@ void testAPrefixWithoutOwnCopiesHoldsBackNoSpill() {
   cache.endRequest(3);
 }
 
+// [T028 / Gate 9 / FR-016, FR-017] Due persistence follows the domain's real
+// authority: the Owner's safe point runs the retained queue, a Worker or a
+// Parked interval defers it whole — no point dropped, re-timed or re-ordered,
+// no counter moved, no write started, no write budget lifted — and the Owner's
+// return resumes the same points on their own deadlines. The service under
+// test is the one the lifecycle owner runs (the loop's authority-gated retained
+// pass, bound to this lease), never a raw WriteBehind::run beside it; the
+// handoff runs on the lease's own quiescence witnesses, which nothing here
+// weakens.
+void testSuspendedPersistenceFollowsTheAuthority() {
+  constexpr double kDelay = WriteBehind::kDelayMilliseconds;
+  const auto sameQueue = [](const WriteBehindSnapshot &left,
+                            const WriteBehindSnapshot &right) {
+    return left.waiting == right.waiting && left.durable == right.durable &&
+           left.unneeded == right.unneeded && left.refused == right.refused;
+  };
+  // A persistent graph with the loop that retains its queue, the clock this
+  // test drives, and the lease this thread owns. Same dependency order as
+  // RuntimeResources: the loop dies before the queue, the Cache and its budget.
+  struct Suspended final {
+    test::WriteBudget budget;
+    double monotonic = 0.0;
+    Process process{true, budget.budget};
+    test::RetainedPersistence persistence{process.cache};
+    test::Weights weights;
+    RuntimeMetrics metrics;
+    test::Executor model;
+    std::vector<uint8_t> output;
+    engine::NativeRuntime loop{
+        engine::NativeLoopConfig{.engine = test::engineConfig(),
+                                 .metrics = &metrics, .weights = &weights,
+                                 .weightAdmission = test::admitAll,
+                                 .growthAdmission = test::admitAll,
+                                 .monotonicMilliseconds = [this] { return monotonic; }},
+        metal::kResidencyKeepAliveSeconds, process.cache, persistence, model,
+        [this](std::span<const uint8_t> bytes) {
+          output.insert(output.end(), bytes.begin(), bytes.end());
+        },
+        [] { return std::string("{}"); }, protocol::ProtocolLimits{}};
+    ResourceDomainLease lease{ResourceDomainLease::acquireForOwner()};
+
+    Suspended() {
+      process.shelf->writeBudget = budget.budget;
+      // Exactly what the owning bootstrap binds: the loop reads the domain
+      // only while this lease's holder is Owner.
+      loop.setResourceAuthorityHeld([this] {
+        return lease.holder() == ResourceDomainAuthority::Holder::Owner;
+      });
+    }
+  };
+
+  // Exercise both NativeRuntime delegation paths against one retained queue.
+  {
+    Suspended parity;
+    const auto live = parity.process.cachePrompt(10, promptOf(5000, 1));
+    parity.process.publish(live[0]);
+    parity.persistence.published(live[0], WriteBehind::kMinimumTokens, 0.0);
+    require(parity.loop.hasEngine() && !parity.loop.flushRestorePoints() &&
+                parity.persistence.snapshot().waiting == 1 && parity.process.tier.demotions > 0,
+            "published Engine flush reported success before IO landed");
+    parity.process.tier.complete();
+    require(parity.loop.flushRestorePoints() && parity.persistence.snapshot().durable == 1 &&
+                parity.persistence.snapshot().waiting == 0,
+            "published Engine flush did not settle its restore point");
+    const auto retained = parity.process.cachePrompt(11, promptOf(6000, 1));
+    parity.process.publish(retained[0]);
+    parity.persistence.published(retained[0], WriteBehind::kMinimumTokens, 0.0);
+    parity.loop.closeAdmission();
+    auto detached = parity.loop.destroyEngine();
+    require(detached && !parity.loop.hasEngine() && !parity.loop.flushRestorePoints() &&
+                parity.persistence.snapshot().waiting == 1 && parity.persistence.snapshot().durable == 1,
+            "detached flush lost the retained queue or reported premature success");
+    parity.process.tier.complete();
+    require(parity.loop.flushRestorePoints() && parity.persistence.snapshot().waiting == 0 &&
+                parity.persistence.snapshot().durable == 2 && parity.persistence.snapshot().refused == 0 &&
+                parity.persistence.snapshot().unneeded == 0,
+            "detached flush did not settle the same retained queue");
+  }
+
+  Suspended fixture;
+  const auto first = fixture.process.cachePrompt(1, promptOf(1000, 2));
+  fixture.process.publish(first[1]);
+  const auto second = fixture.process.cachePrompt(2, promptOf(2000, 1));
+  fixture.process.publish(second[0]);
+  fixture.persistence.published(first[1], WriteBehind::kMinimumTokens, 0.0);
+  fixture.persistence.published(second[0], WriteBehind::kMinimumTokens, 100.0);
+  const auto published = fixture.persistence.snapshot();
+  require(published.waiting == 2 && !fixture.process.tier.demotions &&
+              fixture.persistence.nextWakeup() == kDelay,
+          "the two points were not queued in order on their own deadlines");
+
+  // Owner, before the delay: the pass finds nothing due.
+  fixture.monotonic = kDelay - 1;
+  require(!fixture.loop.serviceRetainedPersistence() &&
+              sameQueue(fixture.persistence.snapshot(), published) &&
+              !fixture.process.tier.demotions &&
+              fixture.persistence.nextWakeup() == kDelay,
+          "the Owner pass wrote a point before its delay");
+
+  // Owner, at the delay: the front point's writes start.
+  fixture.monotonic = kDelay;
+  require(!fixture.loop.serviceRetainedPersistence() &&
+              fixture.process.tier.demotions > 0 &&
+              fixture.persistence.snapshot().waiting == 2 &&
+              !fixture.persistence.nextWakeup(),
+          "the Owner pass did not start the front point at its due time");
+  const uint32_t demotions = fixture.process.tier.demotions;
+
+  // The completion of those writes, then the same pass collects them: the
+  // point becomes durable and the next keeps its own deadline.
+  fixture.process.tier.complete();
+  require(fixture.loop.serviceRetainedPersistence() &&
+              fixture.persistence.snapshot().waiting == 1 &&
+              fixture.persistence.snapshot().durable == 1 &&
+              fixture.persistence.nextWakeup() == kDelay + 100,
+          "the landed write did not settle the front point in publication order");
+
+  // The suspension's safe point: admission closed, nothing owed, and the
+  // lease's four real witnesses agree — so the authority moves to a Worker.
+  fixture.loop.closeAdmission();
+  auto proof = fixture.loop.prepareResourceHandoff(fixture.lease);
+  require(proof.has_value(), "a quiescent graph refused its own handoff");
+  auto handedOff = fixture.lease.transferToWorker(std::move(*proof));
+  handedOff.claim();
+  require(fixture.lease.holder() == ResourceDomainAuthority::Holder::Worker,
+          "the Worker interval was not claimed");
+
+  // Under Worker, the Owner-side pass defers: the queue, its order, its
+  // deadline, the tier's writes and admission stay exactly as they were.
+  const auto held = fixture.persistence.snapshot();
+  const uint64_t copies = fixture.process.cache.copiedBlocks(second[0]);
+  require(!fixture.loop.serviceRetainedPersistence() &&
+              sameQueue(fixture.persistence.snapshot(), held) &&
+              fixture.process.tier.demotions == demotions &&
+              fixture.persistence.nextWakeup() == kDelay + 100 &&
+              !fixture.loop.admissionOpen(),
+          "the deferred pass serviced the queue under Worker authority");
+
+  // A completion notification arriving while the worker owns the domain is
+  // only a callback: this side collects nothing, publishes no reusable
+  // state, and reopens no admission.
+  int notifications = 0;
+  const auto completion = [&notifications] { ++notifications; };
+  fixture.loop.setCompletionNotifier(completion);
+  completion();
+  require(notifications == 1 && !fixture.loop.serviceRetainedPersistence() &&
+              sameQueue(fixture.persistence.snapshot(), held) &&
+              fixture.process.tier.demotions == demotions &&
+              fixture.process.cache.copiedBlocks(second[0]) == copies &&
+              !fixture.loop.admissionOpen(),
+          "a completion under Worker ownership collected, published or reopened");
+
+  // A clean stop is no way through the gate either: it neither flushes the
+  // retained queue nor lifts the write budget.
+  require(!fixture.loop.flushRestorePoints() &&
+              sameQueue(fixture.persistence.snapshot(), held) &&
+              fixture.process.tier.demotions == demotions,
+          "a Worker interval flushed the retained queue");
+
+  // Parked: the same refusal.
+  auto parked = std::move(handedOff).park();
+  require(fixture.lease.holder() == ResourceDomainAuthority::Holder::Parked &&
+              !fixture.loop.serviceRetainedPersistence() &&
+              sameQueue(fixture.persistence.snapshot(), held) &&
+              !fixture.loop.flushRestorePoints() &&
+              fixture.process.tier.demotions == demotions &&
+              fixture.persistence.nextWakeup() == kDelay + 100,
+          "a Parked interval let the deferred work through");
+
+  fixture.lease.returnToOwner(std::move(parked));
+  require(fixture.lease.holder() == ResourceDomainAuthority::Holder::Owner,
+          "the returned authority is not Owner");
+
+  auto detached = fixture.loop.destroyEngine();
+  require(detached && !fixture.loop.hasEngine(),
+          "clean-stop parity fixture did not detach the published Engine");
+
+  // The original point, its own deadline, its own order: nothing written
+  // before it, the pass resumes on it afterwards.
+  require(!fixture.loop.serviceRetainedPersistence() &&
+              fixture.process.tier.demotions == demotions &&
+              fixture.persistence.snapshot().waiting == 1,
+          "the returned Owner wrote a point before its deadline");
+  fixture.monotonic = kDelay + 100;
+  require(!fixture.loop.flushRestorePoints() &&
+              fixture.process.tier.demotions > demotions &&
+              fixture.persistence.snapshot().waiting == 1,
+          "detached clean-stop flush did not start the retained point or reported premature success");
+  fixture.process.tier.complete();
+  require(fixture.loop.flushRestorePoints() &&
+              fixture.persistence.snapshot().waiting == 0 &&
+              fixture.persistence.snapshot().durable == 2 &&
+              fixture.persistence.snapshot().refused == 0 &&
+              fixture.persistence.snapshot().unneeded == 0 &&
+              !fixture.persistence.nextWakeup(),
+          "detached clean-stop flush did not settle the original queue");
+
+  // The write budget holds one due point back under the loop's own authority-
+  // gated service exactly as the baseline holds it back beside a raw WriteBehind,
+  // and neither the deferred clean stop nor a Worker/Parked interval lifts it.
+  // Its own fixture: the two points above already charged that tier and that
+  // budget, and their accumulated accounting is not this policy's to carry.
+  {
+    Suspended budgetCase;
+    const auto point = budgetCase.process.cachePrompt(1, promptOf(1000, 2));
+    budgetCase.process.publish(point[1]);
+    budgetCase.persistence.published(point[1], WriteBehind::kMinimumTokens, 0.0);
+    budgetCase.budget.spend();
+    budgetCase.monotonic = kDelay;
+    budgetCase.budget.now = kDelay;
+    require(!budgetCase.loop.serviceRetainedPersistence() &&
+                !budgetCase.process.tier.demotions &&
+                budgetCase.process.shelf->disk.empty(),
+            "a due point was written while the write budget was spent");
+    const std::optional<double> admission = budgetCase.persistence.nextWakeup();
+    require(admission &&
+                std::abs(*admission - test::WriteBudget::kRefillMilliseconds) < 1.0,
+            "the spent budget gave no admission point to wait for");
+
+    // A spent budget owes no IO, so the handoff's own witnesses still mint a
+    // proof — and the Worker interval cannot raise the budget to flush through.
+    budgetCase.loop.closeAdmission();
+    auto proof = budgetCase.loop.prepareResourceHandoff(budgetCase.lease);
+    require(proof.has_value(), "the spent budget refused the handoff");
+    auto handoff = budgetCase.lease.transferToWorker(std::move(*proof));
+    handoff.claim();
+    require(!budgetCase.loop.flushRestorePoints() &&
+                !budgetCase.process.tier.demotions &&
+                budgetCase.persistence.snapshot().waiting == 1,
+            "the deferred clean stop started or lifted a spent budget");
+    auto parked = std::move(handoff).park();
+    require(!budgetCase.loop.flushRestorePoints() &&
+                !budgetCase.process.tier.demotions &&
+                budgetCase.persistence.snapshot().waiting == 1,
+            "a Parked interval flushed the retained queue");
+    budgetCase.lease.returnToOwner(std::move(parked));
+    require(budgetCase.lease.holder() == ResourceDomainAuthority::Holder::Owner &&
+                !budgetCase.loop.serviceRetainedPersistence() &&
+                !budgetCase.process.tier.demotions &&
+                budgetCase.persistence.snapshot().waiting == 1,
+            "a Worker or Parked interval lifted the write budget");
+
+    // The budget's own clock, not a retry count: once the day advances the room
+    // returns, and the same authority-gated pass starts the write. Started is
+    // not settled: nothing has landed, so the pass answers false while the
+    // tier's copies and the state are out and the point stays queued.
+    budgetCase.budget.refill();
+    budgetCase.monotonic = budgetCase.budget.now;
+    require(!budgetCase.loop.serviceRetainedPersistence() &&
+                budgetCase.process.tier.demotions == 2 &&
+                budgetCase.process.shelf->disk.size() == 1 &&
+                budgetCase.persistence.snapshot().waiting == 1,
+            "a due point waited once the write budget had room");
+    budgetCase.process.tier.complete();
+    require(budgetCase.loop.serviceRetainedPersistence() &&
+                budgetCase.persistence.snapshot().waiting == 0 &&
+                budgetCase.persistence.snapshot().durable == 1 &&
+                !budgetCase.persistence.nextWakeup() &&
+                budgetCase.persistence.snapshot().refused == 0 &&
+                budgetCase.persistence.snapshot().unneeded == 0,
+            "the point did not become durable once its writes landed");
+  }
+}
+
 } // namespace
 
 int main() {
@@ -1289,8 +1643,10 @@ int main() {
     testOnlyTheNewestPointsAreKept();
     testRestoresGoFirst();
     testPointsWaitTheirTurn();
+    testEnginesBorrowRetainedPersistence();
     testWritesKeepToTheWriteBudget();
     testPointsWaitForTheTier();
+    testSuspendedPersistenceFollowsTheAuthority();
     testWriteThroughCopiesAreRestorePoints();
     testRecomputedChainsStayWhole();
     testCommittedPagesTakeTheSpilledChainOfAStateInRam();

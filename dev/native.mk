@@ -18,7 +18,8 @@ SANITIZER_CONFIG_DIGEST := $(shell printf '%s\0' $(CONFIG_DIGEST) \
 	$(call shell-quote,$(ENGINE_SANITIZER_CXXFLAGS)) \
 	| shasum -a 256 | cut -c1-16)
 # Control-plane tests compile the runtime sources they check: their sanitizer
-# builds cannot use the unsanitized engine library, and none links a framework.
+# builds cannot use the unsanitized engine library. The FD tests link the
+# power-source adapter to exercise its real observation mailbox.
 CACHE_SOURCES := \
 	runtime/engine/KvPool.cpp \
 	runtime/engine/KvCache.cpp \
@@ -70,6 +71,8 @@ TEST_SLOT_RECYCLER_TSAN := $(ENGINE_SANITIZER_BUILD)/slot-recycler-tsan
 TEST_MEMORY_PLAN_ASAN := $(ENGINE_SANITIZER_BUILD)/engine-memory-plan-asan-ubsan
 TEST_MEMORY_AUDIT_ASAN := $(ENGINE_SANITIZER_BUILD)/memory-audit-asan-ubsan
 TEST_STATUS_ASAN := $(ENGINE_SANITIZER_BUILD)/runtime-status-asan-ubsan
+TEST_MEMORY_GOVERNOR_ASAN := $(ENGINE_SANITIZER_BUILD)/memory-governor-asan-ubsan
+TEST_MEMORY_GOVERNOR_TSAN := $(ENGINE_SANITIZER_BUILD)/memory-governor-tsan
 TEST_MEMORY_TEST := $(ENGINE_TEST_BUILD)/engine-memory-plan
 TEST_VISION_PREPARATION := $(ENGINE_TEST_BUILD)/vision-preparation
 TEST_DRAFT_PREPARATION := $(ENGINE_TEST_BUILD)/draft-preparation
@@ -118,6 +121,7 @@ TEST_NATIVE_LOOP_TEST := $(ENGINE_TEST_BUILD)/native-engine-loop
 TEST_FD_TRANSPORT_TEST := $(ENGINE_TEST_BUILD)/native-fd-transport
 TEST_BOOTSTRAP_TEST := $(ENGINE_TEST_BUILD)/runtime-bootstrap
 TEST_NATIVE_ARGUMENTS_TEST := $(ENGINE_TEST_BUILD)/native-arguments
+TEST_NATIVE_MAIN := $(ENGINE_TEST_BUILD)/native-main
 TEST_RESOURCES_TEST := $(ENGINE_TEST_BUILD)/runtime-resources
 TEST_KV_PAGE_TIER_TEST := $(ENGINE_TEST_BUILD)/kv-page-tier
 TEST_METRICS_TEST := $(ENGINE_TEST_BUILD)/runtime-metrics
@@ -216,6 +220,7 @@ TEST_CPU_TARGETS := $(TEST_SLOT_FILE) $(TEST_SPARSE_ROW_STORE) $(TEST_SSD_READER
 	$(TEST_NATIVE_LOOP_TEST) \
 	$(TEST_FD_TRANSPORT_TEST) \
 	$(TEST_BOOTSTRAP_TEST) \
+	$(TEST_NATIVE_MAIN) \
 	$(TEST_NATIVE_ARGUMENTS_TEST) \
 	$(TEST_METRICS_TEST) \
 	$(TEST_MEMORY_AUDIT_TEST) \
@@ -289,7 +294,8 @@ SANITIZER_CONFIG_TARGETS := $(TEST_SLOT_FILE_ASAN) $(TEST_SLOT_FILE_TSAN) \
 	$(TEST_SSD_READERS_ASAN) $(TEST_SSD_READERS_TSAN) \
 	$(TEST_ELASTIC_KV_ASAN) $(TEST_ELASTIC_KV_TSAN) \
 	$(TEST_SLOT_RECYCLER_ASAN) $(TEST_SLOT_RECYCLER_TSAN) \
-	$(TEST_MEMORY_PLAN_ASAN) $(TEST_MEMORY_AUDIT_ASAN) $(TEST_STATUS_ASAN)
+	$(TEST_MEMORY_PLAN_ASAN) $(TEST_MEMORY_AUDIT_ASAN) $(TEST_STATUS_ASAN) \
+	$(TEST_MEMORY_GOVERNOR_ASAN) $(TEST_MEMORY_GOVERNOR_TSAN)
 
 # Every native test, benchmark and tool depends on the engine's and the tests'
 # headers, and compiles and links its other prerequisites in the order it
@@ -318,13 +324,18 @@ $(TEST_KV_PAGE_CACHE_TEST): runtime/engine/KvPool.cpp \
 $(TEST_DRAFT_CONTEXT_PLAN_TEST): runtime/model/DraftContextPlan.cpp \
 		dev/benchmarks/PrefillWork.hpp \
 		dev/tests/engine/draft_context_plan_test.cpp
+# The loop test's retained-persistence fixtures drive a model::DiskBudget
+# through a model::SlotFile write (test::WriteBudget), so it links SlotFile.
 $(TEST_NATIVE_LOOP_TEST): $(NATIVE_RUNTIME_SOURCES) \
+		runtime/model/SlotFile.cpp \
 		runtime/engine/MemoryGovernor.cpp runtime/engine/MemoryControl.cpp \
+		runtime/engine/ResourceDomainLease.cpp \
 		dev/tests/engine/ProtocolPeer.cpp \
 		dev/tests/engine/native_engine_loop_test.cpp
 $(TEST_METRICS_TEST): dev/tests/engine/runtime_metrics_test.cpp
-$(TEST_MEMORY_GOVERNOR_TEST): runtime/metal/DeviceCapabilities.cpp \
+$(TEST_MEMORY_GOVERNOR_TEST) $(TEST_MEMORY_GOVERNOR_ASAN) $(TEST_MEMORY_GOVERNOR_TSAN): runtime/metal/DeviceCapabilities.cpp \
 		runtime/engine/MemoryPlan.cpp runtime/engine/MemoryGovernor.cpp \
+		runtime/engine/ResourceDomainLease.cpp \
 		dev/tests/engine/memory_governor_test.cpp
 $(TEST_Q8_CPU_TEST): dev/tests/engine/q8_paged_kv_test.cc
 $(TEST_LEGACY_WEIGHT_CACHE): dev/tests/engine/legacy_weight_cache_test.cpp
@@ -348,6 +359,14 @@ $(TEST_FAMILY_VALUES): dev/tests/engine/family_values_test.cpp $(ENGINE_LIBRARY)
 $(TEST_VISION_PREPARATION): dev/tests/engine/vision_preparation_test.cpp $(ENGINE_LIBRARY)
 $(TEST_NATIVE_ARGUMENTS_TEST): dev/tests/engine/native_arguments_test.cpp \
 		$(ENGINE_LIBRARY)
+# The battery-policy main's real entry points: the test translation unit
+# includes runtime/main.mm under SPLASH_NATIVE_MAIN_TEST (no int main) and
+# keeps the launcher, the battery policy gate and the startup dispatch alive.
+$(TEST_NATIVE_MAIN): dev/tests/engine/native_main_test.mm runtime/main.mm \
+		runtime/engine/PowerSource.mm \
+		$(BUILD_ID_HEADER) $(ENGINE_LIBRARY) $(LIB) | $(ENGINE_TEST_BUILD)
+	$(RUN_CONFIGURED) $(CXX) $(ENGINE_TEST_CXXFLAGS) -fobjc-arc \
+		-include $(BUILD_ID_HEADER) $< $(ENGINE_LIBRARY) $(ENGINE_LINKFLAGS) -o $@
 $(TEST_ANE_FFN_STARTUP): dev/tests/engine/ane_ffn_startup_test.cpp $(ENGINE_LIBRARY)
 $(TEST_MODEL_LOADING_TEST): dev/tests/engine/model_loading_test.cpp \
 		$(ENGINE_LIBRARY)
@@ -587,6 +606,7 @@ test-engine-cpu: $(TEST_CPU_TARGETS) $(TEST_ATTENTION_SWEEP) $(TEST_BACKEND_BENC
 	$(TEST_FD_TRANSPORT_TEST)
 	$(TEST_BOOTSTRAP_TEST)
 	$(TEST_NATIVE_ARGUMENTS_TEST) dev/tests/engine/native_command_golden.txt $(MODEL_CONFIGS)
+	$(TEST_NATIVE_MAIN)
 	$(TEST_METRICS_TEST)
 	$(TEST_MEMORY_AUDIT_TEST)
 	$(TEST_MEMORY_GOVERNOR_TEST)
@@ -726,7 +746,9 @@ $(TEST_ELASTIC_KV_TEST) $(TEST_ELASTIC_KV_ASAN) $(TEST_ELASTIC_KV_TSAN): \
 $(TEST_SLOT_RECYCLER) $(TEST_SLOT_RECYCLER_ASAN) $(TEST_SLOT_RECYCLER_TSAN): \
 		runtime/model/SlotRecycler.cpp dev/tests/engine/slot_recycler_test.cpp
 $(TEST_PERSISTENT_CACHE) $(TEST_PERSISTENT_CACHE_ASAN) $(TEST_PERSISTENT_CACHE_TSAN): \
-		$(CACHE_SOURCES) runtime/model/SlotFile.cpp dev/tests/engine/persistent_cache_test.cpp
+		$(NATIVE_RUNTIME_SOURCES) \
+		runtime/engine/ResourceDomainLease.cpp \
+		runtime/model/SlotFile.cpp dev/tests/engine/persistent_cache_test.cpp
 $(TEST_ENGINE_CACHE_TEST) $(TEST_ENGINE_CACHE_ASAN) $(TEST_ENGINE_CACHE_TSAN): \
 		$(CACHE_SOURCES) runtime/model/SlotFile.cpp dev/tests/engine/engine_cache_test.cpp
 $(TEST_CACHE_PROPERTY) $(TEST_CACHE_PROPERTY_ASAN) $(TEST_CACHE_PROPERTY_TSAN): \
@@ -737,13 +759,19 @@ $(TEST_PROTOCOL_TEST) $(TEST_PROTOCOL_ASAN) $(TEST_PROTOCOL_TSAN): \
 $(TEST_ENGINE_TEST) $(TEST_ENGINE_ASAN) $(TEST_ENGINE_TSAN): \
 		$(BACKEND_CONTROL_SOURCES) \
 		runtime/engine/MemoryGovernor.cpp \
+		runtime/engine/ResourceDomainLease.cpp \
 		dev/benchmarks/PrefillWork.hpp \
 		dev/tests/engine/engine_test.cpp
 $(TEST_RAGGED_SCHEDULER_TEST) $(TEST_RAGGED_SCHEDULER_ASAN) $(TEST_RAGGED_SCHEDULER_TSAN): \
 		runtime/engine/Scheduler.cpp dev/tests/engine/ragged_scheduler_test.cpp
+# The FD admission regression uses the real power callback mailbox.
+$(TEST_FD_TRANSPORT_TEST): ENGINE_TEST_CXXFLAGS += -framework CoreFoundation -framework IOKit
+$(TEST_FD_TRANSPORT_ASAN) $(TEST_FD_TRANSPORT_TSAN): ENGINE_SANITIZER_CXXFLAGS += -framework CoreFoundation -framework IOKit
 $(TEST_FD_TRANSPORT_TEST) $(TEST_FD_TRANSPORT_ASAN) $(TEST_FD_TRANSPORT_TSAN): \
+		runtime/engine/PowerSource.mm \
 		$(NATIVE_RUNTIME_SOURCES) \
 		runtime/engine/FdTransport.cpp \
+		runtime/engine/ResourceDomainLease.cpp \
 		dev/tests/engine/ProtocolPeer.cpp \
 		dev/tests/engine/native_fd_transport_test.cpp
 $(TEST_ANE_FFN_CALIBRATION) $(TEST_ANE_FFN_CALIBRATION_ASAN) $(TEST_ANE_FFN_CALIBRATION_TSAN): \
@@ -806,6 +834,8 @@ test-sanitizers: $(SANITIZER_CONFIG_TARGETS)
 	$(ASAN_TEST_ENV) $(TEST_MEMORY_PLAN_ASAN)
 	$(ASAN_TEST_ENV) $(TEST_MEMORY_AUDIT_ASAN)
 	$(ASAN_TEST_ENV) $(TEST_STATUS_ASAN) dev/tests/engine/status_golden.json
+	$(ASAN_TEST_ENV) $(TEST_MEMORY_GOVERNOR_ASAN)
+	$(TSAN_TEST_ENV) $(TEST_MEMORY_GOVERNOR_TSAN)
 
 # The Metal tests of the components whose host steps share their state with
 # the engine thread and the SSD readers, the hot block cache and the history

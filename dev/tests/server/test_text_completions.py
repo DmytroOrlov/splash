@@ -360,6 +360,7 @@ class TextCompletionLifecycleTests(unittest.TestCase):
                     else:
                         self.assertEqual(status, 504)
                     self.assertEqual(runtime.cancel_count, 1)
+                    harness.backend.status()
                     status, _, payload = harness.request("POST", path, body)
                     self.assertEqual(status, 200, payload)
                     self.assertIn(b"plain answer", payload)

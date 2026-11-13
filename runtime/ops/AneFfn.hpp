@@ -108,6 +108,14 @@ public:
   // Whether the split stopped, and why.
   [[nodiscard]] bool retired() const { return handoff_.retired(); }
   [[nodiscard]] std::string reason() const { return handoff_.reason(); }
+  // [Gate 4 / U-01] The evaluations this split's handoff has started, or queued
+  // for the agent, and has not been told back (ane::Handoff::outstanding): each
+  // one keeps the surfaces, the shared event and the program it runs on borrowed
+  // until its report arrives. Passive: it waits for no report and starts no
+  // evaluation, and together with ane::serviceQueueWork() it is the ANE half of
+  // the callback/descendant retirement receipt (the GPU half is
+  // MetalBackend::callbackRetirement()).
+  [[nodiscard]] uint32_t agentJobs() const noexcept { return handoff_.outstanding(); }
 
   // Starts encoding a command; false once the split stopped.
   bool begin();

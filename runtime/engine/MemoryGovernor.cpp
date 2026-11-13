@@ -1,6 +1,7 @@
 #include "engine/MemoryGovernor.hpp"
 
 #include "engine/MemoryPlan.hpp"
+#include "engine/ResourceDomainLease.hpp"
 
 #include <dispatch/dispatch.h>
 #include <mach/mach.h>
@@ -99,6 +100,18 @@ void MemoryGovernor::Reservation::release() noexcept {
     owner_->release(bytes_);
   owner_ = nullptr;
   bytes_ = 0;
+}
+
+MemoryGovernor::~MemoryGovernor() {
+  // Unlink this governor from its resource domain: the domain keeps a raw
+  // handle to it.
+  if (authority_)
+    authority_->detachGovernor(this);
+}
+
+void MemoryGovernor::authorityCheck() const {
+  if (authority_)
+    authority_->check("memory governor operation");
 }
 
 MemoryGovernor::MemoryGovernor(metal::MetalBackend &backend, uint64_t limitBytes,
@@ -232,6 +245,27 @@ metal::AllocationAdmission MemoryGovernor::growthAdmission() noexcept {
 metal::AllocationAdmission MemoryGovernor::admission(bool optional) noexcept {
   return [this, optional](uint64_t bytes, const std::function<void()> &allocate)
              -> metal::AllocationResult {
+    // Checked at call time, not capture time: a callback taken before a
+    // handoff cannot mutate the ledger from an unauthorized holder.
+    std::lock_guard ledgerLock(ledgerMutex_);
+    authorityCheck();
+    // Covers sampling, reservation construction, the synchronous allocation
+    // callback and noexcept reservation cleanup, including exceptional exits.
+    struct AdmissionInterval {
+      const ResourceDomainAuthority *authority;
+      explicit AdmissionInterval(const ResourceDomainAuthority *a) : authority(a) {
+        if (authority) {
+          std::lock_guard lock(authority->mutex_);
+          ++authority->admissionsInFlight_;
+        }
+      }
+      ~AdmissionInterval() {
+        if (authority) {
+          std::lock_guard lock(authority->mutex_);
+          --authority->admissionsInFlight_;
+        }
+      }
+    } interval(authority_);
     metal::AllocationFailure failure;
     auto reservation = tryReserve(bytes, optional, failure);
     if (!reservation)
@@ -246,34 +280,48 @@ metal::AllocationAdmission MemoryGovernor::admission(bool optional) noexcept {
   };
 }
 
-bool MemoryGovernor::setServing(bool serving) noexcept {
+bool MemoryGovernor::setServing(bool serving) {
+  std::lock_guard ledgerLock(ledgerMutex_);
+  authorityCheck();
   return std::exchange(serving_, serving);
 }
 
-uint64_t MemoryGovernor::setGrowthCredit(uint64_t bytes) noexcept {
+uint64_t MemoryGovernor::setGrowthCredit(uint64_t bytes) {
+  std::lock_guard ledgerLock(ledgerMutex_);
+  authorityCheck();
   return std::exchange(growthCreditBytes_, bytes);
 }
 
-void MemoryGovernor::setRequestWaiting(bool waiting) noexcept {
+void MemoryGovernor::setRequestWaiting(bool waiting) {
+  std::lock_guard ledgerLock(ledgerMutex_);
+  authorityCheck();
   requestWaiting_ = waiting;
 }
 
-void MemoryGovernor::setPressure(MemoryPressure pressure) noexcept {
+void MemoryGovernor::setPressure(MemoryPressure pressure) {
+  std::lock_guard ledgerLock(ledgerMutex_);
+  authorityCheck();
   systemPressure_ = pressure;
 }
 
-void MemoryGovernor::reclaimed(ReclaimOutcome outcome) noexcept {
+void MemoryGovernor::reclaimed(ReclaimOutcome outcome) {
+  std::lock_guard ledgerLock(ledgerMutex_);
+  authorityCheck();
   if (outcome == ReclaimOutcome::Untargeted)
     return;
   host_.reclaimExhausted = host_.constrained && outcome == ReclaimOutcome::Exhausted;
 }
 
 MemoryGovernorSnapshot MemoryGovernor::snapshot() const noexcept {
+  std::lock_guard ledgerLock(ledgerMutex_);
+  // Passive: reads its inputs, moves no hysteresis, needs no lease.
   const std::optional<HostMemory> host = sampleHost();
   return snapshot(host, hostState(host));
 }
 
-MemoryGovernorSnapshot MemoryGovernor::evaluate() noexcept {
+MemoryGovernorSnapshot MemoryGovernor::evaluate() {
+  std::lock_guard ledgerLock(ledgerMutex_);
+  authorityCheck();
   const std::optional<HostMemory> host = sampleHost();
   host_ = hostState(host);
   return snapshot(host, host_);
@@ -334,6 +382,7 @@ MemoryGovernor::effectivePressure(const HostState &host) const noexcept {
 }
 
 void MemoryGovernor::release(uint64_t bytes) noexcept {
+  std::lock_guard ledgerLock(ledgerMutex_);
   if (bytes > reservedBytes_) {
     reservedBytes_ = 0;
     return;

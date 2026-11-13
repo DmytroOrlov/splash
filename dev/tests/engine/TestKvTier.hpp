@@ -133,6 +133,25 @@ public:
   }
   void poll() override {}
 
+  // [Gate 3 / U-02] This tier's retained IO: a transfer is owned until its
+  // ticket has been finish()ed, whether or not it has landed, so a landed
+  // transfer the caller has not consumed yet still refuses the drain. The
+  // tier starts every restore as it is asked for and models no batch end of
+  // its own, so it reports no batch: not a default read as quiescence, the
+  // obligation this tier does not have.
+  [[nodiscard]] engine::KvTier::TierIo retainedIo() const noexcept override {
+    engine::KvTier::TierIo io;
+    for (const std::shared_ptr<Transfer> &transfer : transfers) {
+      if (transfer->finished)
+        continue;
+      if (transfer->write)
+        ++io.writes;
+      else
+        ++io.restores;
+    }
+    return io;
+  }
+
   // A slot's copy, to give it bytes or make its reads fail.
   [[nodiscard]] static TestKvCopy &copyOf(const std::shared_ptr<engine::KvDiskSlot> &slot) {
     return static_cast<Slot &>(*slot);

@@ -464,7 +464,11 @@ class FakeRuntime:
         plan.start_release.wait(2)
         if call.done:
             return
-        call.emit(wire.StartEvent(call.request_id, 0, plan.matched_tokens))
+        call.emit(
+            wire.StartEvent(
+                call.request_id, 0, plan.matched_tokens, READY.max_context_tokens
+            )
+        )
         plan.started.set()
         plan.release.wait(2)
         if plan.exception:
@@ -737,7 +741,7 @@ def written_frame(process, call):
 
 
 def send_success(process, call, *, lane=0, tokens=(10, 11, 12)):
-    process.send(wire.StartEvent(call.request_id, lane, 0))
+    process.send(wire.StartEvent(call.request_id, lane, 0, READY.max_context_tokens))
     process.send(wire.TokensEvent(call.request_id, 0, tokens[:2]))
     if tokens[2:]:
         process.send(wire.TokensEvent(call.request_id, 2, tokens[2:]))
@@ -806,6 +810,7 @@ def main_args(**overrides):
             "allowed_origin": [],
             "api_key": None,
             "allow_idle_sleep": False,
+            "pause_on_battery": False,
             "no_webui": False,
             "max_request_size": serve_options.DEFAULT_MAX_REQUEST_BYTES,
             "port": 0,
@@ -838,6 +843,7 @@ def make_frontend(
     constraint_factory=None,
     thinking_codec=None,
     chat_format=QWEN,
+    initial_status=True,
     **options,
 ):
     """A frontend over the tokenizer, with its chat templates probed as
@@ -848,7 +854,7 @@ def make_frontend(
         constraint_factory = PassThroughConstraintFactory()
     if thinking_codec is None:
         thinking_codec = ThinkingCodec()
-    return request_frontend.Frontend(
+    app = request_frontend.Frontend(
         tokenizer,
         *args,
         constraint_factory=constraint_factory,
@@ -857,6 +863,21 @@ def make_frontend(
         thinking_codec=thinking_codec,
         **options,
     )
+    backend = args[0]
+    runtime = getattr(backend, "runtime", None)
+    if (
+        initial_status
+        and isinstance(runtime, FakeRuntime)
+        and runtime.status_event == native_peer.status_event()
+    ):
+        ceiling = app.configured_context_ceiling
+        runtime.status_event = native_peer.status_event(
+            configured_context_ceiling=ceiling,
+            effective_context_tokens=ceiling,
+            maximum_context_tokens=ceiling,
+        )
+        backend.status()
+    return app
 
 
 def no_signed_thinking(signature):
@@ -906,6 +927,7 @@ class Harness:
         allowed_origins=(),
         vision=True,
         thinking_end=None,
+        initial_status=True,
         **frontend_options,
     ):
         self.tokenizer = tokenizer or FakeTokenizer()
@@ -926,6 +948,7 @@ class Harness:
             constraint_factory=constraint_factory,
             thinking_codec=thinking_codec,
             vision=vision,
+            initial_status=initial_status,
             **frontend_options,
         )
         # The chat templates are probed once, before the frontend is built;

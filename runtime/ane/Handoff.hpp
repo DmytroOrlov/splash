@@ -75,9 +75,16 @@ public:
   void retire(std::string reason);
 
   [[nodiscard]] bool retired() const;
-  // Whether the agent has reported every job it started, so that none of
-  // them still runs.
+  // Whether the agent has reported every job it started, so that none of them
+  // still runs.
   [[nodiscard]] bool idle() const;
+  // [Gate 4 / U-01] How many jobs the agent has started, or queued for itself,
+  // and has not reported: the count `idle()` answers with, as the retirement
+  // witness needs it (each unreported job keeps the surfaces, the shared event
+  // and the program it borrows). Passive: it waits for no report and starts
+  // nothing.
+  [[nodiscard]] uint32_t outstanding() const;
+
   // Why the handoff retired, the first failure's; empty until it does.
   [[nodiscard]] std::string reason() const;
 

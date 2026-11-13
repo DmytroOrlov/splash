@@ -176,30 +176,30 @@ struct Figure: View {
 enum Format {
     /// Decimal units, as Finder counts: 120 MB, 6.7 GB, 21 GB. Whole GB from 10 GB up, so a
     /// model's size reads the same everywhere.
-    static func size(_ bytes: Int64) -> String {
+    static func size(_ bytes: Int64, locale: Locale = .current) -> String {
         let gigabytes = Double(bytes) / 1e9
-        guard gigabytes >= 1 else { return bytes.formatted(.byteCount(style: .file)) }
-        return "\(gigabytes.formatted(.number.precision(.fractionLength(gigabytes < 10 ? 1 : 0)))) GB"
+        guard gigabytes >= 1 else { return bytes.formatted(.byteCount(style: .file).locale(locale)) }
+        return "\(gigabytes.formatted(.number.precision(.fractionLength(gigabytes < 10 ? 1 : 0)).locale(locale))) GB"
     }
 
     static func gigabytes(_ count: Int) -> Int64 { Int64(count) * 1_000_000_000 }
 
     /// A count in a few figures: 950, 12K, 3.4M.
-    static func count(_ value: Int) -> String {
-        value.formatted(.number.notation(.compactName))
+    static func count(_ value: Int, locale: Locale = .current) -> String {
+        value.formatted(.number.notation(.compactName).locale(locale))
     }
 
     /// A figure with no fraction: 37, 1,204.
-    static func whole(_ value: Double) -> String {
-        value.formatted(.number.precision(.fractionLength(0)))
+    static func whole(_ value: Double, locale: Locale = .current) -> String {
+        value.formatted(.number.precision(.fractionLength(0)).locale(locale))
     }
 
     /// A time to first token, and its unit: 136 ms, or 1.4 s.
-    static func latency(_ duration: Duration) -> (String, String) {
+    static func latency(_ duration: Duration, locale: Locale = .current) -> (String, String) {
         // Rounded first, so that 999.7 ms reads 1.0 s.
         let milliseconds = (Double(duration.components.seconds) * 1000 + Double(duration.components.attoseconds) / 1e15).rounded()
-        return milliseconds < 1000 ? (whole(milliseconds), "ms")
-            : ((milliseconds / 1000).formatted(.number.precision(.fractionLength(1))), "s")
+        return milliseconds < 1000 ? (whole(milliseconds, locale: locale), "ms")
+            : ((milliseconds / 1000).formatted(.number.precision(.fractionLength(1)).locale(locale)), "s")
     }
 
     /// A figure and its unit, as `size` says it: 4.3 and GB.
@@ -209,10 +209,10 @@ enum Format {
     }
 
     /// A while, as the chat says it: 9.8s, 24s, 1m 24s.
-    static func seconds(_ seconds: Double) -> String {
+    static func seconds(_ seconds: Double, locale: Locale = .current) -> String {
         // Rounded first, so that 9.96 s reads 10s.
         let tenths = (seconds * 10).rounded() / 10
-        if tenths < 10 { return "\(tenths.formatted(.number.precision(.fractionLength(1))))s" }
+        if tenths < 10 { return "\(tenths.formatted(.number.precision(.fractionLength(1)).locale(locale)))s" }
         let whole = Int(seconds.rounded())
         return whole < 60 ? "\(whole)s" : "\(whole / 60)m \(whole % 60)s"
     }

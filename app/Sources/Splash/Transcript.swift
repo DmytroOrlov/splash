@@ -211,11 +211,11 @@ struct TranscriptPage: Encodable, Equatable {
 
     /// `conversation`, whose last reply streams while `live` is its; `asleep` while the model
     /// sleeps, to load again before it reads; models named by `name`.
-    init(_ conversation: Conversation, live: ChatStore.Live?, asleep: Bool, askAgain: AskAgain, name: (String) -> String) {
+    init(_ conversation: Conversation, live: ChatStore.Live?, asleep: Bool, askAgain: AskAgain, locale: Locale = .current, name: (String) -> String) {
         id = conversation.id
         let streaming = live?.conversation == conversation.id ? conversation.messages.last?.id : nil
         messages = conversation.messages.map { message in
-            TranscriptMessage(message, live: message.id == streaming ? live : nil, asleep: asleep, name: name)
+            TranscriptMessage(message, live: message.id == streaming ? live : nil, asleep: asleep, locale: locale, name: name)
         }
         self.askAgain = askAgain
     }
@@ -237,16 +237,16 @@ struct TranscriptMessage: Encodable, Equatable {
     /// The model that answered, how fast, and whether it was stopped.
     let details: String
 
-    init(_ message: ChatMessage, live: ChatStore.Live?, asleep: Bool, name: (String) -> String) {
+    init(_ message: ChatMessage, live: ChatStore.Live?, asleep: Bool, locale: Locale = .current, name: (String) -> String) {
         id = message.id
         role = message.role
         text = message.text
         reasoning = message.reasoning
         images = message.images
         error = message.error
-        line = message.role == .assistant ? ReplyLine(message, live: live, asleep: asleep) : nil
+        line = message.role == .assistant ? ReplyLine(message, live: live, asleep: asleep, locale: locale) : nil
         self.live = live != nil
-        details = [message.model.map(name), message.tokensPerSecond.map { "\(Format.whole($0)) tok/s" },
+        details = [message.model.map(name), message.tokensPerSecond.map { "\(Format.whole($0, locale: locale)) tok/s" },
                    message.stopped == true ? "Stopped" : nil]
             .compactMap { $0 }.joined(separator: " · ")
     }
@@ -295,7 +295,7 @@ struct ReplyLine: Encodable, Equatable {
 extension ReplyLine {
     /// The line over `message`, streaming while `live` is given; nil for a reply that neither
     /// waits for its answer nor thought.
-    init?(_ message: ChatMessage, live: ChatStore.Live?, asleep: Bool) {
+    init?(_ message: ChatMessage, live: ChatStore.Live?, asleep: Bool, locale: Locale = .current) {
         // Once the answer comes, the line says what the thinking took.
         let waiting = message.text.isEmpty ? live : nil
         if let live = waiting, message.reasoning.isEmpty {
@@ -309,7 +309,7 @@ extension ReplyLine {
             since = started
         } else if !message.reasoning.isEmpty {
             verb = "Thinking"
-            let facts = [message.reasoningTokens.map { "\(Format.count($0)) tokens" }, message.thinkingTime.map(Format.seconds)]
+            let facts = [message.reasoningTokens.map { "\(Format.count($0, locale: locale)) tokens" }, message.thinkingTime.map { Format.seconds($0, locale: locale) }]
                 .compactMap { $0 }.joined(separator: " · ")
             self.facts = facts.isEmpty ? nil : facts
             since = nil

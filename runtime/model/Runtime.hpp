@@ -15,6 +15,10 @@ public:
   explicit Runtime(RuntimeContext context);
   ~Runtime() override;
   void checkHealth() override;
+  // [Gate 4 / U-01] The GPU and Neural Engine callbacks and descendants this
+  // model still owes (Model::Descendants), from its backend's retirement receipt,
+  // its split's unreported evaluations and this process's ANE service queue.
+  [[nodiscard]] Descendants descendants() const noexcept override;
   [[nodiscard]] uint32_t statesToActivate() const noexcept override;
   [[nodiscard]] uint64_t idleBufferBytes(uint32_t evictedStates) const noexcept override;
   [[nodiscard]] uint32_t prefillGroupRows(bool spills) const noexcept override;

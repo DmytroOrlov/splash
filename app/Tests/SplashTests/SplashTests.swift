@@ -108,7 +108,8 @@ struct ServeSettingsTests {
         #expect(ContextLength.parse("0") == nil && ContextLength.parse("12.5K") == nil && ContextLength.parse("lots") == nil)
         #expect(ContextLength.title(32768) == "32K tokens")
         #expect(ContextLength.title(1_000_000) == "1M tokens")
-        #expect(ContextLength.title(100_000) == "100,000 tokens")
+        #expect(ContextLength.title(100_000, locale: Locale(identifier: "en_US")) == "100,000 tokens")
+        #expect(ContextLength.title(100_000, locale: Locale(identifier: "de_DE")) == "100.000 tokens")
         // As typed, read back alike.
         #expect([32768, 1_000_000, 100_000].map { ContextLength.parse(ContextLength.text($0)) } == [32768, 1_000_000, 100_000])
     }
@@ -119,9 +120,9 @@ struct ServeSettingsTests {
 
     @Test func saysWhatMakesRoomForAModel() {
         let floors = "runtime bootstrap failed [resource_assembly/memory_planning]: model weights with the runtime reserves, one lane's state, the KV runway and any SSD cache state staging require 10858659840 bytes but the Metal memory budget is 1073741824 bytes"
-        #expect(Server.memoryProblem(floors, settings: ServeSettings(values: ["--max-memory": "1G"]))
+        #expect(Server.memoryProblem(floors, settings: ServeSettings(values: ["--max-memory": "1G"]), locale: Locale(identifier: "en_US"))
             == "It needs 10.1 GB of memory but the memory limit is 1 GB. Raise the memory limit in Launch Options.")
-        #expect(Server.memoryProblem(floors, settings: ServeSettings())
+        #expect(Server.memoryProblem(floors, settings: ServeSettings(), locale: Locale(identifier: "en_US"))
             == "It needs 10.1 GB of memory but this Mac can give it 1 GB. Choose a smaller model.")
         let context = { (bound: String) in
             "runtime bootstrap failed [model_creation]: --max-context 262144 exceeds the 73721 tokens the model and \(bound) allow; omit it or pass at most 73721"
@@ -311,15 +312,16 @@ struct OutputTests {
     }
 
     @Test func formatsFiguresAndTimes() {
-        #expect(Format.seconds(9.84) == "9.8s" && Format.seconds(24.4) == "24s" && Format.seconds(84) == "1m 24s")
-        #expect(Format.latency(.milliseconds(136)) == ("136", "ms") && Format.latency(.milliseconds(1440)) == ("1.4", "s"))
+        #expect(Format.seconds(9.84, locale: Locale(identifier: "en_US")) == "9.8s" && Format.seconds(24.4) == "24s" && Format.seconds(84) == "1m 24s")
+        #expect(Format.latency(.milliseconds(136)) == ("136", "ms") && Format.latency(.milliseconds(1440), locale: Locale(identifier: "en_US")) == ("1.4", "s"))
         #expect(Format.parts("4.3 GB") == ("4.3", "GB") && Format.parts("12") == ("12", nil))
         #expect(Format.whole(36.8) == "37")
     }
 
     @Test func formatsSizes() {
         #expect(Format.size(120_000_000) == "120 MB")
-        #expect(Format.size(6_730_000_000) == "6.7 GB")
+        #expect(Format.size(6_730_000_000, locale: Locale(identifier: "en_US")) == "6.7 GB")
+        #expect(Format.size(6_730_000_000, locale: Locale(identifier: "de_DE")) == "6,7 GB")
         #expect(Format.size(10_980_000_000) == "11 GB")
         #expect(Format.size(21_250_000_000) == "21 GB")
         #expect(Format.size(Format.gigabytes(24)) == "24 GB")
@@ -356,7 +358,7 @@ struct ChatTests {
         // A first message too long has no earlier ones a new chat would leave behind.
         #expect(ChatClient.message(of: overflow, for: [chat[0]], server: target) == "This message is longer than the model’s 256K-token context.")
         target.context = 57_337
-        #expect(ChatClient.message(of: overflow, for: [chat[0]], server: target) == "This message is longer than the model’s 57,337-token context.")
+        #expect(ChatClient.message(of: overflow, for: [chat[0]], server: target, locale: Locale(identifier: "en_US")) == "This message is longer than the model’s 57,337-token context.")
         target.context = nil
         #expect(ChatClient.message(of: overflow, for: chat, server: target) == "This chat is longer than the model’s context. Start a new chat to continue.")
         let other = Data(#"{"error":{"message":"engine is recovering; retry shortly","code":"engine_recovering"}}"#.utf8)

@@ -4,6 +4,7 @@
 #include "engine/FdTransport.hpp"
 #include "engine/Bootstrap.hpp"
 #include "engine/NativeArguments.hpp"
+#include "engine/PowerSource.hpp"
 #include "engine/Status.hpp"
 #include "model/ModelDescriptor.hpp"
 
@@ -22,6 +23,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <limits.h>
 #include <memory>
 #include <optional>
@@ -32,6 +34,10 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#ifdef SPLASH_INTEGRATION_TEST_POWER
+#include "../dev/tests/integration/test_power_source.hpp"
+#endif
 
 #ifndef SPLASH_BUILD_ID
 #error "production build requires the generated BuildIdentity.hpp"
@@ -152,10 +158,87 @@ void printUsage(std::string_view executable) {
       " [--max-cache-disk-writes BYTES]"
       " [--idle-release SECONDS|off] [--idle-sleep prevent|allow] [--ane on|off]"
       " [--relaunch-context TOKENS] [--ple-memory BYTES] [--expert-memory BYTES]"
-      " [--verify-rows auto|all]");
+      " [--verify-rows auto|all] [--pause-on-battery]");
   writeStderrLine("       " + command + " model-check mlx-affine none|safetensors CONFIG [DRAFT_CONFIG]");
   writeStderrLine("       " + command + " model-check gguf none|gguf CONFIG GGUF_METADATA [DRAFT_CONFIG]");
   writeStderrLine("       " + command + " device-check");
+}
+class PowerObservationTeardown final {
+public:
+  PowerObservationTeardown(
+      std::unique_ptr<engine::PowerSource> &powerSource,
+      std::unique_ptr<engine::RuntimeBootstrap> &bootstrap) noexcept
+      : powerSource_(powerSource), bootstrap_(bootstrap) {}
+  PowerObservationTeardown(const PowerObservationTeardown &) = delete;
+  PowerObservationTeardown &operator=(const PowerObservationTeardown &) =
+      delete;
+  ~PowerObservationTeardown() {
+    if (powerSource_)
+      powerSource_->stop();
+    if (bootstrap_) {
+      try {
+        static_cast<void>(bootstrap_->shutdownLifecycle());
+      } catch (...) {
+      }
+    }
+  }
+
+private:
+  std::unique_ptr<engine::PowerSource> &powerSource_;
+  std::unique_ptr<engine::RuntimeBootstrap> &bootstrap_;
+};
+
+
+struct BatteryPolicySetup final {
+  std::unique_ptr<engine::PowerSource> powerSource;
+  std::shared_ptr<engine::PendingPowerObservation> pendingPower;
+  std::optional<engine::LifecyclePower> initialPower;
+};
+
+using PowerSourceFactory =
+    std::function<std::unique_ptr<engine::PowerSource>()>;
+
+BatteryPolicySetup setupBatteryPolicy(
+    bool enabled, const PowerSourceFactory &makePowerSource,
+    const std::function<void()> &wake) {
+  BatteryPolicySetup setup;
+  if (!enabled)
+    return setup;
+
+  setup.powerSource = makePowerSource();
+  setup.pendingPower =
+      std::make_shared<engine::PendingPowerObservation>(wake);
+  setup.powerSource->start([pending = setup.pendingPower](
+                               engine::LifecyclePower observation) {
+    pending->record(observation);
+  });
+  // Register notifications first, then take a truthful synchronous sample.
+  // Both this value and later callbacks use the same latest-value handoff.
+  setup.pendingPower->recordInitial(setup.powerSource->current());
+  // Consume the authoritative initial observation before choosing whether to
+  // enter expensive inference bootstrap. A newer observer callback cannot be
+  // overwritten by recordInitial and remains queued for the native safe point.
+  setup.initialPower = setup.pendingPower->take().value_or(
+      engine::LifecyclePower::Unknown);
+  return setup;
+}
+
+bool shouldStartModelLess(
+    bool pauseOnBattery,
+    std::optional<engine::LifecyclePower> initialPower) noexcept {
+  return pauseOnBattery &&
+         initialPower.value_or(engine::LifecyclePower::Unknown) !=
+             engine::LifecyclePower::AC;
+}
+
+std::optional<engine::LifecyclePower> initialServingAuthorization(
+    bool pauseOnBattery,
+    std::optional<engine::LifecyclePower> initialPower) noexcept {
+  // Enabled policy uses its physical initial observation. Disabled policy
+  // selects AC-equivalent serving authorization from configuration intent.
+  if (pauseOnBattery)
+    return initialPower;
+  return engine::LifecyclePower::AC;
 }
 
 std::filesystem::path executablePath() {
@@ -311,27 +394,55 @@ int runNative(const engine::NativeArguments &arguments) {
   IdleSleepAssertion idleSleep;
   engine::RuntimeMetrics metrics;
   engine::RuntimeBootstrap *published = nullptr;
+  std::unique_ptr<engine::RuntimeBootstrap> bootstrap;
+  BatteryPolicySetup batteryPolicy = setupBatteryPolicy(
+      arguments.pauseOnBattery,
+      []() -> std::unique_ptr<engine::PowerSource> {
+#ifdef SPLASH_INTEGRATION_TEST_POWER
+        if (std::getenv("SPLASH_TEST_POWER_FILE"))
+          return std::make_unique<TestFilePowerSource>();
+#endif
+        return engine::makeSystemPowerSource();
+      },
+      transport.controlNotifier());
+  auto &powerSource = batteryPolicy.powerSource;
+  auto &pendingPower = batteryPolicy.pendingPower;
+  PowerObservationTeardown observerTeardown(powerSource, bootstrap);
   auto statusProvider = [&] {
-    return published->statusJson(
+    return published ? published->statusJson(
         metrics.snapshot(),
-        engine::NativeLoopTiming{transport.maxTickMilliseconds()});
+        engine::NativeLoopTiming{transport.maxTickMilliseconds()})
+                      : std::string{};
   };
 
   engine::StartupRetryWindow recovery(engine::kStartupMemoryRecoveryTimeout);
   bool reportedRecoveryWait = false;
-  std::unique_ptr<engine::RuntimeBootstrap> bootstrap;
   while (!bootstrap) {
     if (transport.shutdownRequested())
       return static_cast<int>(engine::NativeProcessExit::CleanEof);
     engine::RuntimeBootstrapConfig config = bootstrapConfig(arguments);
+    config.lifecycleWake = transport.controlNotifier();
     config.resources.memoryPressure = [&] { return pressureMonitor.pressure(); };
     config.resources.cancelled = [&] { return transport.shutdownRequested(); };
     config.nativeLoop.metrics = &metrics;
     if (arguments.preventIdleSleep)
       config.nativeLoop.holdingRequests = [&](bool held) { idleSleep.hold(held); };
+    // The battery policy's synchronous initial sample, injected into the
+    // pump: startModelLess() begins its lifecycle authority from it (the real
+    // OS registration and its ordering proof are T026's); ordinary start()
+    // ignores the value and is authorized after bootstrap below.
+    config.initialPower = batteryPolicy.initialPower;
     try {
-      bootstrap = engine::RuntimeBootstrap::start(
-          std::move(config), transport.outputSink(), statusProvider);
+      if (!shouldStartModelLess(arguments.pauseOnBattery,
+                                batteryPolicy.initialPower)) {
+        bootstrap = engine::RuntimeBootstrap::start(
+            std::move(config), transport.outputSink(), statusProvider);
+      } else {
+        // Battery and Unknown both fail closed before any RuntimeResources,
+        // ModelPackage, RuntimeModel, or Engine construction.
+        bootstrap = engine::RuntimeBootstrap::startModelLess(
+            std::move(config), transport.outputSink(), statusProvider);
+      }
     } catch (const engine::RuntimeBootstrapError &error) {
       if (transport.shutdownRequested())
         return static_cast<int>(engine::NativeProcessExit::CleanEof);
@@ -357,14 +468,36 @@ int runNative(const engine::NativeArguments &arguments) {
   if (transport.shutdownRequested())
     return static_cast<int>(engine::NativeProcessExit::CleanEof);
   published = bootstrap.get();
+  published->setPowerObservation(pendingPower);
+  if (const auto authorization = initialServingAuthorization(
+          arguments.pauseOnBattery, batteryPolicy.initialPower))
+    static_cast<void>(published->observePower(*authorization));
 
-  transport.setControlHandler([&pressureMonitor, published] {
+  transport.setControlHandler([&pressureMonitor, pendingPower, published] {
+    // The same power callbacks the pump uses later: a Battery/Unknown/AC
+    // change observed while serving is recorded here (the shared latest-value
+    // handoff), consumed at this command-free point, and advanced by the
+    // Bootstrap's own safe point in controlPass().
+    if (pendingPower) {
+      if (const auto observation = pendingPower->take())
+        static_cast<void>(published->observePower(*observation));
+    }
     return published->controlPass(pressureMonitor.pressure());
   });
+  // Resolve the synchronous sample on the native owner thread before the
+  // transport accepts its first queued request. Later changes use the same
+  // control callback and safe-point operations below.
+  // The synchronous sample lands before the first queued request: recording
+  // it here is enough; the Bootstrap's own pump advances it at the next
+  // controlPass() safe point, and never joins an in-flight worker from here.
+  if (pendingPower) {
+    if (const auto observation = pendingPower->take())
+      static_cast<void>(published->observePower(*observation));
+  }
   const auto exit = transport.run(bootstrap->nativeLoop());
   switch (exit) {
   case engine::NativeProcessExit::CleanEof:
-    if (bootstrap->resources().cache().persistent())
+    if (bootstrap->hasResources() && bootstrap->resources().cache().persistent())
       closePersistentCache(transport, *bootstrap);
     break;
   case engine::NativeProcessExit::ProtocolFailure:
@@ -380,7 +513,7 @@ int runNative(const engine::NativeArguments &arguments) {
     // A command the backend gave up on may never complete; teardown would
     // wait for it. The OS and the driver reclaim everything, as after
     // SIGKILL.
-    if (!bootstrap->resources().backend().healthy()) {
+    if (bootstrap->hasResources() && !bootstrap->resources().backend().healthy()) {
       writeStderrLine(
           "error: the Metal backend is unhealthy; exiting without teardown");
       _exit(static_cast<int>(exit));
@@ -427,6 +560,7 @@ int checkModel(int argc, char **argv) {
 } // namespace
 } // namespace splash
 
+#ifndef SPLASH_NATIVE_MAIN_TEST
 int main(int argc, char **argv) {
   @autoreleasepool {
     try {
@@ -452,3 +586,4 @@ int main(int argc, char **argv) {
     }
   }
 }
+#endif

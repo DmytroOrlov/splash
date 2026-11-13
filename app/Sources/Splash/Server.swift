@@ -246,11 +246,11 @@ final class Server {
     /// A start the engine refuses for want of memory, in the words of the launch options: the
     /// model, with its reserves, needs more than the budget, the memory limit set or this Mac's own;
     /// or the context length set is more than the memory left, or the SSD cache, holds.
-    nonisolated static func memoryProblem(_ message: String, settings: ServeSettings) -> String? {
+    nonisolated static func memoryProblem(_ message: String, settings: ServeSettings, locale: Locale = .current) -> String? {
         if let match = message.firstMatch(of: /require (\d+) bytes but the Metal memory budget is (\d+) bytes/),
            let need = Int64(match.1), let budget = Int64(match.2) {
             let size = { (bytes: Int64) in
-                "\((Double(bytes) / Double(1 << 30)).formatted(.number.precision(.fractionLength(0...1)))) GB"
+                "\((Double(bytes) / Double(1 << 30)).formatted(.number.precision(.fractionLength(0...1)).locale(locale))) GB"
             }
             if let limit = settings.memoryLimit, Int64(limit) << 30 == budget {
                 return "It needs \(size(need)) of memory but the memory limit is \(size(budget)). Raise the memory limit in Launch Options."

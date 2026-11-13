@@ -29,7 +29,7 @@ constexpr uint64_t kMaskResponseFixedBytes = 20;
 constexpr uint64_t kStatusRequestFixedBytes = 8;
 constexpr uint64_t kReleaseRequestFixedBytes = 8;
 constexpr uint64_t kReadyFixedBytes = 9;
-constexpr uint64_t kStartFixedBytes = 16;
+constexpr uint64_t kStartFixedBytes = 20;
 constexpr uint64_t kPromptProgressFixedBytes = 20;
 constexpr uint64_t kTokensFixedBytes = 16;
 constexpr uint64_t kMaskRequestFixedBytes = 24;
@@ -434,6 +434,9 @@ std::optional<ProtocolIssue> validateStart(const StartEvent &event) {
     return invalidEvent(IssueCode::InvalidCount, event.requestId,
                         "start event lane is invalid");
   }
+  if (!event.capacityTokens || event.matchedPromptTokens > event.capacityTokens)
+    return invalidEvent(IssueCode::InvalidCount, event.requestId,
+                        "start event capacity is invalid");
   return std::nullopt;
 }
 
@@ -590,6 +593,7 @@ EncodedEvent encodeStart(const StartEvent &event) {
   writer.u64(event.requestId);
   writer.u32(event.lane);
   writer.u32(event.matchedPromptTokens);
+  writer.u32(event.capacityTokens);
   return success(writer.take());
 }
 

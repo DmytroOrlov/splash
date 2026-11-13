@@ -29,6 +29,119 @@ namespace splash::engine {
 
 struct RuntimeCacheIdentity;
 
+// Lifecycle status is copied into detached snapshots so it remains readable
+// while the inference residency (and therefore Engine) is absent.
+enum class LifecyclePower { Unknown, AC, Battery };
+enum class LifecycleState {
+  Ready,
+  Draining,
+  Suspended,
+  Recovering,
+  RecoveryFailed,
+  Shutdown,
+};
+
+[[nodiscard]] inline const char *lifecyclePowerName(
+    LifecyclePower power) noexcept {
+  switch (power) {
+  case LifecyclePower::Unknown: return "unknown";
+  case LifecyclePower::AC: return "ac";
+  case LifecyclePower::Battery: return "battery";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] inline const char *lifecycleStateName(
+    LifecycleState state) noexcept {
+  switch (state) {
+  case LifecycleState::Ready: return "ready";
+  case LifecycleState::Draining: return "draining";
+  case LifecycleState::Suspended: return "suspended";
+  case LifecycleState::Recovering: return "recovering";
+  case LifecycleState::RecoveryFailed: return "recovery_failed";
+  case LifecycleState::Shutdown: return "shutdown";
+  }
+  return "shutdown";
+}
+
+[[nodiscard]] inline bool validLifecyclePower(LifecyclePower power) noexcept {
+  return power == LifecyclePower::Unknown || power == LifecyclePower::AC ||
+         power == LifecyclePower::Battery;
+}
+
+[[nodiscard]] inline bool validLifecycleState(LifecycleState state) noexcept {
+  return state == LifecycleState::Ready || state == LifecycleState::Draining ||
+         state == LifecycleState::Suspended ||
+         state == LifecycleState::Recovering ||
+         state == LifecycleState::RecoveryFailed ||
+         state == LifecycleState::Shutdown;
+}
+
+struct LifecycleStatusSnapshot {
+  LifecyclePower power = LifecyclePower::Unknown;
+  LifecycleState state = LifecycleState::RecoveryFailed;
+  uint64_t revision = 0;
+  // [FR-024 / T020] Published by the lifecycle owner's pump, one per
+  // meaningful lifecycle state change; monotonic within the process generation
+  // it was minted in. Its three-domain ordering with (processGeneration,
+  // lifecycleRevision) is T038's; the pump is its only source.
+  uint64_t observationSequence = 0;
+  bool controlReady = false;
+  bool inferenceReady = false;
+  bool modelResident = false;
+  uint32_t configuredContextCeiling = 0;
+  std::optional<uint32_t> effectiveContextTokens;
+  std::string lastError;
+};
+
+// This value contains no owning or borrowed runtime pointers. An unknown power
+// source is representable, but can never authorize inference readiness.
+[[nodiscard]] inline bool validLifecycleStatus(
+    const LifecycleStatusSnapshot &status) noexcept {
+  if (!validLifecyclePower(status.power) || !validLifecycleState(status.state) ||
+      !status.configuredContextCeiling)
+    return false;
+  if (status.inferenceReady) {
+    return status.controlReady && status.state == LifecycleState::Ready &&
+           status.power == LifecyclePower::AC && status.modelResident &&
+           status.effectiveContextTokens &&
+           *status.effectiveContextTokens > 0 &&
+           *status.effectiveContextTokens <= status.configuredContextCeiling;
+  }
+  if (status.state == LifecycleState::Ready ||
+      (status.state == LifecycleState::Suspended && status.modelResident)) {
+    return false;
+  }
+  return !status.effectiveContextTokens ||
+         (*status.effectiveContextTokens > 0 &&
+          *status.effectiveContextTokens <= status.configuredContextCeiling);
+}
+
+struct ResourceSnapshot {
+  LifecycleStatusSnapshot lifecycle;
+  uint64_t backendAllocatedBytes = 0;
+  bool modelPackageResident = false;
+  std::optional<uint64_t> modelPackageResidentBytes;
+  bool runtimeResident = false;
+  std::optional<uint64_t> runtimeResidentBytes;
+  uint64_t retainedCacheBytes = 0;
+  uint64_t retainedKvBytes = 0;
+  uint64_t retainedStateBytes = 0;
+  bool modelTelemetryAvailable = false;
+};
+
+[[nodiscard]] inline bool validResourceSnapshot(
+    const ResourceSnapshot &snapshot) noexcept {
+  return validLifecycleStatus(snapshot.lifecycle) &&
+         (!snapshot.lifecycle.modelResident ||
+          (snapshot.modelPackageResident && snapshot.runtimeResident)) &&
+         (!snapshot.runtimeResident || snapshot.modelPackageResident) &&
+         snapshot.modelTelemetryAvailable == snapshot.lifecycle.modelResident &&
+         (snapshot.modelPackageResident ||
+          !snapshot.modelPackageResidentBytes) &&
+         (snapshot.runtimeResident || !snapshot.runtimeResidentBytes);
+}
+
 enum class WarmupStepStatus { Pending, Complete, MemoryLimited };
 
 struct WarmupReport {
@@ -304,6 +417,21 @@ struct KvSpillStatus final {
     const AneFfnSnapshot &aneFfn, ThermalState thermalState,
     const std::optional<model::SparseRowStats> &streamedTable = std::nullopt,
     const std::optional<model::ExpertStoreStats> &streamedExperts = std::nullopt,
-    const std::optional<KvSpillStatus> &kvSpill = std::nullopt);
+    const std::optional<KvSpillStatus> &kvSpill = std::nullopt,
+    const std::optional<LifecycleStatusSnapshot> &lifecycle = std::nullopt);
+
+// Status while the model-bound stratum is absent and the retained graph
+// (Cache, KV, persistence and backing) is not: the ownership and retained byte
+// counts it states are the caller's snapshot evidence (ResourceSnapshot), and
+// every section scoped to a loaded model or an Engine is null rather than a
+// value this observation never measured. It refuses a snapshot that claims
+// residency or inference readiness: only the Engine-borne status above can
+// report a live model. T037 gives this model-less field shape its wire contract
+// (the server codec, the golden document and the Python reading).
+[[nodiscard]] std::string runtimeStatusJson(const ResourceSnapshot &resources,
+                                            const RuntimeMetricsSnapshot &metrics,
+                                            MemoryPressure memoryPressure,
+                                            std::string failureReason,
+                                            const ResourceWaitSnapshot &resourceWait);
 
 } // namespace splash::engine

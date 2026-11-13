@@ -1122,10 +1122,11 @@ void testTieredWriteReuseAndFailure() {
     require(reclaimStateBytes(fixture.cache, CacheReclaimMode::ReleaseExtents) == 100,
             "demotion did not free RAM");
     {
-      // A hit inside the write window is a disk hit queued behind the write.
-      auto lookup = fixture.lookup(129);
-      require(lookup.state && !lookup.state->state()->residentBytes(),
-              "in-flight copy was not served from disk");
+      // The copy this write is producing is owed, not acquired: the chain has
+      // no other state, so the lookup offers none and keeps the KV boundary.
+      const auto owed = fixture.lookup(129);
+      require(!owed.state && owed.stateOffloadPending && owed.kvBoundary == 128 && !owed.lostState,
+              "the in-flight copy was obtained as a reusable lease");
     }
     control->ready = true;
     control->success = !fail;
@@ -1134,6 +1135,12 @@ void testTieredWriteReuseAndFailure() {
     require(fail ? snapshot.entries == 0 && snapshot.offloadFailures == 1 && control->slots == 0
                  : snapshot.entries == 1 && snapshot.diskBytes == 100 && control->slots == 1,
             "failed or completed write has incorrect lifetime");
+    if (!fail) {
+      // Once that write lands, the hit is a disk hit.
+      auto lookup = fixture.lookup(129);
+      require(lookup.state && !lookup.state->state()->residentBytes(),
+              "the completed write was not served from disk");
+    }
   }
 }
 
@@ -1249,10 +1256,10 @@ void testInvalidationDuringOffload() {
   fixture.cache.discardState(fixture.blocks[3], source.get());
   require(fixture.cache.snapshot().stateCache.entries == 1,
           "a stale handle to the RAM copy discarded the disk copy");
-  {
-    auto twin = fixture.lookup(129);
-    fixture.cache.discardState(fixture.blocks[3], twin.state->state().get());
-  }
+  // No lookup takes the copy whose write has not landed, so the block gives
+  // that copy up by its own invalidation before the write drains.
+  require(!fixture.lookup(129).state, "an in-flight copy was acquired as a reusable lease");
+  fixture.cache.invalidateState(fixture.blocks[3]);
   control->ready = true;
   require(fixture.cache.pollTransfers() && fixture.cache.snapshot().stateCache.entries == 0 &&
               control->slots == 0, "completed write revived an invalidated disk copy");
@@ -1512,8 +1519,9 @@ void testOrdinaryPublicationUpgradesDiskCheckpoint() {
 }
 
 // A state no cache slot can hold is written from its lane straight to disk:
-// the entry is the disk copy with the write in flight, a hit inside the
-// write window is a disk hit, one write at a time holds the staging buffer,
+// the entry is the disk copy with the write in flight: no lease comes out of
+// it until that write lands, and the hit follows it, one write at a time
+// holding the staging buffer,
 // a block already on disk is reused rather than published twice, and under
 // KV pressure the stated leaf is demoted rather than dropped.
 void testDiskPublicationLifecycle() {
@@ -1528,10 +1536,12 @@ void testDiskPublicationLifecycle() {
               stats.offloads == 1 && stats.publications == 1 && control->slots == 1,
           "disk publication did not become a disk copy with its write in flight");
   {
-    auto lookup = fixture.lookup(129);
-    require(lookup.resumeBoundary() == 128 && lookup.state &&
-                !lookup.state->state()->residentBytes() && !lookup.lostState,
-            "the state in flight was not served from disk");
+    // The entry is the disk copy with its write in flight: no reusable lease
+    // comes out of it, its block keeps its KV boundary, and the lookup owes
+    // that transfer.
+    const auto owed = fixture.lookup(129);
+    require(!owed.state && owed.stateOffloadPending && owed.kvBoundary == 128 && !owed.lostState,
+            "the state in flight was not reported as owed by the lookup");
   }
   require(!fixture.cache.publishStateToDisk(fixture.blocks[1], write, false) &&
               fixture.cache.snapshot().stateCache.entries == 1 && control->slots == 1,
@@ -1548,6 +1558,13 @@ void testDiskPublicationLifecycle() {
   stats = fixture.cache.snapshot().stateCache;
   require(stats.entries == 1 && stats.diskBytes == 100 && stats.offloadFailures == 0,
           "completion changed tier occupancy");
+  {
+    // The landed copy is now the reusable one, still with no RAM copy.
+    auto landed = fixture.lookup(129);
+    require(landed.resumeBoundary() == 128 && landed.state &&
+                !landed.state->state()->residentBytes() && !landed.lostState,
+            "the state whose write completed was not served from disk");
+  }
   require(fixture.cache.publishStateToDisk(fixture.blocks[1], write, false) && control->slots == 2,
           "the next publication did not follow the finished write");
   require(
@@ -1576,9 +1593,13 @@ void testDiskPublicationFailure() {
           "the lost state was not recognised");
 }
 
-// A write that fails while a lookup holds its disk copy leaves the block
-// nothing; a publication there meanwhile, in RAM or on disk, takes the
-// entry over and outlives the reader.
+// A state whose copy an offload cannot publish leaves the block with nothing
+// of it, its KV boundary reported as a lost state. A copy whose write did
+// land, and whose read then failed, stays in the cache beside the lookup that
+// holds it: the block offers no reusable state while that lease lives, and a
+// publication there meanwhile, in RAM or on disk, takes the entry over and
+// outlives the reader. Neither copy is obtainable while its write is still
+// in flight: an unfinished offload is owed, never acquired.
 void testFailedWriteUnderALookup() {
   for (bool onDisk : {false, true}) {
     CacheFixture fixture;
@@ -1586,18 +1607,38 @@ void testFailedWriteUnderALookup() {
     const auto block = fixture.blocks[3];
     publishReusable(fixture, block, std::make_shared<TieredState>(control));
     require(fixture.cache.reclaimOneState(StateClass::Ordinary, false).made, "state was not demoted");
-    auto reader = fixture.lookup(129);
-    require(reader.state && !reader.state->state()->residentBytes(),
-            "the state in flight was not served from disk");
+    {
+      // The write is in flight: nothing is acquirable, nothing is pinned, and
+      // the lookup owes that transfer.
+      const auto owed = fixture.lookup(129);
+      require(!owed.state && owed.stateOffloadPending && owed.kvBoundary == 128 && !owed.lostState,
+              "the demotion's in-flight copy was obtained as a reusable lease");
+    }
     control->ready = true;
     control->success = false;
     require(fixture.cache.pollTransfers(), "the failing write did not run");
     auto stats = fixture.cache.snapshot().stateCache;
-    require(stats.entries == 1 && stats.pinned == 1 && stats.diskBytes == 0 &&
-                stats.offloadFailures == 1 && !fixture.lookup(129).state,
-            "a failed write under a lookup left a copy behind");
+    require(stats.entries == 0 && stats.offloadFailures == 1 && stats.diskBytes == 0 &&
+                !fixture.lookup(129).state && fixture.lookup(129).lostState,
+            "a failed write beside no holder left a copy behind");
+    // The block takes a state again, its write lands, and a lookup pins that
+    // copy; its read fails, which condemns the copy the reader holds.
+    control->success = true;
+    publishReusable(fixture, block, std::make_shared<TieredState>(control));
+    require(fixture.cache.reclaimOneState(StateClass::Ordinary, false).made,
+            "the second state was not demoted");
+    control->ready = true;
+    require(fixture.cache.pollTransfers(), "the demotion did not land");
+    auto reader = fixture.lookup(129);
+    require(reader.state && !reader.state->state()->residentBytes(),
+            "the copy whose write had landed was not served from disk");
+    fixture.cache.discardState(block, reader.state->state().get());
+    stats = fixture.cache.snapshot().stateCache;
+    require(stats.entries == 1 && stats.pinned == 1 && stats.invalidations == 1 &&
+                stats.diskBytes == 100 && !fixture.lookup(129).state &&
+                fixture.cache.snapshot().stateCache.offloadFailures == 1,
+            "the condemned copy stayed reusable, or the reader did not hold the block");
     if (onDisk) {
-      control->success = true;
       const StateWriter write = [&](std::function<void()>) { return writeState(control); };
       require(fixture.cache.publishStateToDisk(block, write, false) && fixture.cache.pollTransfers(),
               "the disk publication at the emptied block failed");
@@ -3743,9 +3784,24 @@ void testRecycleNeverDropsAStateInUseForTheWriteSlot() {
           "a state in use was dropped for a busy write slot");
   control->ready = true;
   require(fixture.cache.pollTransfers() && fixture.cache.reclaimInUseState() &&
-              fixture.lookup(65).resumeBoundary() == 64 &&
+              !fixture.cache.stateResident(fixture.blocks[1]) &&
               fixture.cache.snapshot().stateCache.offloads == 2,
           "the state in use was not written for the publication in use");
+  {
+    // Its copy is still being written: this lookup stops at the shallower state
+    // of the chain and never takes the block whose write has not landed.
+    const auto partial = fixture.lookup(65);
+    std::cout << "S1 block=" << (partial.state ? partial.state->kvBlock() : 0u)
+              << " want=" << fixture.blocks[0] << " resume=" << partial.resumeBoundary()
+              << " kv=" << partial.kvBoundary << " lost=" << partial.lostState
+              << " pinned=" << fixture.cache.snapshot().stateCache.pinned << '\n';
+    require(partial.state && partial.state->kvBlock() == fixture.blocks[0] &&
+                partial.resumeBoundary() == 32 && partial.kvBoundary == 64 && !partial.lostState &&
+                fixture.cache.snapshot().stateCache.pinned == 1,
+            "the in-flight copy of a state in use was obtained as a reusable lease");
+  }
+  require(fixture.cache.pollTransfers() && fixture.lookup(65).resumeBoundary() == 64,
+          "the written state in use was not reusable once its write landed");
 }
 
 // Disk replacement follows the class of the copy it makes room for: the
@@ -4062,9 +4118,19 @@ void testOrdinaryPublicationWaitsForTheWriteSlot() {
   require(fixture.cache.pollTransfers() &&
               fixture.cache.reclaimOneState(StateClass::Ordinary, false) &&
               !fixture.cache.stateResident(fixture.blocks[1]) &&
-              fixture.cache.snapshot().stateCache.offloads == 2 &&
-              fixture.lookup(65).resumeBoundary() == 64,
+              fixture.cache.snapshot().stateCache.offloads == 2,
           "the waiting victim was not written once the staging buffer was free");
+  {
+    // The written victim is not reusable until its write lands: the lookup
+    // stops at the shallower state and keeps the KV boundary of the block
+    // whose copy is still being written.
+    const auto partial = fixture.lookup(65);
+    require(partial.state && partial.state->kvBlock() == fixture.blocks[0] &&
+                partial.resumeBoundary() == 32 && partial.kvBoundary == 64 && !partial.lostState,
+            "the waiting victim's in-flight copy was obtained as a reusable lease");
+  }
+  require(fixture.cache.pollTransfers() && fixture.lookup(65).resumeBoundary() == 64,
+          "the written victim was not reusable once its write landed");
 }
 
 // While the engine may not grow, an extent's bytes give a state's buffers
@@ -5453,6 +5519,128 @@ void testUnreadableCopyLeavesWithItsHolders() {
 
 // A cut copies only the chunks of sources from its first change on; the
 // chunks before it are the last cut's.
+// [Gate 3 / U-02] The cache's retained-IO witness names every transfer it still
+// owns by the owner that keeps it owned, and nothing counts as drained while a
+// page, a slot or a publication is owed. A copy the tier's file worker is still
+// running refuses as the tier's; the same copy after it has landed, before the
+// poll that publishes or discards its disk state, refuses as `owed`.
+void testRetainedIoRefusesItsKVWritesUntilEachIsPolled() {
+  test::TestKvTier tier;
+  CacheFixture fixture(&tier);
+  engine::Cache &cache = fixture.cache;
+  require(cache.retainedIoIdle() && !cache.transfersInFlight(),
+          "a cache with no transfer started did not report its IO quiescent");
+  // A state on disk: the chain's leaves are the KV it restores through, so a
+  // leaf's demotion is written rather than dropped.
+  auto control = std::make_shared<TransferControl>();
+  control->ready = true;
+  cache.publishCompositeState(fixture.blocks[3], std::make_shared<TieredState>(control), false);
+  require(cache.reclaimOneState(StateClass::Ordinary, true) && cache.pollTransfers(),
+          "the state was not written to disk");
+  require(cache.retainedIoIdle(), "the published state's copy kept its write owned");
+  require(cache.reclaimOne(CacheReclaimMode::KeepExtents, ReclaimClass::InUse).madeProgress,
+          "the leaf's demotion did not start");
+  auto io = cache.retainedIo();
+  require(io.tierWrites == 1 && io.kvWrites == 1 && io.owed == 0 && !io.quiescent(),
+          "the copy the tier is running was not named by its owner");
+  // The copy has landed and no one has polled it: its disk state is published
+  // there and its page returns there, so it is owed rather than running.
+  tier.complete();
+  io = cache.retainedIo();
+  require(io.owed == 1 && io.tierWrites == 1 && io.kvWrites == 1 && !io.quiescent(),
+          "a landed copy was drained before the poll that publishes it");
+  require(cache.pollTransfers() && !cache.pollTransfers(), "the copy was not consumed once");
+  require(cache.retainedIoIdle(), "the polled copy or its page stayed owned");
+}
+
+// [Gate 3 / U-02] A restore the tier was asked for owns its page, the waiters
+// on it and the end it owes its request until the poll ends them, and a restore
+// that failed owns the cleanup that keeps its block untrusted: neither is
+// drained at the point its IO has merely landed.
+void testRetainedIoRefusesARestoreUntilItsCleanupHasRun() {
+  test::TestKvTier tier;
+  CacheFixture fixture(&tier);
+  engine::Cache &cache = fixture.cache;
+  auto control = std::make_shared<TransferControl>();
+  control->ready = true;
+  cache.publishCompositeState(fixture.blocks[3], std::make_shared<TieredState>(control), false);
+  require(cache.reclaimOneState(StateClass::Ordinary, true) && cache.pollTransfers(),
+          "the state was not written to disk");
+  demoteLeaves(cache, tier, 2);
+  tier.transferLimit = 1;
+  auto lookup = cache.lookup(fixture.prompt, {});
+  cache.beginRequest(2);
+  require(admitRestore(cache, 2, lookup).granted() && tier.restores == 1, "restore was denied");
+  auto io = cache.retainedIo();
+  require(io.kvRestores == 2 && io.tierRestores == 1 && io.owed == 0 && !io.quiescent(),
+          "the restores the tier was asked for were not named by their owners");
+  // Both blocks of the demoted tail are owed their restore: only the tier's
+  // room lets one of them run at a time, and the other waits for it, holding
+  // its block's transfer state and the waiters on it.
+  // Its read failed and it has not been polled: the block stays untrusted only
+  // at the poll, and until then the failed read is owed, so a drain that
+  // skipped it would publish through a copy nothing has condemned.
+  tier.complete(false);
+  io = cache.retainedIo();
+  require(io.owed == 1 && io.kvRestores == 2 && io.tierRestores == 1 && !io.quiescent() &&
+              cache.kvRestoreStatus(2) != KvRestoreStatus::Failed,
+          "a failed restore was drained before its cleanup ran");
+  require(cache.pollTransfers() && tier.restores == 2 &&
+              cache.kvRestoreStatus(2) == KvRestoreStatus::Failed,
+          "the failed restore was not consumed, or its retry did not start");
+  io = cache.retainedIo();
+  require(io.kvRestores >= 1 && io.owed == 0 && !io.quiescent(),
+          "the retry of the poisoned block was not named by its owner");
+  tier.complete();
+  require(cache.pollTransfers(), "the retry did not land");
+  io = cache.retainedIo();
+  require(io.kvWrites == 0 && io.tierWrites == 0 && io.owed == 0 && io.tierRestores == 0,
+          "a finished restore outlived its poll");
+  require(cache.retainedIoIdle(), "the read of the poisoned block stayed owned");
+  lookup = {};
+  cache.endRequest(2);
+}
+
+// [Gate 3 / U-02] The one state write refuses the drain while it runs and
+// again once it has landed: only pollOffload publishes its disk copy or
+// discards a failed one, and until then the transfer holds its storage, the
+// RAM copy it reads in place and the quota it drew. `writing()` cannot tell
+// the running write from the landed one, so it cannot show this second refusal.
+void testRetainedIoRefusesTheStateWriteUntilItIsPolled() {
+  CacheFixture fixture;
+  require(fixture.cache.retainedIoIdle(), "an empty cache's IO witness was not quiescent");
+  auto control = std::make_shared<TransferControl>();
+  publishReusable(fixture, fixture.blocks[3], std::make_shared<TieredState>(control));
+  require(fixture.cache.reclaimOneState(StateClass::Ordinary, false).made,
+         "the demotion did not start its write");
+  auto io = fixture.cache.retainedIo();
+  require(io.stateWrites == 1 && io.owed == 0 && !io.quiescent(),
+          "the state write running was not named by its owner");
+  control->ready = true;
+  io = fixture.cache.retainedIo();
+  require(io.stateWrites == 1 && io.owed == 1 && !io.quiescent(),
+          "a landed state write was drained before its poll published it");
+  require(fixture.cache.pollTransfers() && !fixture.cache.pollTransfers(),
+          "the write was not consumed exactly once");
+  require(fixture.cache.retainedIoIdle() && fixture.cache.snapshot().stateCache.entries == 1 &&
+              control->slots == 1,
+          "the published copy or its write outlived the poll");
+  control->ready = false;
+  control->success = false;
+  publishReusable(fixture, fixture.blocks[1], std::make_shared<TieredState>(control));
+  require(fixture.cache.reclaimOneState(StateClass::Ordinary, false).made,
+          "the second demotion did not start its write");
+  control->ready = true;
+  io = fixture.cache.retainedIo();
+  require(io.stateWrites == 1 && io.owed == 1 && !io.quiescent(),
+          "a failed state write was drained before its cleanup ran");
+  require(fixture.cache.pollTransfers() && fixture.cache.retainedIoIdle() &&
+              fixture.cache.snapshot().stateCache.offloadFailures == 1 &&
+              fixture.cache.snapshot().stateCache.entries == 1 &&
+              fixture.cache.snapshot().stateCache.diskBytes == 100 && control->slots == 1,
+          "a failed write left a disk copy published, or stayed owned past its poll");
+}
+
 void testCutsShareUnchangedChunks() {
   Spilling spill({1, 1}, 400);
   // The tier writes a share of the pages at a time.
@@ -5918,6 +6106,9 @@ int main() {
     testFullShortfallsTrimBeforeAnyLeafGoes();
     testFullShortfallsKeepTheTailsOfStatesTheSsdKeeps();
     testFullShortfallsAtTheWallTakeDeadLeavesFirst();
+    testRetainedIoRefusesItsKVWritesUntilEachIsPolled();
+    testRetainedIoRefusesARestoreUntilItsCleanupHasRun();
+    testRetainedIoRefusesTheStateWriteUntilItIsPolled();
     std::cout << "engine cache tests passed\n";
     return 0;
   } catch (const std::exception &error) {

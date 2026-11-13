@@ -353,6 +353,14 @@ NativeProcessExit FdTransport::run(NativeRuntime &loop) {
     }
     if (descriptor.revents & POLLIN)
       wake->drain();
+    else if (result == 0)
+      // The deadline arrived with nothing on the wake pipe: the wake source was
+      // a due point (a retained restore point with no Engine published, a
+      // health/admission retry), which only the native control pass can service.
+      // Schedule that pass for the next iteration through the same deferred
+      // control the shutdown and power paths use — still under the command-in-
+      // flight guard, still never calling the lifecycle directly here.
+      deferredControl = true;
     // A zero result is a deadline, health-check or admission-retry wake; the
     // next iteration takes input, runs control and ticks.
   }

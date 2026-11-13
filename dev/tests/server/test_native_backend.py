@@ -1,10 +1,13 @@
 import array
+import copy
 import gc
 import io
+import json
 import math
 import queue
 import random
 import struct
+import tempfile
 import threading
 import time
 import unittest
@@ -177,8 +180,12 @@ class NativeBackendContractTests(unittest.TestCase):
         transport = backend_api.NativeBackend(
             runtime, DigitTokenizer(), lambda _record: None
         )
+        transport.configure_context_ceiling(128, self._context_limit_updated)
         self.addCleanup(transport.close)
         return transport, runtime
+
+    def _context_limit_updated(self, context):
+        self.last_context = context
 
     def wait_for_recovery(self, transport):
         deadline = time.monotonic() + 1.0
@@ -192,6 +199,15 @@ class NativeBackendContractTests(unittest.TestCase):
             event = job.events.get(timeout=timeout)
             if event[0] in ("done", "error"):
                 return event
+
+    def test_default_ready_status_keeps_one_native_generation(self):
+        transport, native = self.make_transport()
+        generation = native.restart_count
+        for _ in range(2):
+            self.assertTrue(transport.status()["ready"])
+            self.assertIsNone(transport.refusal())
+        self.assertEqual(native.restart_count, generation)
+        self.assertIsNone(transport.recovery)
 
     def test_job_maps_to_generation_request_and_mask_has_anchor_row(self):
         constraint = FakeConstraint(words_per_mask=2)
@@ -253,6 +269,7 @@ class NativeBackendContractTests(unittest.TestCase):
         app = make_frontend(
             DigitTokenizer(), transport, "test-model", 128, 10, 2, vision=True
         )
+        transport.status()
         job = app.prepare(
             {
                 "model": "test-model",
@@ -314,7 +331,7 @@ class NativeBackendContractTests(unittest.TestCase):
         self.assertGreater(frame.absolute_deadline_unix_micros, 0)
         self.assertGreater(frame.remaining_deadline_micros, 0)
 
-        process.send(wire.StartEvent(frame.request_id, 0, 0))
+        process.send(wire.StartEvent(frame.request_id, 0, 0, 131_072))
         process.send(wire.TokensEvent(frame.request_id, 0, (7,)))
         process.send(
             wire.DoneEvent(
@@ -338,6 +355,10 @@ class NativeBackendContractTests(unittest.TestCase):
             DigitTokenizer(), transport, "test-model", 128, math.inf, 2, vision=True
         )
         self.assertEqual(app.request_deadline({"timeout": 5}, 10), 15)
+        with mock.patch.object(
+            native, "status", return_value=native_peer.status_event()
+        ):
+            transport.status()
         job = app.prepare(
             {"model": "test-model", "messages": [{"role": "user", "content": "hello"}]},
             deadline=FOREVER,
@@ -369,7 +390,7 @@ class NativeBackendContractTests(unittest.TestCase):
         self.assertEqual(frame.score_tokens, (101, 202, 303))
         self.assertEqual(frame.logical_max_output_tokens, 0)
 
-        process.send(wire.StartEvent(frame.request_id, 0, 0))
+        process.send(wire.StartEvent(frame.request_id, 0, 0, 131_072))
         process.send(
             wire.DoneEvent(
                 frame.request_id,
@@ -402,7 +423,7 @@ class NativeBackendContractTests(unittest.TestCase):
         process = factory.processes[0]
         request = process.stdin.wait_for(wire.RequestFrame)[0]
         self.assertEqual(request.constraint, wire.ConstraintMode.TOKEN_MASK)
-        process.send(wire.StartEvent(request.request_id, 0, 0))
+        process.send(wire.StartEvent(request.request_id, 0, 0, 131_072))
 
         process.send(wire.MaskRequestEvent(request.request_id, 71, 2, ()))
         initial = process.stdin.wait_for(wire.MaskResponseFrame)[0]
@@ -432,7 +453,7 @@ class NativeBackendContractTests(unittest.TestCase):
         transport.submit(job)
         call = runtime.calls[0]
 
-        call.emit(wire.StartEvent(call.request_id, 2, 2))
+        call.emit(wire.StartEvent(call.request_id, 2, 2, 131_072))
         call.emit(wire.TokensEvent(call.request_id, 0, (7, 8)))
         call.complete(
             result=success_result(
@@ -489,7 +510,7 @@ class NativeBackendContractTests(unittest.TestCase):
             transport.submit(job)
             process = factory.processes[0]
             frame = process.stdin.wait_for(wire.RequestFrame)[0]
-            process.send(wire.StartEvent(frame.request_id, 0, 0))
+            process.send(wire.StartEvent(frame.request_id, 0, 0, 131_072))
             process.send(wire.TokensEvent(frame.request_id, 0, (7,)))
             self.assertEqual(job.events.get(timeout=1.0), ("start", None))
             self.assertEqual(job.events.get(timeout=1.0), ("text", "7"))
@@ -504,6 +525,39 @@ class NativeBackendContractTests(unittest.TestCase):
         self.assertEqual(len(lines), 2)
         self.assertEqual(lines[0], "Started · input 4 · cached 0")
         self.assertTrue(lines[1].startswith("Done · input 4 · cached 0 · output 1"))
+
+    def test_start_evidence_records_decoded_capacity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = f"{directory}/starts.jsonl"
+            initial = native_peer.serialize_event(wire.ReadyEvent(4, 1024, False))
+            factory = FakeFactory(initial_output=initial)
+            with mock.patch.dict("os.environ", {"SPLASH_START_EVIDENCE": path}):
+                native = runtime.MultiplexedRuntime(
+                    process_factory=factory, pending_limit=4, eager_start=True
+                )
+                transport = backend_api.NativeBackend(
+                    native, DigitTokenizer(), lambda _: None
+                )
+            job = make_job()
+            transport.submit(job)
+            process = factory.processes[0]
+            frame = process.stdin.wait_for(wire.RequestFrame)[0]
+            process.send(wire.StartEvent(frame.request_id, 2, 2, 640))
+            self.assertEqual(job.events.get(timeout=1.0), ("start", None))
+            process.send(
+                wire.DoneEvent(
+                    frame.request_id, wire.FinishReason.STOP, 4, 0, 100, 0, 150, ()
+                )
+            )
+            self.assertEqual(self.terminal(job)[0], "done")
+            self.assertEqual(native.readiness.max_context_tokens, 1024)
+            transport.close()
+            with open(path, encoding="utf-8") as evidence_file:
+                evidence = json.loads(evidence_file.readline())
+            self.assertEqual(evidence["capacity_tokens"], 640)
+            self.assertEqual(evidence["request_id"], frame.request_id)
+            self.assertEqual(evidence["lane"], 2)
+            self.assertEqual(evidence["matched_prompt_tokens"], 2)
 
     def test_finalized_request_returns_its_image_budget(self):
         factory = FakeFactory()
@@ -525,7 +579,7 @@ class NativeBackendContractTests(unittest.TestCase):
         transport.submit(job)
         process = factory.processes[0]
         frame = process.stdin.wait_for(wire.RequestFrame)[0]
-        process.send(wire.StartEvent(frame.request_id, 0, 0))
+        process.send(wire.StartEvent(frame.request_id, 0, 0, 131_072))
         process.send(
             wire.DoneEvent(
                 frame.request_id, wire.FinishReason.STOP, 4, 0, 100, 200, 350, ()
@@ -754,26 +808,171 @@ class NativeBackendContractTests(unittest.TestCase):
         self.assertFalse(transport.finalizer.is_alive())
         self.assertFalse(transport.active)
 
+    def test_lifecycle_order_rejects_reverse_sequence_and_old_generation(self):
+        transport, runtime = self.make_transport()
+
+        def document(revision, sequence, ready=True):
+            event = native_peer.status_event()
+            snapshot = backend_api.json_codec.loads(event.json)
+            snapshot["lifecycle"]["revision"] = revision
+            snapshot["lifecycle"]["observation_sequence"] = sequence
+            snapshot["ready"] = ready
+            snapshot["inference_ready"] = ready
+            snapshot["lifecycle"]["inference_ready"] = ready
+            return snapshot
+
+        generation = runtime.restart_count
+        self.assertTrue(transport._cache_status(document(9, 8), generation, 2))
+        self.assertFalse(transport._cache_status(document(9, 7, False), generation, 1))
+        self.assertEqual(transport.status_order, (9, 1, 8))
+        self.assertTrue(transport._cache_status(document(10, 1), generation, 3))
+        self.assertFalse(transport._cache_status(document(9, 200), generation, 4))
+        self.assertEqual(transport.status_order, (10, 1, 1))
+
+        runtime.restart_count += 1
+        self.assertFalse(transport._cache_status(document(11, 1, False), generation, 5))
+        self.assertTrue(
+            transport._cache_status(document(1, 1), runtime.restart_count, 6)
+        )
+        accepted = copy.deepcopy(transport.status_snapshot)
+        self.assertFalse(transport._cache_status(document(12, 1, False), generation, 7))
+        self.assertEqual(transport.status_order, (1, 1, 1))
+        self.assertEqual(transport.status_snapshot, accepted)
+
+    def test_duplicate_lifecycle_confirms_without_reapplying(self):
+        transport, runtime = self.make_transport()
+        snapshot = backend_api.json_codec.loads(native_peer.status_event().json)
+        generation = runtime.restart_count
+        self.assertTrue(transport._cache_status(snapshot, generation, 1))
+        captured = transport.status_snapshot_at
+        self.assertTrue(transport._cache_status(snapshot, generation, 2))
+        self.assertEqual(transport.status_snapshot_at, captured)
+        self.assertIsNotNone(transport.status_confirmed_at)
+        telemetry = copy.deepcopy(snapshot)
+        telemetry["metrics"] = {"completed": 1}
+        self.assertTrue(transport._cache_status(telemetry, generation, 3))
+        self.assertIsNotNone(transport.status_confirmed_at)
+        self.assertFalse(transport._cache_status(snapshot, generation, 2))
+        self.assertEqual(transport.status_snapshot["metrics"], {"completed": 1})
+        changed = copy.deepcopy(snapshot)
+        changed["inference_ready"] = False
+        self.assertFalse(transport._cache_status(changed, generation, 4))
+        self.assertIsNone(transport.status_confirmed_at)
+
+    def test_same_order_health_telemetry_updates_readiness(self):
+        transport, runtime = self.make_transport()
+        snapshot = backend_api.json_codec.loads(native_peer.status_event().json)
+        generation = runtime.restart_count
+        lifecycle = copy.deepcopy(snapshot["lifecycle"])
+        self.assertTrue(transport._cache_status(snapshot, generation, 1))
+        self.assertTrue(transport.is_ready())
+
+        for ordinal, pressure in ((2, "warning"), (3, "normal")):
+            snapshot["memory_pressure"] = pressure
+            transport.status_confirmed_at = 0
+            self.assertTrue(transport._cache_status(snapshot, generation, ordinal))
+            self.assertEqual(transport.status_snapshot["memory_pressure"], pressure)
+            self.assertEqual(transport.status_snapshot["lifecycle"], lifecycle)
+            self.assertEqual(transport.status_cached_ordinal, ordinal)
+            self.assertGreater(transport.status_confirmed_at, 0)
+            self.assertTrue(transport.is_ready())
+
+        snapshot["metal"] = {"healthy": False}
+        self.assertTrue(transport._cache_status(snapshot, generation, 4))
+        self.assertEqual(transport.status_snapshot["metal"], {"healthy": False})
+        self.assertFalse(transport.is_ready())
+        snapshot["metal"] = {"healthy": True}
+        self.assertTrue(transport._cache_status(snapshot, generation, 5))
+        self.assertTrue(transport.is_ready())
+
+        snapshot.update(ready=False, memory_pressure="critical")
+        self.assertTrue(transport._cache_status(snapshot, generation, 6))
+        self.assertFalse(transport.status_snapshot["ready"])
+        self.assertEqual(transport.status_snapshot["memory_pressure"], "critical")
+        self.assertFalse(transport.is_ready())
+        older = copy.deepcopy(snapshot)
+        older.update(ready=True, memory_pressure="normal")
+        self.assertFalse(transport._cache_status(older, generation, 5))
+        older["lifecycle"]["observation_sequence"] = 0
+        self.assertFalse(transport._cache_status(older, generation, 7))
+        older["lifecycle"].update(revision=0, observation_sequence=100)
+        self.assertFalse(transport._cache_status(older, generation, 8))
+        self.assertEqual(transport.status_snapshot, snapshot)
+        self.assertFalse(transport.is_ready())
+
+    def test_stale_ready_snapshot_is_refreshed_before_refusal(self):
+        transport, runtime = self.make_transport()
+        snapshot = backend_api.json_codec.loads(native_peer.status_event().json)
+        self.assertTrue(transport._cache_status(snapshot, runtime.restart_count, 1))
+        transport.status_confirmed_at = 0
+        self.assertIsNone(transport.refusal())
+        self.assertGreater(transport.status_confirmed_at, 0)
+        self.assertGreater(runtime.status_calls, 0)
+
+    def test_same_order_contradictions_cannot_reopen_readiness(self):
+        for field, value in (
+            ("power", "battery"),
+            ("state", "suspended"),
+            ("inference_ready", False),
+            ("effective_context_tokens", 64),
+        ):
+            with self.subTest(field=field):
+                transport, runtime = self.make_transport()
+                snapshot = backend_api.json_codec.loads(native_peer.status_event().json)
+                snapshot.update(ready=False, memory_pressure="critical")
+                self.assertTrue(
+                    transport._cache_status(snapshot, runtime.restart_count, 1)
+                )
+                changed = copy.deepcopy(snapshot)
+                changed.update(ready=True, memory_pressure="normal")
+                if field in ("power", "state", "inference_ready"):
+                    changed["lifecycle"][field] = value
+                else:
+                    changed[field] = value
+                self.assertFalse(
+                    transport._cache_status(changed, runtime.restart_count, 2)
+                )
+                self.assertEqual(transport.status_snapshot, snapshot)
+                self.assertIsNone(transport.status_confirmed_at)
+                with mock.patch.object(transport, "_queue_status_refresh_locked"):
+                    self.assertFalse(transport.is_ready())
+
     def test_native_ready_is_authoritative_and_malformed_status_fails_closed(self):
         transport, runtime = self.make_transport()
         runtime.status_event = wire.StatusJsonEvent(1, b"[]")
+        transport.status()
         self.assertFalse(transport.is_ready())
+
+        lifecycle = backend_api.json_codec.loads(native_peer.status_event().json)[
+            "lifecycle"
+        ]
+
+        def observation(sequence):
+            return {**lifecycle, "observation_sequence": sequence}
 
         # Native ready already folds in memory pressure and Metal health.
         runtime.status_event = native_peer.status_event(
-            ready=False, memory_pressure="critical"
+            ready=False, memory_pressure="critical", lifecycle=observation(1)
         )
+        transport.status()
         self.assertFalse(transport.is_ready())
 
-        runtime.status_event = native_peer.status_event(ready="false")
+        runtime.status_event = native_peer.status_event(
+            ready="false", lifecycle=observation(2)
+        )
+        transport.status()
         self.assertFalse(transport.is_ready())
 
-        runtime.status_event = native_peer.status_event(memory_pressure=None)
-        self.assertTrue(transport.is_ready())
+        runtime.status_event = native_peer.status_event(
+            memory_pressure=None, lifecycle=observation(3)
+        )
+        transport.status()
+        self.assertFalse(transport.is_ready())
 
-        runtime.status_event = native_peer.status_event()
+        runtime.status_event = native_peer.status_event(lifecycle=observation(4))
+        transport.status()
         self.assertTrue(transport.is_ready())
-        self.assertEqual(runtime.status_calls, 5)
+        self.assertGreaterEqual(runtime.status_calls, 5)
 
         runtime.status_event = wire.StatusJsonEvent(1, b'{"schema_version":3}')
         status = transport.status()
@@ -908,8 +1107,8 @@ class NativeBackendContractTests(unittest.TestCase):
         self.addCleanup(release.set)
         cache_status = transport._cache_status
 
-        def cache_then_hold_the_refresh(snapshot, restarts):
-            cached_status = cache_status(snapshot, restarts)
+        def cache_then_hold_the_refresh(snapshot, restarts, ordinal=0):
+            cached_status = cache_status(snapshot, restarts, ordinal)
             if threading.current_thread() is transport.recovery:
                 cached.set()
                 release.wait(2.0)

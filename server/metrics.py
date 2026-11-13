@@ -20,6 +20,13 @@ def is_finite_number(value):
 # keys to its value.
 PROMETHEUS_SERIES = {
     "splash_ready": ("ready",),
+    "splash_control_ready": ("control_ready",),
+    "splash_inference_ready": ("inference_ready",),
+    "splash_lifecycle_revision": ("lifecycle", "revision"),
+    "splash_lifecycle_observation_sequence": ("lifecycle", "observation_sequence"),
+    "splash_retained_cache_bytes": ("resources", "retained_cache_bytes"),
+    "splash_retained_kv_bytes": ("resources", "retained_kv_bytes"),
+    "splash_retained_state_bytes": ("resources", "retained_state_bytes"),
     "splash_metal_healthy": ("metal", "healthy"),
     "splash_transport_pending": ("transport", "pending"),
     "splash_frontend_active": ("frontend", "active"),
@@ -219,16 +226,22 @@ def prometheus_metrics(status):
         lines.append(
             f'splash_thermal_state{{state="{state}"}} {1 if thermal == state else 0}'
         )
-    gated = status.get("disk", {}).get("writes_gated")
-    for state in ("no", "budget", "closed"):
-        lines.append(
-            f'splash_disk_writes_gated{{state="{state}"}} {1 if gated == state else 0}'
-        )
+    disk = status.get("disk")
+    if isinstance(disk, dict):
+        gated = disk.get("writes_gated")
+        for state in ("no", "budget", "closed"):
+            lines.append(
+                f'splash_disk_writes_gated{{state="{state}"}} {1 if gated == state else 0}'
+            )
     for name, path in PROMETHEUS_SERIES.items():
         metric_value = value(path)
         if metric_value is not None:
             lines.append(f"{name} {metric_value}")
-    lines.extend(prometheus_latency(status.get("latency", {})))
+    lines.extend(
+        prometheus_latency(
+            status.get("latency") if isinstance(status.get("latency"), dict) else {}
+        )
+    )
     return "\n".join(lines) + "\n"
 
 

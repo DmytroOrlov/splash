@@ -67,8 +67,13 @@ void StateUse::reset() noexcept {
 }
 
 std::optional<CompositeStateLease>
-StateCache::acquireDeepest(std::span<const uint64_t> kvChain) {
+StateCache::acquireDeepest(std::span<const uint64_t> kvChain,
+                           std::span<const uint64_t> excluded) {
   for (auto block = kvChain.rbegin(); block != kvChain.rend(); ++block) {
+    // A block this request already failed to restore stays in the cache
+    // for later requests; only this request's search goes below it.
+    if (std::ranges::find(excluded, *block) != excluded.end())
+      continue;
     if (auto lease = acquireBlock(*block))
       return lease;
   }
@@ -77,7 +82,7 @@ StateCache::acquireDeepest(std::span<const uint64_t> kvChain) {
 
 std::optional<CompositeStateLease> StateCache::acquireBlock(uint64_t kvBlock) {
   auto found = entries_.find(kvBlock);
-  if (found == entries_.end() || found->second.invalid)
+  if (found == entries_.end() || found->second.invalid || writing(kvBlock))
     return std::nullopt;
   Entry &entry = found->second;
   if (!kv_.contains(kvBlock)) {

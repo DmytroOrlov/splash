@@ -178,6 +178,13 @@ Api resolve() {
 // The private interface, resolved on first use. A resolution that fails is
 // not retried: each use throws its message. Never destroyed: work on the
 // service's queue may use it while the process exits.
+// [Gate 4 / U-01] The service-queue operations this process owes
+// (ane::serviceQueueWork): armed when work is posted to the shared queue or
+// an evaluation runs, and released when that work returned. Nothing can be
+// owed before the interface resolved, so a passive read of it resolves and
+// loads nothing.
+std::atomic<uint32_t> serviceWorkOwed{0};
+
 const Api &api() {
   static const auto *const resolved = new std::variant<Api, std::string>([]() -> std::variant<Api, std::string> {
     @autoreleasepool {
@@ -206,12 +213,58 @@ std::string seconds(AwakeClock::duration duration) {
   return text;
 }
 
+// [Gate 4 / U-01] One owed service-queue operation (ane::serviceQueueWork's
+// count): armed when work is posted to the service's queue, or when an
+// evaluation runs on the caller's thread, and released when that work returned.
+// It is move-only so a block can hold it, and a block the service never runs
+// keeps its work owed rather than counting it as retired.
+class ServiceSeat final {
+ public:
+  ServiceSeat() = default;
+  ~ServiceSeat() { release(); }
+  ServiceSeat(const ServiceSeat &) = delete;
+  ServiceSeat &operator=(const ServiceSeat &) = delete;
+  ServiceSeat(ServiceSeat &&other) noexcept : cell_(std::exchange(other.cell_, nullptr)) {}
+  ServiceSeat &operator=(ServiceSeat &&other) noexcept {
+    release();
+    cell_ = std::exchange(other.cell_, nullptr);
+    return *this;
+  }
+  void arm(std::atomic<uint32_t> *cell) {
+    release();
+    cell_ = cell;
+    if (cell_)
+      ++*cell_;
+  }
+  // Adopts an obligation the poster already counted (before dispatching this
+  // block), so this block's end is what releases it.
+  void adopt(std::atomic<uint32_t> *cell) {
+    release();
+    cell_ = cell;
+  }
+  void release() noexcept {
+    if (!cell_)
+      return;
+    --*cell_;
+    cell_ = nullptr;
+  }
+
+ private:
+  std::atomic<uint32_t> *cell_ = nullptr;
+};
+
 // Runs `body` on the service's queue and waits for it under `limits`, asking
 // limits.interrupted() every kWaitSlice; rethrows what `body` throws. `body`
 // holds what it uses: it runs to its end after the caller stops waiting.
 void runOnQueue(const Api &api, const Program::Limits &limits, std::function<void()> body) {
   const auto outcome = std::make_shared<Outcome>();
+  // [Gate 4 / U-01] Owed from the posting on: a caller that stopped waiting
+  // for it, and the work queued behind a service that never answers, both
+  // keep borrowing the residency until this block has run to its end.
+  ++serviceWorkOwed;
   dispatch_async(api.queue, ^{
+    ServiceSeat seat;
+    seat.adopt(&serviceWorkOwed);
     std::exception_ptr failure;
     @autoreleasepool {
       try {
@@ -371,6 +424,15 @@ std::filesystem::path rememberedFile(std::string_view key) {
 }
 
 } // namespace
+
+// [Gate 4 / U-01] The Neural Engine service-queue operations this process owes:
+// posted work the service has not run to its end, and an evaluation in flight.
+// Read from the resolved interface only, so a passive retirement witness never
+// resolves the private interface, loads a framework or posts anything; no
+// interface resolved means no queue exists, hence nothing owed.
+uint32_t serviceQueueWork() noexcept {
+  return serviceWorkOwed.load(std::memory_order_relaxed);
+}
 
 std::filesystem::path cacheDirectory() {
   char path[PATH_MAX];
@@ -615,7 +677,13 @@ Program::Program(std::string_view mil, std::span<const uint8_t> weights, Limits 
     // with no caller waiting for it.
     : impl_(new Impl(api()),
             [](Impl *impl) {
+              // [Gate 4 / U-01] The state, its loaded model and the surfaces
+              // its bindings hold stay borrowed by the service until this block
+              // ran: the program's caller is gone, the retirement count is not.
+              ++serviceWorkOwed;
               dispatch_async(impl->api.queue, ^{
+                ServiceSeat seat;
+                seat.adopt(&serviceWorkOwed);
                 @autoreleasepool {
                   delete impl;
                 }
@@ -752,6 +820,11 @@ void Program::enqueue(const Binding &binding, const metal::SharedEvent &event, u
       completion->settle(std::move(lock));
     };
     const std::function<void()> evaluate = [impl = impl_, request] {
+      // [Gate 4 / U-01] An evaluation is the service's work on whatever this
+      // program's model, request and surfaces hold, whether it runs inline
+      // here or, under the lagged fault, later on another queue.
+      ServiceSeat seat;
+      seat.arm(&serviceWorkOwed);
       impl->guarded("evaluation", [&] {
         NSError *error = nil;
         if (![impl->api.client evaluateWithModel:impl->model options:@{} request:request qos:kQos error:&error])

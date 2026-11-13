@@ -192,7 +192,8 @@ private:
                      std::shared_ptr<StateStaging> staging);
   QwenCompositeState(CompositeStateLayout layout, QwenLogicalLengths lengths,
                      std::shared_ptr<SlotFile> file,
-                     std::shared_ptr<SlotFile::Slot> disk);
+                     std::shared_ptr<SlotFile::Slot> disk,
+                     std::array<uint8_t, 32> payloadSha256);
   // Copies the spans of one state into staging and starts the write that
   // carries them to disk; the ticket's state() is the disk copy. Null when
   // the quota cannot admit another state. The engine starts one state write
@@ -211,6 +212,7 @@ private:
   std::shared_ptr<SlotFile> file_;
   std::shared_ptr<StateStaging> staging_;
   std::shared_ptr<SlotFile::Slot> disk_;
+  std::array<uint8_t, 32> payloadSha256_{};
 
   friend class QwenStateStorage;
 };

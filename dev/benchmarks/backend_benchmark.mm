@@ -1082,8 +1082,8 @@ int main(int argc, char **argv) {
     engineConfig.maxContext = bootstrap->nativeLoop().statusSnapshot().maximumContextTokens;
     engineConfig.vocabularySize = capabilities.vocabularySize;
     engine::connectToGovernor(engineConfig, resources->memoryGovernor());
-    engine::Engine engine(engineConfig, resources->cache(),
-                                  *executor, events);
+    engine::Engine engine(engineConfig, resources->cache(), resources->writeBehind(),
+                          *executor, events);
     Driver driver(engine, events);
 
     // All four widths receive the same production-token payload. Different

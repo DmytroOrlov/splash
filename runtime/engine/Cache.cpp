@@ -298,7 +298,8 @@ void Cache::refresh(CacheProbe &probe, std::span<const uint32_t> prompt,
 
 CacheLookup Cache::lookup(std::span<const uint32_t> prompt,
                           PromptIdentity identity,
-                          const CacheProbe *probe) {
+                          const CacheProbe *probe,
+                          std::span<const uint64_t> excludedStates) {
   CacheLookup result;
   std::vector<uint64_t> fallback;
   std::span<const uint64_t> blocks;
@@ -319,7 +320,9 @@ CacheLookup Cache::lookup(std::span<const uint32_t> prompt,
     if (resident != blocks.rbegin() && resident != blocks.rend())
       kv_.touch(*resident);
     result.kvBoundary = static_cast<uint32_t>(blocks.size() * KvCache::pageTokens);
-    result.state = states_.acquireDeepest(blocks);
+    result.state = states_.acquireDeepest(blocks, excludedStates);
+    if (!result.state && blocks.size() != 0)
+      result.stateOffloadPending = states_.offloadPending(blocks);
     if (result.kvBoundary > result.resumeBoundary() && kv_.stateBelow(blocks.back()))
       result.junctionBoundary = result.kvBoundary;
   }
@@ -1037,10 +1040,15 @@ uint64_t blockOfKey(uint64_t key) noexcept { return key & ((uint64_t{1} << kUnit
 std::optional<engine::Victim> Cache::victimOf(const Walk &walk, const WalkUnit &unit, uint64_t staged) const {
   const uint64_t block = unit.candidate.id;
   const StateReclaim reclaim = stateReclaim(walk, block, staged);
-  const bool now = reclaim.when == StateReclaim::When::Now;
+  // A state-buffer claim that can wait gives a pending state offload its
+  // staging slot before sacrificing a state held by a running request.
+  // Page and byte reclaims have their own landing/shortfall accounting.
+  const bool heldByOffload = unit.unit == Unit::UsedState && walk.scope.statesOnly && walk.statesAreUnits &&
+                             walk.timing == ReclaimTiming::CanWait && states_.writing();
+  const bool now = reclaim.when == StateReclaim::When::Now && !heldByOffload;
   return engine::Victim{.key = unitKey(static_cast<uint8_t>(unit.unit), block),
-                        .stateBuffers = now ? 1u : 0u,
-                        .write = reclaim.write,
+                        .stateBuffers = (now || heldByOffload) ? 1u : 0u,
+                        .write = reclaim.write || heldByOffload,
                         .later = !now,
                         .cls = unit.unit == Unit::UsedState ? ReclaimClass::InUse : ReclaimClass::Ordinary};
 }
@@ -1422,6 +1430,9 @@ FreeResult Cache::take(const VictimQuery &query, const engine::Victim &victim) {
   }
   if (!states_.reclaimable(block))
     return {};
+  if (static_cast<Unit>(unitOfKey(victim.key)) == Unit::UsedState && walk.scope.statesOnly && walk.statesAreUnits &&
+      walk.timing == ReclaimTiming::CanWait && states_.writing())
+    return {FreeOutcome::Pending};
   const UnitTaken taken = takeUnit(walk, {static_cast<Unit>(unitOfKey(victim.key)), {block, 0}}, walk.timing);
   if (taken.taken)
     return {.outcome = FreeOutcome::Met, .stateBuffers = 1};
@@ -1745,6 +1756,44 @@ bool Cache::transfersInFlight() const noexcept {
   // The walk of a reclaim that takes all it may: what is in use, no chain
   // kept.
   return transfersInFlight(Walk{.scope = {.upTo = ReclaimClass::InUse}});
+}
+
+// [Gate 3 / U-02] The retained-IO quiescence witness. Every count is read from
+// the machinery that owns the transfer: the tier's own worker and reader
+// records, the cache's `writes_`/`restores_` records, and StateCache's one
+// pending write. `owed` separates a transfer that has landed from one still
+// running: a landed write publishes or discards its disk copy only in
+// pollTransfers()/pollOffload(), a landed read only ends its waiters there,
+// and a landed failure owes exactly the cleanup that keeps invalid disk state
+// unpublished — so none of them is drained before that poll has run. Nothing
+// here consults a request, a command or a callback: this stays FALSE with
+// `Engine::idle()` already TRUE, which is the whole point of keeping it a
+// separate witness.
+Cache::RetainedIo Cache::retainedIo() const noexcept {
+  RetainedIo io;
+  for (const Write &write : writes_) {
+    if (write.write == WriteClass::Spill)
+      ++io.spillWrites;
+    else
+      ++io.kvWrites;
+    if (write.transfer->ready())
+      ++io.owed;
+  }
+  for (const auto &[block, restore] : restores_) {
+    ++io.kvRestores;
+    if (restore.transfer && restore.transfer->ready())
+      ++io.owed;
+  }
+  io.stateWrites = states_.writing() ? 1U : 0U;
+  if (states_.offloadLanded())
+    ++io.owed;
+  if (tier_) {
+    const auto tier = tier_->retainedIo();
+    io.tierWrites = tier.writes;
+    io.tierRestores = tier.restores;
+    io.tierBatches = tier.batches;
+  }
+  return io;
 }
 
 bool Cache::writesInFlight() const noexcept { return !writes_.empty() || states_.writing(); }

@@ -82,9 +82,21 @@ public:
   // and starts writing it on a thread of its own.
   [[nodiscard]] bool restore(const metal::AllocationAdmission &admit) override;
   [[nodiscard]] bool writing() const noexcept override;
+  void enableExternalWriter() override;
+  void setWeightWriteScope(WeightWriteScope scope) override { writeScope_ = std::move(scope); }
+  [[nodiscard]] bool hasPreparedWriter() const noexcept override;
+  [[nodiscard]] bool writerIntervalActive() const noexcept override;
+  [[nodiscard]] bool pollWriterRetirement() override;
+  void launchPreparedWriter(WriterRetirementPort &) override;
+  bool finishPreparedWriter() override;
+  void cancelPreparedWriter() override;
   // The writes restore() starts from then on call `notifier` on their thread
   // as they end.
   void setCompletionNotifier(std::function<void()> notifier) override { written_ = std::move(notifier); }
+
+  void completionRecipients(std::vector<WeightMemory *> &out) override { out.push_back(this); }
+  void swapCompletionNotifier(std::function<void()> &slot) noexcept override { written_.swap(slot); }
+  uint32_t notifierBindings() const noexcept override { return written_ ? 1 : 0; }
 
   struct Contents final {
     std::string_view component;
@@ -120,6 +132,10 @@ private:
   // or release() ends it.
   size_t restored_ = 0;
   std::unique_ptr<Writing> writing_;
+  bool externalWriter_ = false;
+  WeightWriteScope writeScope_;
+  bool prepared_ = false;
+  WriterRetirementPort *retirement_ = nullptr;
   // The completion notifier, which each write copies as it starts.
   std::function<void()> written_;
 };

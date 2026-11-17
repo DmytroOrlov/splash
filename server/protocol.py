@@ -16,7 +16,7 @@ from dataclasses import dataclass, fields
 from enum import IntEnum, IntFlag
 from typing import TypeAlias
 
-PROTOCOL_VERSION = 13
+PROTOCOL_VERSION = 14
 # A frame is its header, the magic, the protocol version, the frame type and
 # the payload length, then the payload.
 FRAME_HEADER_BYTES = 16
@@ -56,7 +56,7 @@ _STATUS_REQUEST = struct.Struct("<Q")
 _RELEASE_REQUEST = struct.Struct("<Q")
 # Concurrent requests, context, vision, vocabulary, mask rows, stop count.
 _READY = struct.Struct("<IIBIII")
-_START = struct.Struct("<QII")
+_START = struct.Struct("<QIII")
 _PROMPT_PROGRESS = struct.Struct("<QIQ")
 _TOKENS = struct.Struct("<QII")
 _MASK_REQUEST = struct.Struct("<QQII")
@@ -77,7 +77,7 @@ assert _HEADER.size == FRAME_HEADER_BYTES
 assert _REQUEST.size == 114
 assert _IMAGE_SPAN.size == 32
 assert _READY.size == 21
-assert _START.size == 16
+assert _START.size == 20
 assert _DONE.size == 62
 assert _ERROR.size == 22
 assert _STATUS_JSON.size == 8
@@ -352,8 +352,7 @@ class WarmingEvent:
 @dataclass(slots=True, frozen=True)
 class ReadyEvent:
     max_concurrent_requests: int
-    # The context this start serves: the one asked for, or what its plan
-    # holds; a relaunch may serve less than the first engine did.
+    # Context advertised at initial readiness; current request capacity is in StartEvent.
     max_context_tokens: int
     # Requests may carry image spans; false for a model serving without vision.
     vision: bool
@@ -371,6 +370,8 @@ class StartEvent:
     lane: int
     # The cached prefix the request starts from; zero for a cold start.
     matched_prompt_tokens: int
+    # Capacity of the engine serving this request, independent of Ready.
+    capacity_tokens: int
 
 
 @dataclass(slots=True, frozen=True)
@@ -1204,12 +1205,14 @@ def _decode_event(frame: Frame) -> EngineEvent:
             kind, bound, required, budget, plan_context, payload[_START_FAILED.size :]
         )
     if frame_type is FrameType.START:
-        request_id, lane, matched = _START.unpack(payload)
+        request_id, lane, matched, capacity = _START.unpack(payload)
         if not request_id:
             _fatal(
                 IssueCode.INVALID_REQUEST_ID, "start event request id must be non-zero"
             )
-        return StartEvent(request_id, lane, matched)
+        if not capacity or matched > capacity:
+            _fatal(IssueCode.INVALID_COUNT, "start event capacity is invalid")
+        return StartEvent(request_id, lane, matched, capacity)
     if frame_type is FrameType.PROMPT_PROGRESS:
         request_id, processed, elapsed = _PROMPT_PROGRESS.unpack(payload)
         if not request_id or processed > MAX_PROMPT_TOKENS:

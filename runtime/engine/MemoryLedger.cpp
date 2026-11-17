@@ -2,6 +2,7 @@
 
 #include "Checked.hpp"
 #include "engine/MemoryGovernor.hpp"
+#include "engine/ResourceDomainLease.hpp"
 
 #include <algorithm>
 #include <iomanip>
@@ -161,6 +162,8 @@ struct MemoryLedger::Account final {
   model::ElasticPool *pool = nullptr;
   uint64_t grows = 0;
   uint64_t shrinks = 0;
+  uint64_t generation = 0;
+  bool active = true;
 };
 
 MemoryLedger::MemoryLedger() {
@@ -169,65 +172,159 @@ MemoryLedger::MemoryLedger() {
 
 MemoryLedger::~MemoryLedger() = default;
 
+MemoryLedger::MutationGuard::MutationGuard(const MemoryLedger &ledger, bool failStop) {
+  authority_ = ledger.authoritySlot_ ? *ledger.authoritySlot_ : nullptr;
+  if (!authority_) return;
+  std::lock_guard lock(authority_->mutex_);
+  try { authority_->checkLocked("memory ledger mutation"); }
+  catch (...) { if (failStop) std::terminate(); throw; }
+  ++authority_->admissionsInFlight_;
+}
+
+MemoryLedger::MutationGuard::~MutationGuard() {
+  if (!authority_) return;
+  std::lock_guard lock(authority_->mutex_);
+  --authority_->admissionsInFlight_;
+}
+
 AccountId MemoryLedger::addAccount(std::string name, std::function<uint64_t()> currentBytes) {
-  if (accounts_.size() > std::numeric_limits<uint8_t>::max())
-    throw std::logic_error("the memory ledger has no account id left");
+  MutationGuard guard(*this);
   if (!currentBytes)
     throw std::invalid_argument("an account the ledger pulls needs its current bytes");
+  accountOrder_.reserve(accountOrder_.size() + 1);
+  for (size_t i = 1; i < accounts_.size(); ++i) {
+    if (!accounts_[i].active) {
+      accounts_[i] = Account{.name = std::move(name), .current = std::move(currentBytes)};
+      const AccountId id{static_cast<uint8_t>(i)};
+      accountOrder_.push_back(id);
+      return id;
+    }
+  }
+  if (accounts_.size() > std::numeric_limits<uint8_t>::max())
+    throw std::logic_error("the memory ledger has no account id left");
   accounts_.push_back(Account{.name = std::move(name), .current = std::move(currentBytes)});
+  accountOrder_.push_back({static_cast<uint8_t>(accounts_.size() - 1)});
   return {static_cast<uint8_t>(accounts_.size() - 1)};
 }
 
 AccountId MemoryLedger::addPool(model::ElasticPool &pool) {
+  MutationGuard guard(*this);
+  Account account{.name = std::string(pool.state().name), .pool = &pool};
+  accountOrder_.reserve(accountOrder_.size() + 1);
+  for (size_t i = 1; i < accounts_.size(); ++i) {
+    if (!accounts_[i].active) {
+      accounts_[i] = std::move(account);
+      accountOrder_.push_back({static_cast<uint8_t>(i)});
+      return {static_cast<uint8_t>(i)};
+    }
+  }
   if (accounts_.size() > std::numeric_limits<uint8_t>::max())
     throw std::logic_error("the memory ledger has no account id left");
-  accounts_.push_back(Account{.name = std::string(pool.state().name), .pool = &pool});
+  accounts_.push_back(std::move(account));
+  accountOrder_.push_back({static_cast<uint8_t>(accounts_.size() - 1)});
   return {static_cast<uint8_t>(accounts_.size() - 1)};
 }
 
+MemoryLedger::ModelRegistration::ModelRegistration(ModelRegistration &&other) noexcept
+    : ledger_(std::exchange(other.ledger_, nullptr)), generation_(other.generation_), pools_(std::move(other.pools_)) {}
+
+MemoryLedger::ModelRegistration &MemoryLedger::ModelRegistration::operator=(ModelRegistration &&other) noexcept {
+  if (this != &other) {
+    reset();
+    ledger_ = std::exchange(other.ledger_, nullptr);
+    generation_ = other.generation_;
+    pools_ = std::move(other.pools_);
+  }
+  return *this;
+}
+
+MemoryLedger::ModelRegistration::~ModelRegistration() { reset(); }
+
+void MemoryLedger::ModelRegistration::reset() noexcept {
+  if (!ledger_) return;
+  MutationGuard guard(*ledger_, true);
+  for (auto id : pools_) {
+    auto &account = ledger_->accounts_[id.value];
+    if (account.generation == generation_) {
+      account = Account{.active = false};
+      std::erase(ledger_->accountOrder_, id);
+    }
+  }
+  ledger_->modelBuffers_.erase(generation_);
+  pools_.clear();
+  ledger_ = nullptr;
+}
+
+MemoryLedger::ModelRegistration MemoryLedger::registerModel(
+    std::span<model::ElasticPool *const> pools,
+    std::function<uint64_t(uint32_t, bool, bool)> bytes) {
+  MutationGuard guard(*this);
+  if (!nextModelGeneration_) throw std::logic_error("model registration generation exhausted");
+  if (!bytes) throw std::invalid_argument("model buffer callback is absent");
+  ModelRegistration result;
+  result.pools_.reserve(pools.size());
+  result.ledger_ = this;
+  result.generation_ = nextModelGeneration_++;
+  for (auto *pool : pools) {
+    if (!pool) throw std::invalid_argument("model pool is absent");
+    const auto id = addPool(*pool);
+    accounts_[id.value].generation = result.generation_;
+    result.pools_.push_back(id);
+  }
+  modelBuffers_.emplace(result.generation_, std::move(bytes));
+  return result;
+}
+
 void MemoryLedger::addSource(VictimSource &source) {
+  MutationGuard guard(*this);
   if (std::ranges::find(sources_, &source) == sources_.end())
     sources_.push_back(&source);
 }
 
-void MemoryLedger::removeSource(VictimSource &source) noexcept { std::erase(sources_, &source); }
+void MemoryLedger::removeSource(VictimSource &source) noexcept { MutationGuard guard(*this, true); std::erase(sources_, &source); }
 
 void MemoryLedger::setReturning(std::function<Returning()> all,
                                 std::function<Returning(std::span<const uint64_t>)> ofRequests) {
+  MutationGuard guard(*this);
   returning_ = std::move(all);
   returningFor_ = std::move(ofRequests);
 }
 
 void MemoryLedger::setBufferBytes(std::function<uint64_t(uint32_t, bool, bool)> bytes) {
+  MutationGuard guard(*this);
   bufferBytes_ = std::move(bytes);
 }
 
-void MemoryLedger::setPageBytes(const std::array<uint64_t, 3> &bytes) noexcept { pageBytes_ = bytes; }
+void MemoryLedger::setPageBytes(const std::array<uint64_t, 3> &bytes) noexcept { MutationGuard guard(*this, true); pageBytes_ = bytes; }
 
-void MemoryLedger::setNow(double nowSeconds) noexcept { nowSeconds_ = nowSeconds; }
+void MemoryLedger::setNow(double nowSeconds) noexcept { MutationGuard guard(*this, true); nowSeconds_ = nowSeconds; }
 
 void MemoryLedger::setLanes(uint64_t demandBytes, std::optional<RequestPriority> highest) noexcept {
+  MutationGuard guard(*this, true);
   laneDemandBytes_ = demandBytes;
   lanePriority_ = highest;
 }
 
-void MemoryLedger::setDecisionLog(std::function<void(std::string_view)> log) { log_ = std::move(log); }
+void MemoryLedger::setDecisionLog(std::function<void(std::string_view)> log) { MutationGuard guard(*this); log_ = std::move(log); }
 
 ClaimId MemoryLedger::open(const ClaimSpec &spec) {
+  MutationGuard guard(*this);
   const ClaimId id{nextClaim_++};
   claims_.emplace(id.value, ClaimState{.spec = spec});
   return id;
 }
 
-void MemoryLedger::update(ClaimId claim, const ClaimSpec &spec) { claims_.at(claim.value).spec = spec; }
+void MemoryLedger::update(ClaimId claim, const ClaimSpec &spec) { MutationGuard guard(*this); claims_.at(claim.value).spec = spec; }
 
 void MemoryLedger::refused(ClaimId claim, const Need &need) {
+  MutationGuard guard(*this);
   claims_.at(claim.value).refusal = {.bytes = need.bytes, .hostRefused = need.hostRefused};
 }
 
-void MemoryLedger::allocationRefused() noexcept { refusals_ = saturatingAdd(refusals_, uint64_t{1}); }
+void MemoryLedger::allocationRefused() noexcept { MutationGuard guard(*this, true); refusals_ = saturatingAdd(refusals_, uint64_t{1}); }
 
 void MemoryLedger::setWaiting(ClaimId claim, bool waiting) {
+  MutationGuard guard(*this);
   ClaimState &state = claims_.at(claim.value);
   if (waiting && !state.waiting)
     state.waitingSinceSeconds = nowSeconds_;
@@ -235,12 +332,14 @@ void MemoryLedger::setWaiting(ClaimId claim, bool waiting) {
 }
 
 void MemoryLedger::setHostRefusedWaiting(ClaimId claim, bool waiting) {
+  MutationGuard guard(*this);
   claims_.at(claim.value).hostRefusedWaiting = waiting;
 }
 
-void MemoryLedger::setHostExempt(ClaimId claim, bool exempt) { claims_.at(claim.value).hostExempt = exempt; }
+void MemoryLedger::setHostExempt(ClaimId claim, bool exempt) { MutationGuard guard(*this); claims_.at(claim.value).hostExempt = exempt; }
 
 void MemoryLedger::granted(ClaimId claim) {
+  MutationGuard guard(*this);
   ClaimState &state = claims_.at(claim.value);
   if (std::ranges::any_of(state.logged, [](const ClaimState::Logged &logged) { return (logged.decisions & kWaits) != 0; }))
     note(state.spec, nullptr, "granted");
@@ -248,12 +347,13 @@ void MemoryLedger::granted(ClaimId claim) {
 }
 
 void MemoryLedger::refusedAfterMet(ClaimId claimId, const Need &need) {
+  MutationGuard guard(*this);
   ClaimState &claim = claims_.at(claimId.value);
   if (!claim.spec.requestId || newDecision(claim, need, kRefusedAfterMet))
     note(claim.spec, &need, "met, yet refused again");
 }
 
-void MemoryLedger::close(ClaimId claim) noexcept { claims_.erase(claim.value); }
+void MemoryLedger::close(ClaimId claim) noexcept { MutationGuard guard(*this, true); claims_.erase(claim.value); }
 
 const ClaimState &MemoryLedger::claim(ClaimId claim) const { return claims_.at(claim.value); }
 
@@ -404,7 +504,9 @@ public:
     heads.reserve(ledger.sources_.size() + ledger.accounts_.size());
     for (size_t index = 0; index < ledger.sources_.size(); ++index)
       heads.push_back(Head{.victim = ledger.sources_[index]->peek(query, nullptr), .source = index});
-    for (size_t index = 1; index < ledger.accounts_.size(); ++index) {
+    for (auto id : ledger.accountOrder_) {
+      const size_t index = id.value;
+      if (!index) continue;
       const Account &account = ledger.accounts_[index];
       if (!account.pool)
         continue;
@@ -481,15 +583,15 @@ private:
 
 uint64_t MemoryLedger::pooledBytes(const VictimQuery &query, const Lacking &lack, uint32_t states,
                                    bool keepLane) const {
-  if (!lack.bytes || !bufferBytes_)
+  if (!lack.bytes || !bufferBytes())
     return 0;
-  return bufferBytes_(states, query.need.afterStart, keepLane);
+  return bufferBytes()(states, query.need.afterStart, keepLane);
 }
 
 uint64_t MemoryLedger::startPooledBytes(const VictimQuery &query) const {
-  if (!query.need.afterStart || !bufferBytes_)
+  if (!query.need.afterStart || !bufferBytes())
     return 0;
-  return saturatingSubtract(bufferBytes_(0, false, false), bufferBytes_(0, true, false));
+  return saturatingSubtract(bufferBytes()(0, false, false), bufferBytes()(0, true, false));
 }
 
 // The most the order gives a claim, counted without taking: the units
@@ -692,6 +794,7 @@ uint64_t MemoryLedger::takeUnsized(const VictimQuery &query) {
 // claims ranked above it hold, waits as their holds end.
 FreeResult MemoryLedger::free(ClaimId claimId, const Need &need, uint64_t freeBytes, MemoryPressure pressure,
                               bool exempts) {
+  MutationGuard guard(*this);
   const uint64_t id = claimId.value;
   ClaimState &claim = claims_.at(id);
   const ClaimSpec &spec = claim.spec;
@@ -888,6 +991,7 @@ uint64_t MemoryLedger::available(const ClaimSpec &spec, const Need &need, uint64
 // (growthLackBytes) for the next. The start grows each pool as far as the
 // room and the host admit.
 bool MemoryLedger::grow(uint64_t freeBytes, const GrowthHost &host) {
+  MutationGuard guard(*this);
   if (holdsGrowth()) {
     quietSinceSeconds_ = nowSeconds_;
     growthLackBytes_ = 0;
@@ -899,7 +1003,9 @@ bool MemoryLedger::grow(uint64_t freeBytes, const GrowthHost &host) {
   const ClaimSpec spec{.cls = ClaimClass::Growth, .timing = NeedTiming::Immediate};
   uint64_t grownBytes = 0;
   bool grew = false;
-  for (size_t index = 1; index < accounts_.size(); ++index) {
+  for (auto id : accountOrder_) {
+    const size_t index = id.value;
+    if (!index) continue;
     Account &account = accounts_[index];
     if (!account.pool)
       continue;
@@ -965,8 +1071,11 @@ void MemoryLedger::fill(MemoryGovernorSnapshot &snapshot, uint64_t chargedBytes)
   snapshot.accounts.clear();
   uint64_t others = 0;
   std::vector<MemoryAccountSnapshot> accounts;
-  for (size_t index = 1; index < accounts_.size(); ++index) {
+  for (auto id : accountOrder_) {
+    const size_t index = id.value;
+    if (!index) continue;
     const Account &account = accounts_[index];
+    if (!account.active) continue;
     MemoryAccountSnapshot row{.name = account.name, .grows = account.grows, .shrinks = account.shrinks};
     if (account.pool) {
       const model::PoolState state = account.pool->state();

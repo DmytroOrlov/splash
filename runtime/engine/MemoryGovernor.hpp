@@ -6,6 +6,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -17,6 +19,7 @@ namespace splash::engine {
 
 struct EngineConfig;
 struct EngineMemoryBreakdown;
+class ResourceDomainAuthority;
 
 struct HostMemoryPages {
   // Mach's free_count, which includes the speculative pages.
@@ -166,7 +169,8 @@ struct MemoryGovernorSnapshot {
 // it gives a short-lived byte reservation to a caller about to allocate
 // Metal memory, which keeps policy out of MetalBackend and makes every
 // growth transactional. Single-threaded: startup, the engine and the control
-// pass all run on the native loop thread; nothing here is synchronized.
+// pass run under the resource-domain holder. Passive status reads consume
+// owned publications and can run concurrently with that holder.
 class MemoryGovernor final {
 public:
   using HostMemoryProvider = std::function<std::optional<HostMemory>()>;
@@ -188,6 +192,7 @@ public:
   // sets for the Mac's memory, and the streamed table's host memory is
   // charged in full.
   MemoryGovernor(metal::MetalBackend &backend, const EngineMemoryBreakdown &budget, HostMemoryProvider hostMemory);
+  ~MemoryGovernor();
 
   // The only way to reserve memory. Storage and model components receive
   // only this transactional callback, so allocation stays governed without
@@ -201,15 +206,17 @@ public:
   // whether or not the limit does too, EngineBudget when only the limit
   // does. A refusal records what the claim lacks (need).
   [[nodiscard]] metal::AllocationAdmission allocationAdmission() noexcept;
-  void setPressure(MemoryPressure pressure) noexcept;
-  // What the governor makes of a fresh sample of the host. Reading it
-  // changes nothing: the host's band moves only with the samples a
-  // reservation or the control pass takes, so /status does not move
-  // admission.
+  void setPressure(MemoryPressure pressure);
+  // Last complete holder publication. Passive readers touch no live ledger,
+  // provider, pool or authority; this may remain stale for a whole handoff.
   [[nodiscard]] MemoryGovernorSnapshot snapshot() const noexcept;
+  // Holder-only safe point: all registered callback referents must be alive
+  // and settled. Call after direct ledger work/reclaim, before handing off or
+  // destroying callback referents. Does not advance admission hysteresis.
+  MemoryGovernorSnapshot publishSnapshot();
   // snapshot(), with the host's band moved to its sample, as a
   // reservation's and the control pass's move it.
-  MemoryGovernorSnapshot evaluate() noexcept;
+  MemoryGovernorSnapshot evaluate();
   // Metal memory outside the backend's buffers (pipelines, driver
   // allocations, whatever else in the process allocates) as the device last
   // counted it: the quantity memory_audit.device_untracked_bytes measures at
@@ -217,7 +224,7 @@ public:
   [[nodiscard]] uint64_t untrackedBytes() const noexcept;
 
   // The accounts, claims and victim sources the governor's rule works on.
-  [[nodiscard]] MemoryLedger &ledger() noexcept { return ledger_; }
+  [[nodiscard]] MemoryLedger &ledger() { authorityCheck(); return ledger_; }
   [[nodiscard]] const MemoryLedger &ledger() const noexcept { return ledger_; }
   // While one lives, admissions are for `claim`, under the host's rule for
   // its class and the room claims ranked above it hold
@@ -225,7 +232,7 @@ public:
   // It restores the scope it replaced.
   class Scope final {
   public:
-    Scope(MemoryGovernor &governor, ClaimId claim) noexcept;
+    Scope(MemoryGovernor &governor, ClaimId claim);
     ~Scope();
     Scope(const Scope &) = delete;
     Scope &operator=(const Scope &) = delete;
@@ -234,6 +241,7 @@ public:
     MemoryGovernor &governor_;
     ClaimId previousClaim_;
     uint64_t previousFunded_ = 0;
+    const ResourceDomainAuthority *scopedAuthority_ = nullptr;
   };
   // The scope's work released `bytes`, which its allocations take back
   // while the scope lives (an allocation's attempts share one,
@@ -290,6 +298,17 @@ public:
   void growToTargets(double nowMilliseconds, MemoryPressure pressure);
 
 private:
+  // Non-null while a resource-domain lease (engine/ResourceDomainLease.hpp)
+  // has bound this governor: every mutating operation and every admission
+  // callback this governor hands out then demands the authority's current
+  // holder thread at call time. Bound and unbound only through the lease's
+  // teardown protocol or this governor's destruction.
+  const ResourceDomainAuthority *authority_ = nullptr;
+  friend class ResourceDomainAuthority;
+  // Throws metal::MetalBackendError unless the caller holds the bound
+  // authority; a no-op while unbound.
+  void authorityCheck() const;
+
   // Held while an admitted allocation runs; released when it ends.
   class Reservation final {
   public:
@@ -371,6 +390,10 @@ private:
   snapshot(const std::optional<HostMemory> &hostMemory, const HostRule &rule) const noexcept;
   void release(uint64_t bytes) noexcept;
 
+  mutable std::recursive_mutex ledgerMutex_;
+  // Held only to exchange/copy owned values, never while sampling callbacks.
+  mutable std::mutex publicationMutex_;
+  std::shared_ptr<const MemoryGovernorSnapshot> publishedSnapshot_;
   metal::MetalBackend &backend_;
   uint64_t limitBytes_ = 0;
   uint64_t hostReserveBytes_ = 0;

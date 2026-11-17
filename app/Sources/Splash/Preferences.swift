@@ -332,7 +332,7 @@ extension LaunchOption {
                           custom: Value(prompt: "100K", message: ContextLength.message,
                                         parse: { ContextLength.parse($0).map(String.init) },
                                         text: { Int($0).map(ContextLength.text) ?? $0 },
-                                        title: { Int($0).map(ContextLength.title) ?? $0 }))),
+                                        title: { Int($0).map { ContextLength.title($0) } ?? $0 }))),
         LaunchOption(
             flag: "--max-memory", title: "Memory limit",
             help: "The most memory the model may use, to leave room for other apps. Auto gives it what this Mac can.",
@@ -348,6 +348,10 @@ extension LaunchOption {
             kind: .choice(standard: "After 10 Minutes",
                           choices: [("30m", "After 30 Minutes"), ("1h", "After 1 Hour"), ("off", "Never")],
                           custom: duration(message: "Seconds, or with s, m or h, such as 45m."))),
+        LaunchOption(
+            flag: "--pause-on-battery", title: "Free memory on battery",
+            help: "On battery power the model frees its memory, and loads again once this Mac is on AC power.",
+            section: .main, kind: .toggle(on: true)),
         LaunchOption(
             flag: "--language-only", title: "Text only",
             help: "Leaves the model’s vision out: it loads less, and refuses images and PDFs.",
@@ -553,13 +557,13 @@ enum ContextLength {
     static let lengths = [16, 32, 64, 128, 256].map { $0 * 1024 } + [1_000_000]
 
     /// A length as the menu names it: 32K tokens, 1M tokens, 100,000 tokens.
-    static func title(_ tokens: Int) -> String {
-        "\(figure(tokens)) tokens"
+    static func title(_ tokens: Int, locale: Locale = .current) -> String {
+        "\(figure(tokens, locale: locale)) tokens"
     }
 
     /// A length in short: 32K, 1M, 100,000.
-    static func figure(_ tokens: Int) -> String {
-        tokens % 1024 == 0 || tokens % 1_000_000 == 0 ? text(tokens) : tokens.formatted()
+    static func figure(_ tokens: Int, locale: Locale = .current) -> String {
+        tokens % 1024 == 0 || tokens % 1_000_000 == 0 ? text(tokens) : tokens.formatted(.number.locale(locale))
     }
 
     /// A length as it is typed, which `parse` reads back: 32K, 1M, 100000.
@@ -572,18 +576,22 @@ enum ContextLength {
     /// What the sheet that asks for a length says, for a model of `family`: the most it serves,
     /// and whether YaRN stretches its own window that far.
     static let message: @Sendable (ModelFamily) -> String = { family in
+        localizedMessage(family, locale: .current)
+    }
+
+    static func localizedMessage(_ family: ModelFamily, locale: Locale) -> String {
         let units = "Tokens, with K for 1024 or M for a million"
         guard let window = family.contextTokens, let most = family.maxContextTokens else {
-            return "\(units), such as 100K or 1M. \(yarn(nil))"
+            return "\(units), such as 100K or 1M. \(yarn(nil, locale: locale))"
         }
-        guard most > window else { return "\(units), such as 100K; at most \(figure(window)), the model’s own window." }
-        return "\(units), such as 100K or 1M; at most \(figure(most)). \(yarn(window))"
+        guard most > window else { return "\(units), such as 100K; at most \(figure(window, locale: locale)), the model’s own window." }
+        return "\(units), such as 100K or 1M; at most \(figure(most, locale: locale)). \(yarn(window, locale: locale))"
     }
 
     /// What a length past a model's own window `window`, which YaRN stretches, costs: one sentence,
     /// the window named where it is known.
-    static func yarn(_ window: Int?) -> String {
-        "Past the model’s own window\(window.map { ", \(figure($0))," } ?? "") it stretches it with YaRN, which changes answers at every length."
+    static func yarn(_ window: Int?, locale: Locale = .current) -> String {
+        "Past the model’s own window\(window.map { ", \(figure($0, locale: locale))," } ?? "") it stretches it with YaRN, which changes answers at every length."
     }
 
     /// The most context `splash serve` takes, its MAX_YARN_CONTEXT_TOKENS, which a test holds this

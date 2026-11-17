@@ -15,8 +15,11 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <utility>
 
 namespace splash::engine {
+class ResourceDomainAuthority;
+class MemoryGovernor;
 
 // macOS's memory pressure, as the host reports it (MemoryGovernor).
 enum class MemoryPressure : uint8_t {
@@ -422,11 +425,32 @@ public:
   MemoryLedger(const MemoryLedger &) = delete;
   MemoryLedger &operator=(const MemoryLedger &) = delete;
 
-  // Registration (startup; stable for the process). An account's current
+  // Unscoped registration (startup; stable for the process). Model-bound
+  // registrations instead use ModelRegistration below. An account's current
   // bytes are pulled from its owner; its name is for status only. Units tie
   // by stage, then to the source registered first, then to the pools.
   AccountId addAccount(std::string name, std::function<uint64_t()> currentBytes);
   AccountId addPool(model::ElasticPool &pool);   // account + victim source; name = PoolState::name
+  // A model generation owns its pools and buffer-size callback. The Ledger
+  // and model outlive this handle. Retire at a quiescent resource-domain
+  // holder point, before destroying the model or its pools.
+  class ModelRegistration final {
+  public:
+    ModelRegistration() = default;
+    ModelRegistration(ModelRegistration &&other) noexcept;
+    ModelRegistration &operator=(ModelRegistration &&other) noexcept;
+    ModelRegistration(const ModelRegistration &) = delete;
+    ~ModelRegistration();
+    void reset() noexcept;
+  private:
+    friend class MemoryLedger;
+    MemoryLedger *ledger_ = nullptr;
+    uint64_t generation_ = 0;
+    std::vector<AccountId> pools_;
+  };
+  [[nodiscard]] ModelRegistration registerModel(
+      std::span<model::ElasticPool *const> pools,
+      std::function<uint64_t(uint32_t, bool, bool)> bufferBytes);
   // The cache, the engine's lane victims: each source once, whoever
   // registers it again (two engines over one cache), until it is removed.
   void addSource(VictimSource &source);
@@ -545,6 +569,17 @@ public:
   void fill(MemoryGovernorSnapshot &snapshot, uint64_t chargedBytes) const;
 
 private:
+  friend class MemoryGovernor;
+  void bindAuthoritySlot(const ResourceDomainAuthority *const *slot) noexcept { authoritySlot_ = slot; }
+  class MutationGuard final {
+  public:
+    explicit MutationGuard(const MemoryLedger &ledger, bool failStop = false);
+    ~MutationGuard();
+    MutationGuard(const MutationGuard &) = delete;
+  private:
+    const ResourceDomainAuthority *authority_ = nullptr;
+  };
+  const ResourceDomainAuthority *const *authoritySlot_ = nullptr;
   struct Account;
   struct Lacking;
   struct Run;
@@ -594,12 +629,20 @@ private:
   void note(const ClaimSpec &spec, const Need *need, std::string_view what) const;
 
   std::vector<Account> accounts_;
+  // Slot identity is reusable; traversal order follows live registration
+  // order, so reuse cannot move a new pool ahead of a retained pool.
+  std::vector<AccountId> accountOrder_{{0}};
   std::vector<VictimSource *> sources_;
   std::map<uint64_t, ClaimState> claims_;
   uint64_t nextClaim_ = 1;
   std::function<Returning()> returning_;
   std::function<Returning(std::span<const uint64_t>)> returningFor_;
   std::function<uint64_t(uint32_t, bool, bool)> bufferBytes_;
+  std::map<uint64_t, std::function<uint64_t(uint32_t, bool, bool)>> modelBuffers_;
+  uint64_t nextModelGeneration_ = 1;
+  [[nodiscard]] const std::function<uint64_t(uint32_t, bool, bool)> &bufferBytes() const noexcept {
+    return modelBuffers_.empty() ? bufferBytes_ : modelBuffers_.rbegin()->second;
+  }
   std::array<uint64_t, 3> pageBytes_{};
   uint64_t laneDemandBytes_ = 0;
   std::optional<RequestPriority> lanePriority_;

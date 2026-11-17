@@ -689,11 +689,11 @@ enum ChatClient {
 
     /// What the error in a response's body to `messages` says: a prompt too long for the model's
     /// context, in the app's words; any other, in the server's.
-    static func message(of data: Data, for messages: [ChatMessage], server: ChatTarget) -> String? {
+    static func message(of data: Data, for messages: [ChatMessage], server: ChatTarget, locale: Locale = .current) -> String? {
         struct Body: Decodable { struct Problem: Decodable { let message: String; let code: String? }; let error: Problem }
         guard let problem = try? JSONDecoder().decode(Body.self, from: data).error else { return nil }
         guard problem.code == "context_length_exceeded" else { return problem.message }
-        let context = server.context.map { "the model’s \(ContextLength.figure($0))-token context" } ?? "the model’s context"
+        let context = server.context.map { "the model’s \(ContextLength.figure($0, locale: locale))-token context" } ?? "the model’s context"
         // A new chat leaves the earlier messages behind; a first message has none to leave.
         return messages.count == 1 ? "This message is longer than \(context)."
             : "This chat is longer than \(context). Start a new chat to continue."

@@ -65,7 +65,7 @@ public:
         storage(options_.pages, options_.pageBytes, options_.extentPages),
         pool(memory ? storage.through(*memory, governor->allocationAdmission()) : storage, 0),
         tier(kvTier(options_)), cache(pool, tier ? &*tier : nullptr, nullptr), model(),
-        engine((options_.shape ? options_.shape(model) : void(), config(options_, governor)), cache, model, events) {
+        engine((options_.shape ? options_.shape(model) : void(), config(options_, governor)), cache, persistence, model, events) {
     guardReleases(storage, engine);
     // The accounts a start books (RuntimeResources::create).
     if (governor) {
@@ -179,6 +179,7 @@ public:
   engine::KvPool pool;
   std::optional<TestKvTier> tier;
   engine::Cache cache;
+  RetainedPersistence persistence{cache};
   Executor model;
   Events events;
   engine::Engine engine;
@@ -267,6 +268,7 @@ private:
   // (commandViolation); I7 no spin (spins).
   void check(bool progressed) {
     if (memory) {
+      governor->publishSnapshot();
       checkMemory({.memory = *memory,
                    .storage = storage,
                    .model = model,

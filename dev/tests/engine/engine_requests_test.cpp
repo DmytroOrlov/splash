@@ -1829,12 +1829,13 @@ void testInvalidConfigIsRefused() {
   test::TestKvStorage storage(1024, 4096, 4);
   KvPool pool(storage, 0);
   engine::Cache resources(pool, nullptr, nullptr);
+  test::RetainedPersistence persistence_resources{resources};
   Executor executor(1);
   Events events;
   const auto refused = [&](const auto &change, std::string_view error) {
     EngineConfig config = test::engineConfig();
     change(config);
-    rejects([&] { engine::Engine(config, resources, executor, events); }, error,
+    rejects([&] { engine::Engine(config, resources, persistence_resources, executor, events); }, error,
             "an invalid engine config was accepted");
   };
   refused([](EngineConfig &config) { config.maxContext = 0; },

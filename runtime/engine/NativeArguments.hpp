@@ -91,6 +91,8 @@ struct NativeArguments final {
   // an int8-activation path takes them
   // (RuntimeResourcesConfig::int8Activations).
   ops::Int8Activations int8Activations = ops::Int8Activations::On;
+  // Opt in to battery suspension and model-less startup on Battery/Unknown.
+  bool pauseOnBattery = false;
 };
 
 // Reads `serve-native MODEL_DIRECTORY MAX_CONTEXT|auto MAX_MEMORY_BYTES|auto

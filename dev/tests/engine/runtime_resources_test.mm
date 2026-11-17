@@ -2,6 +2,8 @@
 #include "ProtocolPeer.hpp"
 #include "SyntheticModels.hpp"
 #include "TestChecks.hpp"
+#include "TestWriterPort.hpp"
+#include "AllocationFailure.hpp"
 #include "TestFiles.hpp"
 #include "TestCheckpoint.hpp"
 #include "TestDrafts.hpp"
@@ -27,6 +29,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -42,6 +45,71 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+#include <type_traits>
+#include <thread>
+#include <atomic>
+
+// T007 proved the ownership move; T009 proved the residency owns ANE,
+// ReleasableMemory and the streamed model stores, and that retained APIs and
+// model-dependent reads stay absence-safe. The test-only peer never exports a
+// residency beyond its retained owner's scope, and proves no physical
+// suspension (T015-T025).
+namespace splash::engine {
+struct RuntimeResourcesTestAccess final {
+  static auto retained(const RuntimeResources &r) {
+    return std::array<const void *, 15>{
+        r.backend_.get(), r.readers_.get(), r.memoryGovernor_.get(),
+        r.kvPages_.get(), r.stateStorage_.get(), r.kvTier_.get(),
+        r.diskSpace_.get(), r.kvPool_.get(), r.cache_.get(),
+        r.persistentCache_.directory.get(), r.persistentCache_.kv.get(),
+        r.persistentCache_.states.get(), &r.cacheIdentity_,
+        r.blockCache_.get(), r.historyStream_.get()};
+  }
+  static model::SsdReaders &readers(RuntimeResources &r) { return *r.readers_; }
+  // [T031 prerequisite] What a residency holds is read ONLY through its owner's
+  // friends: the stratum's presence (its idle-weight memory) and its loaded
+  // model's address, for the private-residency and adoption-gate proofs.
+  static const ReleasableMemory *held(const ModelResidency &r) { return r.releasableMemory(); }
+  static const model::LoadedModel &model(const ModelResidency &r) { return r.model(); }
+  static auto slot(RuntimeResources &r) { return r.persistentCache_.kv->acquire(); }
+  static bool onProbation(const RuntimeResources &r) { return r.probation_.joinable(); }
+  template <class Inspect> static void moved(RuntimeResources &r, Inspect inspect) {
+    const auto before = *r.modelContext();
+    auto *beforeReleasable = r.releasableMemory();
+    ModelResidency parked(std::move(r.residency_));
+    try {
+      test::require(!r.residency_.storage_, "the moved-from fixture still has model data");
+      // Absence safety: retained APIs stay valid, model-dependent reads report
+      // absence (null/Off) instead of dereferencing or faking live values.
+      test::require(!r.modelResident() && !r.modelContext() &&
+                        r.releasableMemory() == nullptr,
+                    "the moved-from residency still exposed model or idle-weight access");
+      test::require(!r.streamedExpertStats() && !r.streamedTableStats() &&
+                        r.aneFfnShare() == 0.0 && r.aneFfnMinimumRows() == 0 &&
+                        !r.actualMemoryReport(model::ModelMemoryActual{}),
+                    "an absent residency reported live model telemetry");
+      test::require(r.aneFfnSnapshot().state == AneFfnSnapshot::State::Off &&
+                        r.aneFfnSnapshot().reason == r.aneFfnOutcome().reason,
+                    "an absent residency fabricated an ANE snapshot");
+      test::require(&parked.model() == &before.model &&
+                        &parked.operators() == &before.operators &&
+                        parked.aneFfn() == before.aneFfn &&
+                        parked.releasableMemory() == beforeReleasable,
+                    "moving residency changed a model-dependent address");
+      // Only retained APIs are valid here. No absent model/idle/ANE access.
+      inspect();
+    } catch (...) {
+      r.residency_ = std::move(parked);
+      throw;
+    }
+    r.residency_ = std::move(parked);
+  }
+  static ModelResidency make(model::LoadedModel &&loaded, ops::ExecutionPlans &&plans,
+                             std::unique_ptr<ops::AneFfn> &&aneFfn) {
+    return ModelResidency(std::move(loaded), std::move(plans), std::move(aneFfn));
+  }
+};
+} // namespace splash::engine
 
 namespace {
 
@@ -59,6 +127,23 @@ using splash::test::plannedModel;
 using splash::test::reading;
 using splash::test::rejects;
 using splash::test::require;
+
+// Historical ownership/interface assertions, adapted to upstream signatures.
+static_assert(std::is_same_v<decltype(RuntimeResources::create(
+    std::declval<const RuntimeResourcesConfig &>(), uint32_t{})),
+    std::unique_ptr<RuntimeResources>>);
+static_assert(std::is_same_v<decltype(std::declval<RuntimeResources &>().backend()),
+                             metal::MetalBackend &>);
+static_assert(std::is_same_v<decltype(std::declval<RuntimeResources &>().cache()), Cache &>);
+static_assert(!std::is_copy_constructible_v<ModelResidency>);
+static_assert(!std::is_copy_assignable_v<ModelResidency>);
+static_assert(std::is_nothrow_move_constructible_v<ModelResidency>);
+static_assert(std::is_nothrow_move_assignable_v<ModelResidency>);
+
+class RetainedCompositeState final : public CompositeState {
+public:
+  uint64_t bytes() const noexcept override { return 128; }
+};
 
 // The target and draft checkpoints of `model` under root, which weight
 // planning reads; its vision tower stays absent, so loading stops there.
@@ -184,6 +269,21 @@ void testStreamableWeightsAreWhatLoads(const RuntimeResourcesConfig &config) {
               arenas(streamed, {}) == arenas(whole, model::StreamedParts::loaded(whole)) &&
               arenas(whole, {.experts = true}) > arenas(whole, {}),
           "the arenas of what streams are not those of a model loaded so, or prefill groups took no more");
+  const auto sharedBefore = readers.use_count();
+  {
+    auto residency = RuntimeResourcesTestAccess::make(
+        model::loadModel(backend, root, config.model,
+                         {.expertMemoryBytes = weights.expertMinimumBytes, .readers = readers}),
+        ops::ExecutionPlans(backend.capabilities(), ops::Int8Activations::On), std::unique_ptr<ops::AneFfn>{});
+    require(readers.use_count() > sharedBefore,
+            "the streamed residency did not borrow the shared reader pool");
+    auto moved = std::move(residency);
+  }
+  require(readers.use_count() == sharedBefore,
+          "destroying streamed residency kept an unexpected reader-pool share");
+  std::atomic<size_t> reads{0};
+  readers->run(8, [&](size_t) { ++reads; });
+  require(reads == 8, "shared KV/spill readers stopped with the model streams");
   rejects([&] {
     static_cast<void>(
         model::loadModel(backend, root, config.model,
@@ -341,7 +441,7 @@ void testVerifyRows(const char *metallibPath, RuntimeResourcesConfig moe) {
       std::unique_ptr<model::RuntimeModel> runtime;
       require(static_cast<bool>(resources->memoryGovernor().allocationAdmission()(
                   budget.sharedPrefillBytes + budget.sharedDecodeBytes,
-                  [&] { runtime = model::createRuntime(resources->modelContext()); })),
+                  [&] { runtime = model::createRuntime(*resources->modelContext()); })),
               "a runtime's arenas were refused");
       started.budget = runtime->telemetry().verifyBudget;
     });
@@ -867,7 +967,7 @@ void testStartGrowsThroughHostPressure(const char *metallibPath) {
     const EngineMemoryBreakdown &budget = resources->memoryPlan().breakdown();
     std::unique_ptr<model::RuntimeModel> runtime;
     require(static_cast<bool>(admit(budget.sharedPrefillBytes + budget.sharedDecodeBytes, [&] {
-              runtime = model::createRuntime(resources->modelContext());
+              runtime = model::createRuntime(*resources->modelContext());
             })),
             "the start's arenas waited " + host);
     {
@@ -957,7 +1057,7 @@ void testYarnRuntime(const char *metallibPath) {
                        "native window of 262144. Static YaRN changes answers at every length, so pass a "
                        "--max-context above 262144 only when a request needs it.") != std::string::npos,
           "a start with YaRN did not name its factor and the context it serves");
-  const model::RuntimeContext context = resources->modelContext();
+  const model::RuntimeContext context = *resources->modelContext();
   const auto geometry = model::RuntimeGeometry::from(context.model, kv::Format::Int8, ops::GdnStateFormat::Float32);
   require(geometry.target.ropeScaling == config.model.ropeScaling && geometry.target.contextTokens() == 1'010'000,
           "the runtime's geometry lost YaRN or its window");
@@ -995,11 +1095,11 @@ void testARestoreAfterTheOtherWarmupsCreatesNothing(const char *metallibPath) {
   std::unique_ptr<model::RuntimeModel> runtime;
   require(static_cast<bool>(resources->memoryGovernor().allocationAdmission()(
               budget.sharedPrefillBytes + budget.sharedDecodeBytes,
-              [&] { runtime = model::createRuntime(resources->modelContext()); })),
+              [&] { runtime = model::createRuntime(*resources->modelContext()); })),
           "the runtime's arenas were refused");
   const KvPool::RunwayHold runway(resources->kvPool());
   static_cast<void>(runtime->warmupPrefill(model::ExecutionLimits::prefillTokenBudget));
-  for (const uint32_t rows : resources->modelContext().operators.prefillRowClasses())
+  for (const uint32_t rows : resources->modelContext()->operators.prefillRowClasses())
     static_cast<void>(runtime->warmupPrefill(rows));
   static_cast<void>(runtime->warmupDecodeBatch(1));
   metal::MetalBackend &backend = resources->backend();
@@ -1023,11 +1123,11 @@ void testALongRequestAfterTheWarmupsCreatesNothing(const char *metallibPath) {
   std::unique_ptr<model::RuntimeModel> runtime;
   require(static_cast<bool>(resources->memoryGovernor().allocationAdmission()(
               budget.sharedPrefillBytes + budget.sharedDecodeBytes,
-              [&] { runtime = model::createRuntime(resources->modelContext()); })),
+              [&] { runtime = model::createRuntime(*resources->modelContext()); })),
           "the runtime's arenas were refused");
   const KvPool::RunwayHold runway(resources->kvPool());
   static_cast<void>(runtime->warmupPrefill(model::ExecutionLimits::prefillTokenBudget));
-  for (const uint32_t rows : resources->modelContext().operators.prefillRowClasses())
+  for (const uint32_t rows : resources->modelContext()->operators.prefillRowClasses())
     static_cast<void>(runtime->warmupPrefill(rows));
   static_cast<void>(runtime->warmupDecodeBatch(1));
   metal::MetalBackend &backend = resources->backend();
@@ -1567,7 +1667,7 @@ void testThePlanCountsEveryBuffer(const char *metallibPath) {
       bootstrapOf(loadableConfig(metallibPath, root.path(), "plan-buffers"), log);
   RuntimeResources &resources = bootstrap->resources();
   const MemoryAuditResult audit = auditActualMemory(
-      resources.memoryPlan(), resources.actualMemoryReport(bootstrap->modelRuntime().actualRuntimeMemory()));
+      resources.memoryPlan(), *resources.actualMemoryReport(bootstrap->modelRuntime().actualRuntimeMemory()));
   require(audit.valid && !audit.backendUnclassifiedBytes,
           "the backend holds " + std::to_string(audit.backendUnclassifiedBytes) +
               " bytes of buffers the memory plan does not count");
@@ -1592,7 +1692,7 @@ void testLedgerAccountsSumToTheBackend(const RuntimeResourcesConfig &config) {
   require(booked == memory.chargedBytes && memory.accounts.front().currentBytes > 0,
           "the ledger's accounts did not sum to the charged bytes, " + std::to_string(booked) + " of " +
               std::to_string(memory.chargedBytes));
-  const ActualMemoryReport actual = resources.actualMemoryReport(bootstrap->modelRuntime().actualRuntimeMemory());
+  const ActualMemoryReport actual = *resources.actualMemoryReport(bootstrap->modelRuntime().actualRuntimeMemory());
   require(kv->currentBytes == resources.kvPool().allocatedBytes() && states->currentBytes == actual.stateAllocatedBytes &&
               experts->currentBytes == resources.streamedExpertStats()->liveBytes,
           "an account did not book what its owner holds");
@@ -1651,7 +1751,7 @@ std::unique_ptr<model::Runtime> runtimeOf(RuntimeResources &resources) {
   std::unique_ptr<model::Runtime> runtime;
   require(static_cast<bool>(resources.memoryGovernor().allocationAdmission()(
               budget.sharedPrefillBytes + budget.sharedDecodeBytes,
-              [&] { runtime = std::make_unique<model::Runtime>(resources.modelContext()); })),
+              [&] { runtime = std::make_unique<model::Runtime>(*resources.modelContext()); })),
           "a runtime's arenas were refused");
   return runtime;
 }
@@ -1686,7 +1786,7 @@ void testThePlanCountsTheSpilledKvReadersTables(const char *metallibPath) {
     request.prompt = prompt;
     request.maxNewTokens = 1;
     runtime->beginColdRequest(request, 0);
-    const ActualMemoryReport report = resources->actualMemoryReport(runtime->actualRuntimeMemory());
+    const ActualMemoryReport report = *resources->actualMemoryReport(runtime->actualRuntimeMemory());
     const MemoryAuditResult audit = auditActualMemory(resources->memoryPlan(), report);
     const EngineMemoryBreakdown &budget = resources->memoryPlan().breakdown();
     const KvSpillPlan &spill = budget.kvSpill;
@@ -1877,7 +1977,7 @@ void testSpilledRuntimeBoundary(const char *metallibPath) {
   // (testRelaunchKeepsTheSpilledContext).
   config.maximumMemoryBytes = startStreamed(config).minimumRequired + 512 * kMiB;
   const std::unique_ptr<RuntimeResources> resources = RuntimeResources::create(config, 0);
-  const model::RuntimeContext context = resources->modelContext();
+  const model::RuntimeContext context = *resources->modelContext();
   require(context.blockCache && context.historyStream, "the Flash-Next start did not spill its K/V");
   // An empty Index extent from the start, where a lane's first conversion
   // lands its pages at the memory wall.
@@ -1989,50 +2089,462 @@ void testEngineFollowsTheGovernor(const char *metallibPath) {
           "a request in service did not pass the host's margin once nothing in place met its need");
 }
 
+// Historical retained KV/state/SlotFile assertions, exercised against the
+// production owner rather than separate fake cache/backing objects.
+void testRetainedIdentityAcrossResidencyMove(const char *metallibPath) {
+  const test::TemporaryDirectory root("splash-ownership-model"), caches("splash-ownership-cache");
+  auto config = loadableConfig(metallibPath, root.path(), "ownership-test");
+  config.cacheDisk = {.bytes = kGiB};
+  config.persistentCache = true;
+  config.cacheRoot = caches.path();
+  std::unique_ptr<RuntimeResources> resources;
+  static_cast<void>(test::capturedStderr([&] { resources = RuntimeResources::create(config, 0); }));
+  std::optional<test::ClaimScope> start;
+  start.emplace(resources->memoryGovernor(), ClaimClass::Floor);
+  const auto context = *resources->modelContext();
+  auto runtime = model::createRuntime(context);
+  static_cast<void>(runtime->warmupPrefill(1));
+  static_cast<void>(runtime->warmupDecodeBatch(1));
+  start.reset();
+  resources->beginServing(); // Exactly once, including across the owner move.
+  start.emplace(resources->memoryGovernor(), ClaimClass::InService);
+  require(RuntimeResourcesTestAccess::onProbation(*resources), "persistent probation did not start");
+  const auto identities = RuntimeResourcesTestAccess::retained(*resources);
+  // The retained persistence queue Engines borrow, through the owner's own API.
+  WriteBehind &queue = resources->writeBehind();
+  const uint64_t stateBytes = context.stateStorage.actualAllocatedBytes();
+  require(stateBytes != 0, "ownership fixture did not allocate retained state");
+  std::vector<uint32_t> prompt(65);
+  for (uint32_t index = 0; index < prompt.size(); ++index) prompt[index] = 100 + index;
+  auto &cache = resources->cache();
+  cache.beginRequest(73);
+  require(cache.ensureTokens(73, prompt.size()).granted(), "ownership fixture could not acquire KV");
+  cache.publishCommittedBlocks(73, prompt, 64, {});
+  const auto block = cache.blockAt(73, 64);
+  require(block != 0, "ownership fixture did not publish a KV boundary");
+  cache.publishCompositeState(block, std::make_shared<RetainedCompositeState>(), false);
+  cache.endRequest(73);
+  auto slot = RuntimeResourcesTestAccess::slot(*resources);
+  require(slot != nullptr, "retained SlotFile could not acquire a slot");
+  const auto slotId = slot->id();
+  const auto retained = cache.snapshot();
+  const auto inspect = [&] {
+    require(RuntimeResourcesTestAccess::retained(*resources) == identities,
+            "a retained object moved with model residency");
+    require(&resources->writeBehind() == &queue,
+            "the residency move replaced the retained WriteBehind Engines borrow");
+    auto lookup = cache.lookup(prompt, {});
+    require(lookup.kvBoundary == 64 && lookup.resumeBoundary() == 64 && lookup.state,
+            "retained KV/composite state became unusable without residency");
+    require(cache.snapshot().pool.allocatedBytes == retained.pool.allocatedBytes &&
+                context.stateStorage.actualAllocatedBytes() == stateBytes && slot->id() == slotId &&
+                RuntimeResourcesTestAccess::onProbation(*resources) && resources->backend().healthy(),
+            "retained storage, SlotFile or probation changed across residency move");
+    std::atomic<size_t> reads{0};
+    RuntimeResourcesTestAccess::readers(*resources).run(8, [&](size_t) { ++reads; });
+    require(reads == 8, "retained shared readers were lost with residency");
+  };
+  RuntimeResourcesTestAccess::moved(*resources, inspect);
+  // Unwinding a fixture at the same boundary must also restore the owner.
+  rejects([&] {
+    RuntimeResourcesTestAccess::moved(*resources, [&] { throw std::runtime_error("fixture failure"); });
+  }, "fixture failure", "the ownership fixture swallowed a failure");
+  require(&resources->modelContext()->model == &context.model &&
+              &resources->modelContext()->operators == &context.operators,
+          "restoring residency invalidated RuntimeContext borrows");
+  // Use the runtime built before the move; its model/plans/governor borrows
+  // must remain valid, including the upstream idle-weight release/restore.
+  auto *weights = resources->releasableMemory();
+  require(weights != nullptr, "idle-weight memory was not restored with residency");
+  start.reset(); // A Writer may be lent only after the Owner's scope ends.
+  auto &governor = resources->memoryGovernor();
+  const ClaimId writerClaim = governor.ledger().open({.cls = ClaimClass::InService});
+  struct CloseClaim {
+    MemoryGovernor &governor;
+    ClaimId id;
+    ~CloseClaim() { governor.ledger().close(id); }
+  } closeClaim{governor, writerClaim};
+  weights->enableExternalWriter();
+  weights->setWeightWriteScope([&governor, writerClaim](const std::function<void()> &write) {
+    const MemoryGovernor::Scope scope(governor, writerClaim);
+    write();
+  });
+  weights->release();
+  const auto admit = governor.allocationAdmission();
+  size_t restores = 0;
+  for (;;) {
+    bool restored;
+    {
+      const MemoryGovernor::Scope scope(governor, writerClaim);
+      restored = weights->restore(admit);
+    }
+    if (restored) break;
+    if (weights->hasPreparedWriter()) {
+      auto &lease = resources->resourceAuthority();
+      std::mutex mutex;
+      std::condition_variable ready;
+      WriterRetirement *job = nullptr;
+      bool dispatched = false;
+      try {
+        // Create the reaper before lending: even thread-creation failure
+        // leaves the prepared image cancellable by the Owner.
+        std::thread reaper([&] {
+          std::unique_lock lock(mutex);
+          ready.wait(lock, [&] { return dispatched; });
+          WriterRetirement *receipt = job;
+          lock.unlock();
+          if (receipt) receipt->join();
+        });
+        struct JoinReaper {
+          std::thread &thread;
+          std::mutex &mutex;
+          std::condition_variable &ready;
+          bool &dispatched;
+          ~JoinReaper() {
+            if (!thread.joinable()) return;
+            { std::lock_guard lock(mutex); dispatched = true; }
+            ready.notify_one();
+            thread.join();
+          }
+        } joinReaper{reaper, mutex, ready, dispatched};
+        auto receipt = lease.lendToWriter();
+        TestWriterPort port(lease, receipt);
+        try { weights->launchPreparedWriter(port); }
+        catch (...) { lease.cancelUnstartedWriter(receipt); throw; }
+        { std::lock_guard lock(mutex); job = &receipt; dispatched = true; }
+        ready.notify_one();
+        reaper.join();
+        require(weights->finishPreparedWriter(), "weight writer did not retire");
+      } catch (...) {
+        if (weights->hasPreparedWriter()) weights->cancelPreparedWriter();
+        throw;
+      }
+    }
+    require(++restores < 1000, "weight restoration failed to finish after residency move");
+  }
+  weights->setWeightWriteScope({});
+  start.emplace(governor, ClaimClass::InService);
+  static_cast<void>(runtime->warmupPrefill(1));
+  static_cast<void>(runtime->warmupDecodeBatch(1));
+  const auto runtimeMemory = runtime->actualRuntimeMemory();
+  const auto beforeRuntime = resources->backend().refreshMemoryStats().allocatedBytes;
+  runtime.reset(); // Bootstrap's normal runtime -> resources teardown order.
+  const auto afterRuntime = resources->backend().refreshMemoryStats().allocatedBytes;
+  require(beforeRuntime >= afterRuntime + runtimeMemory.sharedPrefillActualAllocatedBytes +
+                              runtimeMemory.sharedDecodeActualAllocatedBytes,
+          "destroying RuntimeModel did not release its arenas while retained storage stayed alive");
+  require(resources->closePersistentCache(), "persistent cache could not close after ownership move");
+}
+
+// Target/draft/vision allocations, image-writer closures, the ANE slot and
+// ReleasableMemory really belong to ModelResidency (T009): the residency is
+// destroyed as one unit, its idle-weight callbacks before the ANE referents,
+// plans and model images/stores/writers it borrows. This isolates that
+// boundary; it is not a suspension test.
+void testResidencyReleasesAllWeightCategories(const char *metallibPath) {
+  constexpr uint64_t probeBytes = 2 * kMiB;
+  metal::MetalBackend backend(metallibPath);
+  auto retained = backend.allocateBuffer(probeBytes, metal::BufferStorage::Shared, "ownership-probe");
+  const uint64_t retainedBytes = backend.refreshMemoryStats().allocatedBytes;
+  struct WriterLifetime final {
+    metal::MetalBackend &backend;
+    bool &destroyedAlive;
+    ~WriterLifetime() { destroyedAlive = backend.healthy(); }
+  };
+  // Failure 0 faults the residency's Storage allocation. Failure 1 faults
+  // ReleasableMemory's parts vector inside the residency's Storage construction,
+  // after that allocation succeeds. -1 is the ordinary destructor path. The
+  // injector only faults this thread.
+  for (const int failure : {-1, 0, 1}) {
+    bool writerDestroyedAlive = false;
+    bool failed = false;
+    try {
+      model::LoadedModel loaded;
+      loaded.images = std::make_shared<model::WeightImages>(backend, "ownership-probe");
+      auto lifetime = std::shared_ptr<WriterLifetime>(new WriterLifetime{backend, writerDestroyedAlive});
+      {
+        const auto file = loaded.images->load({
+            .component = "probe", .magic = "T007TEST", .bytes = probeBytes,
+            .write = [lifetime = std::move(lifetime)](std::span<uint8_t> bytes,
+                                                     const metal::MetalBuffer &) {
+              const auto header = model::weightFileHeader("T007TEST", 0, 0);
+              std::copy(header.begin(), header.end(), bytes.begin());
+            }});
+      }
+      auto &target = std::get<model::Qwen3_8Weights>(loaded.target);
+      target.actualAllocatedBytes = probeBytes;
+      ops::StoredRows planes;
+      planes.rows = backend.allocateBuffer(probeBytes, metal::BufferStorage::Shared, "ownership-probe");
+      target.tokenEmbedding = ops::EmbeddingWeights(1, 1, std::move(planes));
+      loaded.draft.actualAllocatedBytes = probeBytes;
+      loaded.draft.predecessorCodebook = backend.allocateBuffer(probeBytes, metal::BufferStorage::Shared, "ownership-probe");
+      loaded.vision.actualAllocatedBytes = probeBytes;
+      loaded.vision.tensors.positionTable = backend.allocateBuffer(probeBytes, metal::BufferStorage::Shared, "ownership-probe");
+      const auto resident = backend.refreshMemoryStats().allocatedBytes;
+      require(resident >= retainedBytes + 4 * probeBytes, "probe weights were not allocated");
+      auto plans = ops::ExecutionPlans(backend.capabilities(), ops::Int8Activations::On);
+      allocationFailureAfter = failure;
+      // ReleasableMemory is now built inside the residency's Storage over its
+      // own model and split: a throwing parts allocation unwinds the residency
+      // (and its already-moved model and plans) while the retained backend is
+      // still live, before any ownership transfer.
+      auto residency = RuntimeResourcesTestAccess::make(std::move(loaded), std::move(plans),
+                                                       std::unique_ptr<ops::AneFfn>{});
+      static_cast<void>(residency);
+    } catch (const std::bad_alloc &) {
+      failed = true;
+    }
+    allocationFailureAfter = -1;
+    require((failure == -1 || failed) && writerDestroyedAlive && retained && backend.healthy() &&
+                backend.refreshMemoryStats().allocatedBytes == retainedBytes,
+            "ordinary/partial residency teardown leaked weights or outlived its backend/writer");
+  }
+}
+
 } // namespace
+
+// The native loop's weights paths are residency-conditional: with the
+// residency moved out, a loop built without weights reports absent
+// telemetry (never a live measurement, never a dereference) and releases
+// nothing; with its weights live, the idle release still gives them back
+// once the idle release has passed without a request.
+void testWeightsConditionalNativeLoop(const char *metallibPath) {
+  const test::TemporaryDirectory root("splash-native-weights");
+  auto config = loadableConfig(metallibPath, root.path(), "weights-test");
+  std::unique_ptr<RuntimeResources> resources;
+  static_cast<void>(test::capturedStderr([&] { resources = RuntimeResources::create(config, 0); }));
+  const test::ClaimScope start(resources->memoryGovernor(), ClaimClass::Floor);
+  EngineConfig engineConfig;
+  connectToGovernor(engineConfig, resources->memoryGovernor());
+  engineConfig.maxContext = resources->memoryPlan().maximumContextTokens();
+  engineConfig.vocabularySize = config.model.capabilities.vocabularySize;
+  engineConfig.spill = resources->spillConfig();
+  const auto limits = protocolLimitsFor(config.model.capabilities, engineConfig.maxContext);
+  auto runtime = model::createRuntime(*resources->modelContext());
+  // Absent residency: a loop without weights is constructible and its
+  // weightsSnapshot()/releaseIdleWeights()/restore paths stay safe.
+  RuntimeResourcesTestAccess::moved(*resources, [&] {
+    NativeLoopConfig loopConfig;
+    loopConfig.engine = engineConfig;
+    NativeRuntime loop(loopConfig, 1.0, resources->cache(), resources->writeBehind(), *runtime,
+                       [](std::span<const uint8_t>) {}, [] { return std::string("{}"); }, limits);
+    const auto snapshot = loop.weightsSnapshot();
+    test::require(!snapshot.released && !snapshot.restoring && snapshot.restores == 0 &&
+                      snapshot.restoreFailures == 0 && snapshot.idleReleaseSeconds == 0.0,
+                  "a loop without weights reported live weight telemetry");
+    loop.releaseIdleWeights();
+    test::require(!loop.weightsSnapshot().released && !loop.connectionMustClose() &&
+                      loop.engineHealthy(),
+                  "the absent-weights control path broke the loop");
+  });
+  // Live weights: the ordinary idle release still gives them back.
+  NativeLoopConfig loopConfig;
+  loopConfig.engine = engineConfig;
+  auto *weights = resources->releasableMemory();
+  test::require(weights != nullptr, "weights missing after residency move");
+  loopConfig.engine.weights = WeightResidencyConfig{weights, resources->memoryGovernor().allocationAdmission(), 1000.0};
+  double clock = 1000.0;
+  loopConfig.monotonicMilliseconds = [&clock] { return clock; };
+  NativeRuntime loop(loopConfig, 1.0, resources->cache(), resources->writeBehind(), *runtime,
+                     [](std::span<const uint8_t>) {}, [] { return std::string("{}"); }, limits);
+  loop.announceReady(readyEventFor(config.model, engineConfig, limits));
+  loop.releaseIdleWeights();
+  test::require(!resources->releasableMemory()->released(),
+                "weights were released before the idle release passed");
+  clock += 2000.0;
+  const auto log = test::capturedStderr([&] { loop.releaseIdleWeights(); });
+  test::require(resources->releasableMemory()->released() &&
+                    log.find("Weights released after") != std::string::npos,
+                "the idle release did not give the weights back");
+  loop.releaseIdleWeights();
+  test::require(resources->releasableMemory()->released(),
+                "a second idle pass released the weights again");
+}
+
+// [T031 prerequisite] The private stratum a recovery assembles against a
+// RETAINED graph (Gate 1). ONE model-bound phase serves both a first assembly
+// and a rebuild: with a retained graph it reuses that graph's SSD readers,
+// reports its tier as already open rather than opening another, and allocates
+// only a stratum, so no second backend, KV pages, state storage, cache, disk
+// tier or governor can appear. The serving residency stays live beside the
+// candidate while it is built, and the candidate's own RuntimeContext carries
+// ITS OWN model, plans and ANE split around THIS graph's retained storage --
+// which is what a RuntimeModel built from it executes on. What the checked
+// adoption gate refuses, it refuses WITHOUT moving anything, leaving the
+// candidate intact for the rollback path: a live slot, another graph's
+// identity, or a rebuilt plan whose KV/state geometry is not this graph's.
+void testPrivateRecoveryResidencyAgainstRetainedGraph(const char *metallibPath) {
+  const test::TemporaryDirectory root("splash-recovery-residency");
+  auto config = loadableConfig(metallibPath, root.path(), "recovery-test");
+  config.cacheDisk = {.bytes = kGiB};
+  std::unique_ptr<RuntimeResources> resources;
+  static_cast<void>(test::capturedStderr(
+      [&] { resources = RuntimeResources::create(config, 0); }));
+  const test::ClaimScope start(resources->memoryGovernor(), ClaimClass::Floor);
+  const auto identities = RuntimeResourcesTestAccess::retained(*resources);
+  const auto identity = resources->cacheIdentity();
+  auto serving = model::createRuntime(*resources->modelContext());
+  static_cast<void>(serving->warmupPrefill(1));
+  require(resources->modelResident() && resources->releasableMemory(),
+          "a serving graph reports no residency");
+
+  std::optional<ModelResidency> privateResidency;
+  static_cast<void>(test::capturedStderr(
+      [&] { privateResidency = resources->buildModelResidency(config, 0, [] { return false; }); }));
+  require(RuntimeResourcesTestAccess::held(*privateResidency) != nullptr,
+          "the private residency holds no stratum of its own");
+  require(RuntimeResourcesTestAccess::retained(*resources) == identities,
+          "a rebuild against a retained graph disturbed a retained object");
+  require(resources->modelResident() && resources->releasableMemory(),
+          "a rebuild emptied or replaced the serving residency");
+  require(resources->backend().healthy(), "a rebuild left the retained backend unhealthy");
+
+  // The same retained storage, this stratum's model: the private context's
+  // model, plans and split are the candidate's, its pages, states, caches and
+  // growth admission this graph's.
+  const auto published = *resources->modelContext();
+  const auto privateContext = *resources->modelContext(*privateResidency);
+  require(&privateContext.model != &published.model,
+          "a private context names the published stratum's model");
+  require(&privateContext.kvPages == &published.kvPages &&
+              &privateContext.stateStorage == &published.stateStorage &&
+              privateContext.blockCache == published.blockCache &&
+              privateContext.historyStream == published.historyStream &&
+              &privateContext.backend == &published.backend,
+          "a private context reached another graph's storage");
+  // It runs: one prefill through a RuntimeModel built over the private stratum,
+  // admitted by this graph's governor, while the serving runtime still runs.
+  auto privateRuntime = model::createRuntime(privateContext);
+  static_cast<void>(privateRuntime->warmupPrefill(1));
+  privateRuntime.reset();
+  require(resources->backend().healthy() &&
+              RuntimeResourcesTestAccess::retained(*resources) == identities,
+          "a private model's arenas disturbed the retained graph");
+
+  // A cancelled construction retires what it allocated and keeps this graph
+  // exactly: the cooperative fence the loader checks is the operation's, and
+  // the graph's own startup predicate goes back in place behind it.
+  {
+    bool refused = false;
+    try {
+      static_cast<void>(test::capturedStderr(
+          [&] { static_cast<void>(resources->buildModelResidency(config, 0, [] { return true; })); }));
+    } catch (...) {
+      refused = true;
+    }
+    require(refused && resources->modelResident() &&
+                RuntimeResourcesTestAccess::retained(*resources) == identities,
+            "a cancelled rebuild disturbed the retained graph");
+  }
+  // A plan this graph was never assembled with: the same model description with
+  // the SSD cache's state staging gone is a different geometry, and the gate
+  // refuses before a residency exists.
+  {
+    auto mismatched = config;
+    mismatched.cacheDisk = {.bytes = 0};
+    bool refused = false;
+    try {
+      static_cast<void>(test::capturedStderr(
+          [&] { static_cast<void>(resources->buildModelResidency(mismatched, 0, [] { return false; })); }));
+    } catch (...) {
+      refused = true;
+    }
+    require(refused && RuntimeResourcesTestAccess::retained(*resources) == identities,
+            "a rebuild with another graph's geometry was accepted");
+  }
+
+  // The adoption gate over a LIVE slot and another identity: false, the
+  // candidate's stratum still whole, nothing of this graph touched.
+  auto otherIdentity = identity;
+  otherIdentity.buildId = "another-build";
+  require(!resources->canAdoptModelResidency(*privateResidency, identity),
+          "the gate accepted a stratum over a live one");
+  require(!resources->canAdoptModelResidency(*privateResidency, otherIdentity),
+          "the gate accepted another build's identity");
+  std::optional<ModelResidency> refused = std::move(privateResidency);
+  static_cast<void>(test::capturedStderr([&] {
+    require(!resources->adoptModelResidency(std::move(*refused), otherIdentity),
+            "an unchecked adoption moved a wrong identity in");
+    require(RuntimeResourcesTestAccess::held(*refused) != nullptr,
+            "a refused adoption consumed the candidate's stratum");
+    privateResidency = std::move(refused);
+    refused.reset();
+  }));
+
+  // The lawful order the lifecycle drives: the safe point moves the SERVING
+  // stratum out to the designated disposal path, the checked gate accepts
+  // THIS graph's own stratum into the now-empty slot, and the retired stratum
+  // is what dies last, after nothing borrows it any more.
+  std::optional<ModelResidency> retired;
+  static_cast<void>(test::capturedStderr([&] {
+    retired = resources->releaseModelResidency();
+    require(resources->canAdoptModelResidency(*privateResidency, identity),
+            "the gate refused this graph's own stratum over an empty slot");
+    require(resources->adoptModelResidency(std::move(*privateResidency), identity),
+            "the checked move into the empty slot refused");
+    privateResidency.reset();
+  }));
+  require(resources->modelResident() &&
+              &resources->modelContext()->model != &RuntimeResourcesTestAccess::model(*retired),
+          "an adopted residency did not become this graph's");
+  serving.reset();
+  auto rebound = model::createRuntime(*resources->modelContext());
+  static_cast<void>(rebound->warmupPrefill(1));
+  rebound.reset();
+  retired.reset();  // destroyed last: nothing borrows it by now
+  require(resources->backend().healthy() &&
+              RuntimeResourcesTestAccess::retained(*resources) == identities,
+          "the adoption moved a retained object or disturbed the graph");
+}
 
 int main(int argc, char **argv) {
   @autoreleasepool {
     try {
-      require(argc == 2, "expected metallib path");
+      require(argc == 1 || argc == 2, "expected an optional metallib path");
+      const std::string metallib = argc == 2 ? argv[1] :
+          (std::filesystem::path(argv[0]).parent_path().parent_path() / "splash.metallib").string();
+      testResidencyReleasesAllWeightCategories(metallib.c_str());
+      testRetainedIdentityAcrossResidencyMove(metallib.c_str());
+      testPrivateRecoveryResidencyAgainstRetainedGraph(metallib.c_str());
+      testWeightsConditionalNativeLoop(metallib.c_str());
       testLoadedVisionIsRequiredOnlyWithVision();
       testPersistentCacheNamespace();
-      testWeightBudgetBeforeLoading(argv[1]);
-      testStateStagingNeedsAStartedTier(argv[1]);
-      testImagePatchCapIsBounded(argv[1]);
-      testHostMemoryProbeIsRequired(argv[1]);
-      testModelBeyondBudgetIsRefusedBeforeLoading(argv[1]);
-      testStartupAdmissionIgnoresModelSize(argv[1]);
-      testFailedStepIsNamed(argv[1]);
-      testACommandOutOfMemoryInAssemblyIsCommandMemory(argv[1]);
-      testStartGrowsThroughHostPressure(argv[1]);
-      testStartChecksTheReserveWithWhatItServes(argv[1]);
-      testYarnRuntime(argv[1]);
-      testARestoreAfterTheOtherWarmupsCreatesNothing(argv[1]);
-      testALongRequestAfterTheWarmupsCreatesNothing(argv[1]);
-      testWriteBudgetOnlyWhenSet(argv[1]);
-      testStaleCachesGoAtEveryStart(argv[1]);
-      testMadeCacheRootStaysOutOfBackups(argv[1]);
-      testAutomaticTierYieldsToTheContext(argv[1]);
-      testAutomaticContextIgnoresTheVolume(argv[1]);
-      testTheCacheMeasuresItsFilesFolder(argv[1]);
-      testRelaunchKeepsTheSpilledContext(argv[1]);
-      testAStoreKeepsTheFloorOfTheRunsSpill(argv[1]);
-      testAnExplicitRelaunchServesItsFirstContext(argv[1]);
-      testTableShareHoldsAPromptsIds(argv[1]);
-      testTheTableIgnoresTheHostsSpareMemory(argv[1]);
-      testEngineFollowsTheGovernor(argv[1]);
-      testThePlanCountsEveryBuffer(argv[1]);
-      testDenseRuntimeBoundary(argv[1]);
-      testSpilledRuntimeBoundary(argv[1]);
-      testThePlanCountsTheSpilledKvReadersTables(argv[1]);
+      testWeightBudgetBeforeLoading(metallib.c_str());
+      testStateStagingNeedsAStartedTier(metallib.c_str());
+      testImagePatchCapIsBounded(metallib.c_str());
+      testHostMemoryProbeIsRequired(metallib.c_str());
+      testModelBeyondBudgetIsRefusedBeforeLoading(metallib.c_str());
+      testStartupAdmissionIgnoresModelSize(metallib.c_str());
+      testFailedStepIsNamed(metallib.c_str());
+      testACommandOutOfMemoryInAssemblyIsCommandMemory(metallib.c_str());
+      testStartGrowsThroughHostPressure(metallib.c_str());
+      testStartChecksTheReserveWithWhatItServes(metallib.c_str());
+      testYarnRuntime(metallib.c_str());
+      testARestoreAfterTheOtherWarmupsCreatesNothing(metallib.c_str());
+      testALongRequestAfterTheWarmupsCreatesNothing(metallib.c_str());
+      testWriteBudgetOnlyWhenSet(metallib.c_str());
+      testStaleCachesGoAtEveryStart(metallib.c_str());
+      testMadeCacheRootStaysOutOfBackups(metallib.c_str());
+      testAutomaticTierYieldsToTheContext(metallib.c_str());
+      testAutomaticContextIgnoresTheVolume(metallib.c_str());
+      testTheCacheMeasuresItsFilesFolder(metallib.c_str());
+      testRelaunchKeepsTheSpilledContext(metallib.c_str());
+      testAStoreKeepsTheFloorOfTheRunsSpill(metallib.c_str());
+      testAnExplicitRelaunchServesItsFirstContext(metallib.c_str());
+      testTableShareHoldsAPromptsIds(metallib.c_str());
+      testTheTableIgnoresTheHostsSpareMemory(metallib.c_str());
+      testEngineFollowsTheGovernor(metallib.c_str());
+      testThePlanCountsEveryBuffer(metallib.c_str());
+      testDenseRuntimeBoundary(metallib.c_str());
+      testSpilledRuntimeBoundary(metallib.c_str());
+      testThePlanCountsTheSpilledKvReadersTables(metallib.c_str());
       {
         const test::TemporaryDirectory root("splash-moe");
-        const RuntimeResourcesConfig moe = moeConfig(argv[1], root.path());
+        const RuntimeResourcesConfig moe = moeConfig(metallib.c_str(), root.path());
         testStreamableWeightsAreWhatLoads(moe);
         testAToolsStoreIsItsSize(moe);
         testAutomaticExpertMemory(moe);
-        testVerifyRows(argv[1], moe);
+        testVerifyRows(metallib.c_str(), moe);
         testStreamedRuntimeBoundary(moe);
         RuntimeResourcesConfig streamed = moe;
         streamed.maximumMemoryBytes = startStreamed(moe).minimumRequired - 1;

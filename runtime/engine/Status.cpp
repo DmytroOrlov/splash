@@ -69,6 +69,12 @@ void writeBatch(json::Writer &w, const RuntimeBatchMetricsSnapshot &batch) {
   });
 }
 
+const char *boolean(bool value) { return value ? "true" : "false"; }
+std::string quote(std::string_view text) { json::Writer w; w.value(text); return w.str(); }
+void appendBatch(std::ostream &out, const RuntimeBatchMetricsSnapshot &batch) {
+  json::Writer w; writeBatch(w, batch); out << w.str();
+}
+
 const char *phaseName(engine::Phase phase) noexcept {
   switch (phase) {
   case engine::Phase::Queued: return "queued";
@@ -711,6 +717,8 @@ void writeWarmup(json::Writer &w, const WarmupReport &warmup) {
 } // namespace
 
 std::string runtimeStatusJson(const StatusStart &start, const StatusSample &sample) {
+  if (sample.lifecycle && !validLifecycleStatus(*sample.lifecycle))
+    throw std::invalid_argument("invalid lifecycle status");
   const EngineMemoryPlan &plan = start.plan;
   const EngineSnapshot &core = sample.engine;
   const metal::MetalMemoryStats &metalMemory = sample.metalMemory;
@@ -727,7 +735,7 @@ std::string runtimeStatusJson(const StatusStart &start, const StatusSample &samp
   // only after warmup and the memory audit passed. The thermal state slows
   // serving but never stops it, so it is reported and readiness ignores it.
   const bool hostSafe = memoryGovernor.pressure != MemoryPressure::Critical;
-  const bool ready = sample.metalHealthy && hostSafe &&
+  const bool ready = (!sample.lifecycle || sample.lifecycle->inferenceReady) && sample.metalHealthy && hostSafe &&
                      currentBytes <= plan.breakdown().hardBudgetBytes;
 
   json::Writer w;
@@ -737,6 +745,18 @@ std::string runtimeStatusJson(const StatusStart &start, const StatusSample &samp
         .field("maximum_context_tokens", core.maximumContextTokens)
         .field("memory_pressure", memoryPressureName(memoryGovernor.pressure))
         .field("thermal_state", thermalStateName(sample.thermalState));
+    if (sample.lifecycle) {
+      const auto &life = *sample.lifecycle;
+      w.field("control_ready", life.controlReady).field("inference_ready", life.inferenceReady)
+          .field("model_resident", life.modelResident).key("effective_context_tokens");
+      if (life.effectiveContextTokens) w.value(*life.effectiveContextTokens); else w.null();
+      w.object("lifecycle", [&] {
+        w.field("power", lifecyclePowerName(life.power)).field("state", lifecycleStateName(life.state))
+            .field("revision", life.revision).field("observation_sequence", life.observationSequence)
+            .field("configured_context_ceiling", life.configuredContextCeiling).field("control_ready", life.controlReady)
+            .field("last_error", life.lastError);
+      });
+    }
     w.object("admission", [&] {
       w.field("waiting", resourceWait.memory + resourceWait.concurrency)
           .field("waiting_memory", resourceWait.memory)
@@ -838,6 +858,138 @@ std::string runtimeStatusJson(const StatusStart &start, const StatusSample &samp
     });
   });
   return w.str();
+}
+
+// Status while the model-bound stratum is absent. Its ownership comes only from
+// the snapshot's own evidence (RuntimeResources::modelResident() and the
+// residency-conditional byte counts behind it): nothing here is inferred from
+// startup history, a lifecycle label or a status document taken earlier. A
+// split left off (an AneFfnSnapshot of Off, which an absent residency reports
+// too), weights that read as held and a warm start's warmup report are all
+// facts a start leaves behind, none of them evidence that the model is
+// resident, and none is emitted as a live measurement here: every section
+// scoped to a model or an Engine is null, which is what this schema spells
+// "not measured by this observation", never a zero this observation did not
+// take. The retained graph's own counts (the backend's allocation, the cache,
+// KV and state bytes the Cache and its persistence still hold) keep the values
+// they were measured at, zero as much, since a retained resource is
+// resident whether or not the model is. The loop's metrics, admission and
+// pressure survive the residency too: the loop owns them, not the model.
+// Constructing and serializing this document reads snapshots and writes text:
+// it holds no runtime pointer, cannot restore a residency, run inference, warm
+// anything up or change a lifecycle state.
+std::string runtimeStatusJson(const ResourceSnapshot &resources,
+                              const RuntimeMetricsSnapshot &metrics,
+                              MemoryPressure memoryPressure,
+                              std::string failureReason,
+                              const ResourceWaitSnapshot &resourceWait) {
+  if (!validResourceSnapshot(resources))
+    throw std::invalid_argument(
+        "residency-absent runtime status needs a valid resource snapshot");
+  const LifecycleStatusSnapshot &lifecycle = resources.lifecycle;
+  if (lifecycle.modelResident || lifecycle.inferenceReady)
+    throw std::invalid_argument(
+        "residency-absent runtime status cannot report a resident model's live "
+        "telemetry, which only the Engine-borne status measures");
+
+  std::ostringstream out;
+  out << std::setprecision(10) << '{'
+      << "\"schema_version\":" << protocol::kStatusSchemaVersion
+      << ",\"ready\":false"
+      << ",\"control_ready\":" << boolean(lifecycle.controlReady)
+      << ",\"inference_ready\":false"
+      << ",\"maximum_context_tokens\":null"
+      << ",\"configured_context_ceiling\":" << lifecycle.configuredContextCeiling
+      << ",\"effective_context_tokens\":";
+  // A context the runtime resolved and kept is a retained measurement; the
+  // ceiling is the only one this observation can otherwise attest.
+  if (lifecycle.effectiveContextTokens)
+    out << *lifecycle.effectiveContextTokens;
+  else
+    out << "null";
+  out << ",\"memory_pressure\":" << quote(memoryPressureName(memoryPressure))
+      << ",\"lifecycle\":{\"power\":"
+      << quote(lifecyclePowerName(lifecycle.power))
+      << ",\"state\":" << quote(lifecycleStateName(lifecycle.state))
+      << ",\"revision\":" << lifecycle.revision
+      << ",\"observation_sequence\":" << lifecycle.observationSequence
+      << ",\"model_resident\":false,\"control_ready\":"
+      << boolean(lifecycle.controlReady)
+      << ",\"inference_ready\":false,\"last_error\":"
+      << quote(lifecycle.lastError) << '}'
+      << ",\"admission\":{\"waiting\":"
+      << resourceWait.memory + resourceWait.concurrency
+      << ",\"waiting_memory\":" << resourceWait.memory
+      << ",\"waiting_concurrency\":" << resourceWait.concurrency
+      << ",\"held_behind_refusal\":" << resourceWait.heldBehindRefusal
+      << ",\"restoring\":" << resourceWait.restoring
+      << ",\"suspended\":" << resourceWait.suspended
+      << ",\"draining\":" << boolean(resourceWait.draining)
+      << ",\"oldest_wait_ms\":" << resourceWait.oldestWaitMilliseconds << "}"
+      << ",\"resources\":{\"backend_allocated_bytes\":"
+      << resources.backendAllocatedBytes
+      << ",\"model_package_resident\":";
+  // A recovery candidate's private allocations are physically resident even
+  // while the model is not published: these four fields state the snapshot's
+  // own ownership, byte counts as the optional numbers the owner measured
+  // (or null where it holds none), never a blanket false the snapshot did
+  // not say. Publication stays false, which is the whole difference between
+  // "physically allocated" and "inference ready".
+  out << boolean(resources.modelPackageResident)
+      << ",\"model_package_resident_bytes\":";
+  if (resources.modelPackageResidentBytes)
+    out << *resources.modelPackageResidentBytes;
+  else
+    out << "null";
+  out << ",\"runtime_resident\":" << boolean(resources.runtimeResident)
+      << ",\"runtime_resident_bytes\":";
+  if (resources.runtimeResidentBytes)
+    out << *resources.runtimeResidentBytes;
+  else
+    out << "null";
+  out << ",\"retained_cache_bytes\":" << resources.retainedCacheBytes
+      << ",\"retained_kv_bytes\":" << resources.retainedKvBytes
+      << ",\"retained_state_bytes\":" << resources.retainedStateBytes
+      << ",\"model_telemetry_available\":"
+      << boolean(resources.modelTelemetryAvailable) << '}'
+      << ",\"failure_reason\":" << quote(failureReason)
+      // Each section below belongs to a loaded model or an Engine: absent
+      // residency, this observation has no value for it. The whole object,
+      // with the retained counts above, is what distinguishes "the model is
+      // gone" from a serving runtime's zero-valued live readings.
+      << ",\"identity\":null,\"memory_plan\":null"
+      << ",\"memory_actual\":null,\"memory_governor\":null"
+      << ",\"memory_audit\":null,\"weights\":null"
+      << ",\"streamed_table\":null,\"streamed_experts\":null"
+      << ",\"ane_ffn\":null,\"kv\":null,\"state\":null"
+      << ",\"disk\":null,\"cache\":null,\"draft_context\":null"
+      << ",\"model_timing\":null,\"constraint_masks\":null"
+      << ",\"images\":null,\"scheduler\":null,\"requests\":null"
+      << ",\"warmup\":null,\"metal\":null"
+      << ",\"metrics\":{\"ttft_ms\":{\"p50\":" << metrics.ttftP50Milliseconds
+      << ",\"p95\":" << metrics.ttftP95Milliseconds
+      << ",\"samples\":" << metrics.ttftSamples
+      << "},\"itl_ms\":{\"p50\":" << metrics.itlP50Milliseconds
+      << ",\"p95\":" << metrics.itlP95Milliseconds
+      << ",\"samples\":" << metrics.itlSamples
+      << "},\"prefill_input_tokens\":" << metrics.prefillInputTokens
+      << ",\"prefill_wall_ms\":" << metrics.prefillWallMilliseconds
+      << ",\"prefill_tokens_per_second\":" << metrics.prefillTokensPerSecond
+      << ",\"decode_output_tokens\":" << metrics.decodeOutputTokens
+      << ",\"decode_wall_ms\":" << metrics.decodeWallMilliseconds
+      << ",\"decode_cycle_ms\":" << metrics.decodeCycleMilliseconds
+      << ",\"decode_tokens_per_second\":" << metrics.decodeTokensPerSecond
+      << ",\"drafted_tokens\":" << metrics.draftedTokens
+      << ",\"accepted_draft_tokens\":" << metrics.acceptedDraftTokens
+      << ",\"draft_acceptance_rate\":" << metrics.draftAcceptanceRate
+      << ",\"capacity_failures\":" << metrics.capacityFailures
+      << ",\"metal_failures\":" << metrics.metalFailures
+      << ",\"current_prefill_batch\":";
+  appendBatch(out, metrics.currentPrefillBatch);
+  out << ",\"current_decode_batch\":";
+  appendBatch(out, metrics.currentDecodeBatch);
+  out << "}}";
+  return out.str();
 }
 
 } // namespace splash::engine

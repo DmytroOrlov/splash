@@ -173,6 +173,7 @@ class JsonResponseTests(unittest.TestCase):
             TEXT,
         )
         self.plan(harness)
+        harness.backend.status()
         events = client.responses.create(
             model="test-model", input="hello", stream=True, reasoning={"effort": "none"}
         )
@@ -185,6 +186,7 @@ class JsonResponseTests(unittest.TestCase):
             TEXT,
         )
         self.plan(harness)
+        harness.backend.status()
         connection = http.client.HTTPConnection(
             *harness.server.server_address, timeout=3
         )
@@ -500,10 +502,12 @@ class JsonResponseTests(unittest.TestCase):
                     mock.patch.object(api, "log_unexpected", lambda _error: None),
                     concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool,
                 ):
+                    harness.backend.status()
                     failing = pool.submit(
                         harness.request, "POST", path, request_body(path, True)
                     )
                     self.assertTrue(plan.started.wait(1))
+                    harness.backend.status()
                     status, _, normal = harness.request(
                         "POST", PATHS[0], request_body(PATHS[0])
                     )
@@ -516,6 +520,7 @@ class JsonResponseTests(unittest.TestCase):
                 self.assertEqual(response_text(path, payload, True), "first ")
                 self.assertIn("internal server error", str(stream_events(payload)))
                 self.assert_released(harness)
+                harness.backend.status()
                 self.assertEqual(
                     harness.request("POST", path, request_body(path))[0], 200
                 )
@@ -536,6 +541,7 @@ class JsonResponseTests(unittest.TestCase):
                     plan = Plan([[40], [41], [42]], delay=0.05)
                     harness.backend.runtime.plans.append(plan)
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        harness.backend.status()
                         calling = pool.submit(
                             harness.request,
                             "POST",
@@ -543,6 +549,7 @@ class JsonResponseTests(unittest.TestCase):
                             tool_request(path, stream, {"type": "object"}),
                         )
                         self.assertTrue(plan.started.wait(1))
+                        harness.backend.status()
                         status, _, normal = harness.request(
                             "POST", PATHS[0], request_body(PATHS[0])
                         )
@@ -557,6 +564,7 @@ class JsonResponseTests(unittest.TestCase):
                     )
                     self.assert_released(harness)
                     self.assertEqual(harness.request("GET", "/health")[0], 200)
+                    harness.backend.status()
                     self.assertEqual(
                         harness.request("POST", path, request_body(path))[0], 200
                     )

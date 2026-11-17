@@ -58,6 +58,16 @@ inline constexpr uint64_t kConstantOffset = 64;
 // nothing.
 [[nodiscard]] std::optional<std::string> unavailable();
 
+// [Gate 4 / U-01] How many service-queue operations the Neural Engine still owes
+// (Program.mm): posted work it has not run to its end - compile, load, unload,
+// an evaluation in flight, and the block that destroys a program's state and
+// unloads its model after its caller let it go. Passive: it never resolves
+// the interface, posts work or waits, and reports none where the interface
+// never resolved (no queue exists there). The retirement witness's ANE half
+// beyond the reported jobs: nothing the service still borrows may be retired
+// while a count stands.
+[[nodiscard]] uint32_t serviceQueueWork() noexcept;
+
 // What a Program throws when its caller's Limits::interrupted() ended the
 // wait for the service: the caller stopped, the service did not fail.
 class Interrupted final : public std::runtime_error {

@@ -289,6 +289,7 @@ ENGINE_CPP_SOURCES := \
 	runtime/engine/WeightResidency.cpp \
 	runtime/engine/MemoryGovernor.cpp \
 	runtime/engine/MemoryLedger.cpp \
+	runtime/engine/ResourceDomainLease.cpp \
 	runtime/engine/MemoryControl.cpp \
 	runtime/engine/KvPool.cpp \
 	runtime/engine/KvCache.cpp \
@@ -347,7 +348,8 @@ ENGINE_MM_SOURCES := \
 	runtime/model/ModelDescriptor.mm \
 	runtime/engine/ThermalState.mm \
 	runtime/engine/RuntimeResources.mm \
-	runtime/engine/Bootstrap.mm
+	runtime/engine/Bootstrap.mm \
+	runtime/engine/PowerSource.mm
 ENGINE_OBJECTS := \
 	$(patsubst runtime/%.cpp,$(ENGINE_BUILD)/%.o,$(ENGINE_CPP_SOURCES)) \
 	$(patsubst runtime/%.mm,$(ENGINE_BUILD)/%.o,$(ENGINE_MM_SOURCES)) \

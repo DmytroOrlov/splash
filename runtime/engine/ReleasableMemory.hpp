@@ -64,8 +64,52 @@ public:
   [[nodiscard]] bool writing() const noexcept override {
     return std::ranges::any_of(parts_, &model::WeightMemory::writing);
   }
+  [[nodiscard]] bool writerIntervalActive() const noexcept override {
+    return std::ranges::any_of(parts_, &model::WeightMemory::writerIntervalActive);
+  }
+  [[nodiscard]] bool pollWriterRetirement() override {
+    bool retired = true;
+    for (model::WeightMemory *part : parts_)
+      if (!part->pollWriterRetirement()) retired = false;
+    return retired && !writerIntervalActive();
+  }
+  void enableExternalWriter() override {
+    for (model::WeightMemory *part : parts_) part->enableExternalWriter();
+  }
+  void setWeightWriteScope(model::WeightWriteScope scope) override {
+    for (model::WeightMemory *part : parts_) part->setWeightWriteScope(scope);
+  }
+  [[nodiscard]] bool hasPreparedWriter() const noexcept override {
+    return std::ranges::any_of(parts_, &model::WeightMemory::hasPreparedWriter);
+  }
+  void launchPreparedWriter(model::WriterRetirementPort &receipt) override {
+    for (auto *part : parts_) if (part->hasPreparedWriter()) {
+      part->launchPreparedWriter(receipt);
+      return;
+    }
+    throw std::logic_error("no prepared writer");
+  }
+  bool finishPreparedWriter() override {
+    for (auto *part : parts_) if (part->writerIntervalActive())
+      return part->finishPreparedWriter();
+    return true;
+  }
+  void cancelPreparedWriter() override {
+    for (auto *part : parts_) if (part->hasPreparedWriter()) {
+      part->cancelPreparedWriter();
+      return;
+    }
+    throw std::logic_error("no prepared writer");
+  }
   void setCompletionNotifier(std::function<void()> notifier) override {
     for (model::WeightMemory *part : parts_) part->setCompletionNotifier(notifier);
+  }
+
+  void completionRecipients(std::vector<model::WeightMemory *> &out) override {
+    for (auto *part : parts_) part->completionRecipients(out);
+  }
+  uint32_t notifierBindings() const noexcept override {
+    uint32_t n = 0; for (auto *part : parts_) n += part->notifierBindings(); return n;
   }
 
 private:

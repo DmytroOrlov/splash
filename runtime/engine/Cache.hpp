@@ -46,6 +46,10 @@ struct CacheLookup final {
   // A matched block deeper than the state once held a reusable state that
   // is gone from both tiers.
   bool lostState = false;
+  // No state of the chain was acquirable, but a state of it is being
+  // written: the copy it carries lands in pollTransfers(); the caller waits
+  // for it rather than recomputing the prefix.
+  bool stateOffloadPending = false;
 
   [[nodiscard]] uint32_t resumeBoundary() const noexcept {
     return state ? state->boundary() : 0;
@@ -462,6 +466,26 @@ public:
     states_.setCompletionNotifier(notifier);
     completionNotifier_ = std::move(notifier);
   }
+  // [T031] Graph-side half of the prepared completion-binding install (see
+  // Engine::installCompletionBinding): moves an already-prepared pair of
+  // closures into this Cache's and the StateCache's slots and hands the
+  // displaced previous pair back. Moves only; a staged adoption's rollback
+  // path installs the displaced values back through the same call.
+  [[nodiscard]] std::pair<std::function<void()>, std::function<void()>>
+  installCompletionSlots(std::function<void()> &&cacheSlot, std::function<void()> &&stateSlot) noexcept {
+    std::function<void()> displacedState = states_.installCompletion(std::move(stateSlot));
+    std::function<void()> displacedCache = std::move(completionNotifier_);
+    completionNotifier_ = std::move(cacheSlot);
+    return {std::move(displacedCache), std::move(displacedState)};
+  }
+  // [Gate 4 / U-01] How many completion-closure bindings this Cache holds: its
+  // own and the StateCache's. `Engine::callbackRetirement` subtracts exactly
+  // these, plus the Engine's own, from the notifier tracker's live copies;
+  // measuring them here keeps a setup that never completed one of its three
+  // assignments from reading a borrowed closure as retired.
+  [[nodiscard]] uint32_t notifierBindings() const noexcept {
+    return (completionNotifier_ ? 1u : 0u) + states_.notifierBindings();
+  }
   // Consumes finished transfers: a written state or KV page frees its RAM, a
   // restored block becomes usable, and restores the tier had no room for
   // start.
@@ -695,11 +719,14 @@ public:
   // Pin the usable prefix before potentially evicting for active allocations.
   // Accounting is separate: failed admission retries are not extra samples.
   // A probe of the prompt that has seen the KV graph as it is supplies the
-  // matched chain; otherwise the prompt is matched again.
+  // matched chain; otherwise the prompt is matched again. `excludedStates`
+  // are the chain's blocks whose restore this request already failed: it
+  // acquires below them while they stay in the cache for other requests.
   [[nodiscard]] CacheLookup lookup(
       std::span<const uint32_t> prompt,
       PromptIdentity identity,
-      const CacheProbe *probe = nullptr);
+      const CacheProbe *probe = nullptr,
+      std::span<const uint64_t> excludedStates = {});
   void recordLookup(const CacheLookup &lookup);
   // Gives a state the lookup restored from disk the RAM copy `copy` takes
   // (StateRestore::snapshot, in a claim of the request), asked only while
@@ -894,6 +921,82 @@ public:
   // The most pages of the form a page need's evictions can leave free: every
   // allocated page of the form no request holds, but with Ordinary not the
   // idle KV that states in use restore through.
+  // [Gate 3 / U-02] The retained-IO quiescence witness: every retained transfer
+  // this graph still owns, counted by the obligation that keeps it owned, so a
+  // drain can say which owner stands instead of collapsing to one boolean.
+  // Independent of the engine's request state (`Engine::idle()` and every
+  // request-side counter say nothing about any of these) and of callback
+  // retirement. A transfer whose IO landed but whose poll has not consumed it
+  // stays owned there: its storage, its completion wake, its disk publication
+  // and — when it failed — the cleanup that must not leave invalid disk state
+  // published are all owed at that point, so `owed` counts them apart from the
+  // ones still running.
+  struct RetainedIo final {
+    // The tier's own IO: a write its file worker may still run, a restore it
+    // was asked for (queued or whose readers run) and a restore batch whose
+    // end has not returned.
+    uint32_t tierWrites = 0;
+    uint32_t tierRestores = 0;
+    uint32_t tierBatches = 0;
+    // The cache's records of transfers it started: reclaim demotions and
+    // persistent copies (kvWrites), pages written through for a Spill request
+    // (spillWrites), and KV restores, including one still waiting for the
+    // tier's room and so owning its slot and the waiters on it.
+    uint32_t kvWrites = 0;
+    uint32_t spillWrites = 0;
+    uint32_t kvRestores = 0;
+    // The one state write, running or landed: it holds its entry's disk copy,
+    // the RAM copy it reads in place and the quota it drew.
+    uint32_t stateWrites = 0;
+    // Landed transfers not yet polled: each still owns its storage and owes
+    // its publication, its completion wake or, for a failure, its cleanup.
+    uint32_t owed = 0;
+    [[nodiscard]] bool quiescent() const noexcept {
+      return !tierWrites && !tierRestores && !tierBatches && !kvWrites &&
+             !spillWrites && !kvRestores && !stateWrites && !owed;
+    }
+  };
+
+  [[nodiscard]] RetainedIo retainedIo() const noexcept;
+  [[nodiscard]] bool retainedIoIdle() const noexcept {
+    return retainedIo().quiescent();
+  }
+  // One bounded reclaim step, for an allocation retry or a pressure pass: one
+  // empty extent, one extent emptied of its pages, one state or one KV leaf,
+  // so a denial or a pass frees only what it needs. With ReleaseExtents free
+  // pages return first: an empty extent, then the free pages scattered over
+  // the others once they cover the extent that holds the fewest pages, whose
+  // pages move to them (compactExtent), and an extent a victim empties is
+  // released. Only then is anything evicted: disposable checkpoints first,
+  // then KV leaves no state restores through, then ordinary states and
+  // resident KV leaves, which share one oldest-first access order. States
+  // that unfinished requests use and the KV they restore through follow in
+  // their own such order, once no transfer in flight can return what is
+  // needed first. A chosen state keeps its disk copy when it has one, is
+  // written when the tier admits it and dropped otherwise; its buffers return
+  // to the model's pool, which reclaimIdleState gives back to the host. A
+  // chosen KV leaf frees its page at once when a disk copy exists, is
+  // dropped when nothing depends on it, and is otherwise written first: its
+  // page returns when the copy has landed, which ensureTokens() reports as
+  // Pending so callers wait instead of evicting more. While the tier can
+  // start no demotion, the leaves that need one stay and the others still
+  // go. A full disk quota replaces the oldest redundant copy of either kind,
+  // then the oldest copy that is the only one. The only copies of states in
+  // use, and the KV they restore through, make room only for a copy that is
+  // itself in use. Active requests and pinned restores are never selected.
+  // Progress is distinct from released bytes because evicting a KV
+  // reference can make a page reusable without emptying its extent, and the
+  // extent a step empties may be the runway it keeps. The step takes nothing
+  // of a class above upTo: with Ordinary, once only what is in use is left,
+  // it makes no progress, and reports pending while a transfer is in flight.
+  // With ReusePages no checkpoint goes, and of each class the leaves go in
+  // their own oldest-first order. keepResumePoint stops short of the resume
+  // point, the newest ordinary publication (else checkpoint), and a page
+  // scan of the leaf under it; states in use are protected by their class.
+  // A shrink that no request is waiting for gains the one cell that
+  // publication holds and costs the next request a replay of its whole
+  // prompt, because a hybrid model cannot resume from cached KV without the
+  // recurrent state. keepRunway leaves one empty extent allocated, for the
   [[nodiscard]] uint32_t reusablePages(ReclaimClass upTo, kv::PageForm form = kv::PageForm::Full) const;
   [[nodiscard]] CacheSnapshot snapshot() const;
   // What the reclaim counts looked at beside the counts the caches keep:

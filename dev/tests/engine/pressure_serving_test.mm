@@ -89,7 +89,7 @@ struct Served final {
   [[nodiscard]] RuntimeResources &resources() { return bootstrap->resources(); }
   [[nodiscard]] NativeRuntime &loop() { return bootstrap->nativeLoop(); }
   [[nodiscard]] model::ExpertStoreStats store() { return *resources().streamedExpertStats(); }
-  [[nodiscard]] MemoryGovernorSnapshot memory() { return resources().memoryGovernor().snapshot(); }
+  [[nodiscard]] MemoryGovernorSnapshot memory() { return resources().memoryGovernor().publishSnapshot(); }
   [[nodiscard]] std::optional<uint64_t> expertsAccount() {
     for (const MemoryAccountSnapshot &account : memory().accounts)
       if (account.name == "experts")

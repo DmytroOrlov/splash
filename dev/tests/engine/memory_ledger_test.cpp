@@ -291,7 +291,7 @@ void testAccountsSumToCharged() {
         fixture.ledger().close(growth);
       }
       }
-      const MemoryGovernorSnapshot snapshot = fixture.governor->snapshot();
+      const MemoryGovernorSnapshot snapshot = fixture.governor->publishSnapshot();
       uint64_t sum = 0;
       for (const MemoryAccountSnapshot &account : snapshot.accounts)
         sum += account.currentBytes;
@@ -321,7 +321,7 @@ void testSnapshotRendersEveryAccount() {
   require(ledger.free(waiting, {.bytes = 2 * kMiB}, 0, MemoryPressure::Normal).outcome == FreeOutcome::Pending,
           "a claim the landings cover did not wait");
   ledger.setNow(14.0);
-  const MemoryGovernorSnapshot snapshot = fixture.governor->snapshot();
+  const MemoryGovernorSnapshot snapshot = fixture.governor->publishSnapshot();
   require(snapshot.accounts.size() == 3 && snapshot.accounts[0].name == "fixed" && snapshot.accounts[1].name == "kv" &&
               snapshot.accounts[2].name == "experts",
           "the accounts are not fixed, kv and the pool in order");
@@ -563,6 +563,24 @@ void testOneHostRule() {
 
 // Memory a lane in service takes anyway (ClaimSpec::laneNeeds) is judged by the host as that lane's growth: by the
 // margin, not the band.
+// A status publication samples a copy of the host rule; it cannot move the
+// live admission band until the owner evaluates the new reading.
+void testSnapshotDoesNotAdvanceHostHysteresis() {
+  const uint64_t poolBytes = 2 * kGiB;
+  Fixture fixture(host(900 * kMiB + poolBytes, MemoryPressure::Normal,
+                       {at(100.0, 2 * kGiB + poolBytes)}));
+  FakeElasticPool experts("experts", fixture.memory, kGiB, 1, 4, 5, 2);
+  fixture.ledger().addPool(experts);
+  static_cast<void>(fixture.governor->evaluate());
+  require(!fixture.governor->admits(ClaimClass::Growth), "fixture did not enter host band");
+  fixture.memory.advanceTo(100.0);
+  const auto published = fixture.governor->publishSnapshot();
+  require(published.hostGrowthAllowed && !fixture.governor->admits(ClaimClass::Growth),
+          "snapshot did not report recovery independently of live hysteresis");
+  static_cast<void>(fixture.governor->evaluate());
+  require(fixture.governor->admits(ClaimClass::Growth), "evaluation did not advance recovered host band");
+}
+
 void testTheHostJudgesWhatALaneNeedsAsItsGrowth() {
   const ClaimSpec needed{.cls = ClaimClass::Optional, .requestId = 1, .laneNeeds = true};
   const ClaimSpec optional{.cls = ClaimClass::Optional, .requestId = 1};
@@ -2355,7 +2373,7 @@ void testUnitsThatCountOnePageTwiceOvercount() {
     ledger.addSource(lanes);
     const ClaimId claim = ledger.open(request(3, RequestPriority::Normal));
     const FreeResult freed = ledger.free(claim, {.bytes = 2 * kGiB}, 0, MemoryPressure::Normal);
-    const MemoryLedger::CountChecks checks = fixture.governor->snapshot().countChecks;
+    const MemoryLedger::CountChecks checks = fixture.governor->publishSnapshot().countChecks;
     if (twice)
       require(freed.outcome == FreeOutcome::Short && lanes.taken == std::vector<uint64_t>{1, 2} &&
                   checks.coveredRuns == 1 && checks.overcountedRuns == 1 && checks.shortReleases == 0,
@@ -2387,7 +2405,7 @@ void testAStartsCountOfAStateWhoseBufferItTakesIsMet() {
   const ClaimId claim = ledger.open(request(1, RequestPriority::Normal, ClaimClass::Start));
   const FreeResult freed = ledger.free(claim, {.bytes = 64, .afterStart = true}, 0, MemoryPressure::Normal);
   ledger.close(claim);
-  const MemoryLedger::CountChecks checks = fixture.governor->snapshot().countChecks;
+  const MemoryLedger::CountChecks checks = fixture.governor->publishSnapshot().countChecks;
   require(freed.outcome == FreeOutcome::Met && cache.taken == std::vector<uint64_t>{1} && pool.idle == 1 &&
               checks.coveredRuns == 1 && !checks.overcountedRuns,
           "a start's count of a state whose buffer it takes was not met: outcome " +
@@ -2605,6 +2623,7 @@ void testStartGrowthFollowsThePressureNow() {
 
 std::span<const test::TestCase> ledgerTests() {
   static constexpr test::TestCase kTests[] = {
+      {"testSnapshotDoesNotAdvanceHostHysteresis", testSnapshotDoesNotAdvanceHostHysteresis},
       {"testAccountsSumToCharged", testAccountsSumToCharged},
       {"testSnapshotRendersEveryAccount", testSnapshotRendersEveryAccount},
       {"testWaitingClaimHoldsRoomForItsRank", testWaitingClaimHoldsRoomForItsRank},

@@ -113,7 +113,12 @@ check-native-engine: check-native-cpu check-native-metal check-native-build
 
 check-native-cpu: platform-check $(TARGET) test-engine-cpu
 
-check-native-metal: platform-check $(TARGET) test-engine-metal test-sanitizers-metal
+# Both suites submit GPU work. Running the sanitizer and validation workloads
+# together can starve a committed command until the backend watchdog fires.
+# Build with the caller's jobserver, then run each complete suite in order.
+check-native-metal: platform-check $(TARGET)
+	$(MAKE) --no-print-directory test-engine-metal
+	$(MAKE) --no-print-directory test-sanitizers-metal
 
 # Build every native test, benchmark and tool, the outputs TEST_CONFIG_TARGETS
 # and PRODUCTION_FLAG_TOOLS name, and run none: hosted CI has no GPU the Metal
@@ -259,3 +264,13 @@ release-check: preflight
 		git status --short >&2; \
 		exit 1; \
 	}
+
+# Explicitly opt-in executable: production main.o is never compiled with this seam.
+$(BUILD)/splash-integration-main.o: runtime/main.mm dev/tests/integration/test_power_source.hpp $(BUILD_ID_HEADER)
+	@mkdir -p $(dir $@)
+	$(CXX) $(ENGINE_OBJCXXFLAGS) -DSPLASH_INTEGRATION_TEST_POWER \
+		-include $(BUILD_ID_HEADER) -c $< -o $@
+
+$(BUILD)/splash-integration: $(BUILD)/splash-integration-main.o $(ENGINE_LIBRARY) $(LIB) | $(HOST_STEP_LIB)
+	$(CXX) $(ENGINE_OBJCXXFLAGS) $(BUILD)/splash-integration-main.o \
+		$(ENGINE_LIBRARY) $(ENGINE_LINKFLAGS) -o $@

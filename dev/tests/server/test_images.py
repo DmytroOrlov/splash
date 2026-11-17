@@ -352,9 +352,14 @@ class ImageRequestTest(HarnessTestCase):
         from server.latency import LatencyMetrics
 
         app.latencies = LatencyMetrics()
-        app.backend = SimpleNamespace(
-            runtime=SimpleNamespace(capabilities=engine_ready(1024))
-        )
+        served = engine_ready(1024)
+        app.backend = SimpleNamespace(runtime=SimpleNamespace(capabilities=served))
+        # The serving context as a frontend of that Ready starts it: this
+        # generation, bounded by what its Ready announces and resolved to it.
+        app._context_ready = served
+        app._context_generation = 0
+        app._configured_context_ceiling = served.max_context_tokens
+        app._current_context = served.max_context_tokens
         quoted = "中文 📷 <|vision_start|><|image_pad|><|vision_end|>"
         messages = [
             {"role": "system", "content": "Document: " + QWEN.image_pad},

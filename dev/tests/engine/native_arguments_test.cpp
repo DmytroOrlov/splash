@@ -104,6 +104,7 @@ void testServerCommandLines(const char *path) {
   using Change = std::function<void(NativeArguments &)>;
   const std::map<std::string, Change> changes{
       {"defaults", [](NativeArguments &) {}},
+      {"pause_on_battery", [](NativeArguments &read) { read.pauseOnBattery = true; }},
       {"limits",
        [](NativeArguments &read) {
          read.maxContext = 102400;
@@ -211,7 +212,8 @@ void testServerCommandLines(const char *path) {
            read.neuralEngine == meant.neuralEngine && read.pleMemory == meant.pleMemory &&
            read.expertMemory == meant.expertMemory && read.sparseKvMemory == meant.sparseKvMemory &&
            read.kvSpillAlways == meant.kvSpillAlways && read.kvWindowTrim == meant.kvWindowTrim &&
-           read.verifyRows == meant.verifyRows && read.int8Activations == meant.int8Activations;
+           read.verifyRows == meant.verifyRows && read.int8Activations == meant.int8Activations &&
+           read.pauseOnBattery == meant.pauseOnBattery;
   };
   const auto golden = readGolden(path);
   require(golden.size() == changes.size(),
@@ -276,6 +278,25 @@ void testWindowTrim() {
               parse(model, {"auto", "auto", "--kv-window-trim", "on"}).kvWindowTrim &&
               !parse(model, {"auto", "auto", "--kv-window-trim", "off"}).kvWindowTrim,
           "--kv-window-trim did not reach the arguments as given");
+}
+
+void testPauseOnBattery() {
+  const ModelDirectory model;
+  require(!parse(model, {"auto", "auto"}).pauseOnBattery, "default enabled battery policy");
+  for (const auto &args : std::vector<std::vector<std::string>>{
+           {"auto", "auto", "--pause-on-battery"},
+           {"auto", "auto", "--pause-on-battery", "--decode-share", "0.25", "--ane", "off"},
+           {"auto", "auto", "--decode-share", "0.25", "--pause-on-battery", "--ane", "off"},
+           {"auto", "auto", "--decode-share", "0.25", "--ane", "off", "--pause-on-battery", "--pause-on-battery"}}) {
+    const auto read = parse(model, args);
+    require(read.pauseOnBattery, "battery flag was not read");
+    if (args.size() > 3)
+      require(read.decodeShare == 0.25 && !read.neuralEngine, "battery flag shifted a value");
+  }
+  rejects([&] { (void)parse(model, {"auto", "auto", "--pause-on-batery"}); },
+          "unexpected argument --pause-on-batery", "misspelling accepted");
+  rejects([&] { (void)parse(model, {"auto", "auto", "--pause-on-battery", "true"}); },
+          "unexpected argument true", "stray value accepted");
 }
 
 // A command line the server never writes is refused with what is wrong.
@@ -421,6 +442,7 @@ int main(int argc, char **argv) {
     testVerifyRows();
     testStreamedMemoryAndSpill();
     testWindowTrim();
+    testPauseOnBattery();
     testRefusals();
     testARelaunchKeepsItsFirstEnginesMaxContext();
     std::cout << "native arguments tests passed\n";

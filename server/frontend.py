@@ -236,6 +236,29 @@ class Frontend:
         for name, value in self.sampling_defaults.items():
             if not accepts_sampling(name, value):
                 raise ValueError(f"invalid sampling default {name}={value!r}")
+
+        # ReadyEvent supplies the static pre-residency ceiling. NativeBackend's
+        # existing status refresh updates this one mutable serving limit after
+        # lifecycle status validates a resolved context.
+        self._configured_context_ceiling = served.max_context_tokens
+        self._context_ready = served
+        self._context_generation = (
+            backend.runtime.restart_count
+            if hasattr(backend.runtime, "restart_count")
+            else 0
+        )
+        self._current_context = served.max_context_tokens
+        configure_context_ceiling = getattr(
+            type(backend), "configure_context_ceiling", None
+        )
+        if callable(configure_context_ceiling):
+            self._current_context = None
+            configure_context_ceiling(
+                backend,
+                served.max_context_tokens,
+                self._update_serving_context,
+                self._rebind_context,
+            )
         self.request_timeout = request_timeout
         self.constraint_factory = constraint_factory
         self.max_image_pixels = max_image_pixels
@@ -249,6 +272,51 @@ class Frontend:
         # The Responses API's stored responses, which /status reports.
         self.response_store = response_store
         self.thinking_codec = thinking_codec
+
+    @property
+    def configured_context_ceiling(self):
+        runtime = self.backend.runtime
+        if getattr(runtime, "restart_count", 0) != self._context_generation and getattr(
+            runtime, "ready", False
+        ):
+            ready = runtime.capabilities
+            if (
+                ready is not None
+                and ready is not self._context_ready
+                and type(ready.max_context_tokens) is int
+                and ready.max_context_tokens > 0
+            ):
+                return ready.max_context_tokens
+        return self._configured_context_ceiling
+
+    def _rebind_context(self, ceiling, generation):
+        self._current_context = None
+        self._configured_context_ceiling = ceiling
+        self._context_ready = self.backend.runtime.capabilities
+        self._context_generation = generation
+        self.prompt_tokenizer = PromptTokenizer(
+            self.tokenizer, self.chat_format.message_boundary, ceiling
+        )
+
+    def _update_serving_context(self, context):
+        if (
+            context is None
+            or not isinstance(context, int)
+            or isinstance(context, bool)
+            or not 1 <= context <= self.configured_context_ceiling
+        ):
+            self._current_context = None
+            return
+        self._current_context = context
+
+    def _serving_context(self):
+        if self.max_context is None:
+            raise APIError(
+                503,
+                "native inference context is unavailable",
+                "engine_recovering",
+            )
+        return self.max_context
 
     def accepts_model(self, model):
         """Whether a request may name `model`: a name the server answers to,
@@ -267,7 +335,12 @@ class Frontend:
     def max_context(self):
         """The context the latest engine serves: a relaunch whose plan holds
         less serves that, until a later one regains the first's."""
-        return self.backend.runtime.capabilities.max_context_tokens
+        if (
+            getattr(self.backend.runtime, "restart_count", 0)
+            != self._context_generation
+        ):
+            return None
+        return self._current_context
 
     @property
     def input_modalities(self):
@@ -357,9 +430,10 @@ class Frontend:
         check_context=True,
         image_tokens_only=False,
     ):
-        if check_context and tokens >= self.max_context:
+        max_context = self._serving_context() if check_context else None
+        if check_context and tokens >= max_context:
             raise ContextLengthError(
-                tokens, self.max_context - 1, image_tokens_only=image_tokens_only
+                tokens, max_context - 1, image_tokens_only=image_tokens_only
             )
         # A thinking budget's end tokens follow, at most this many.
         frame_bytes = (
@@ -1015,9 +1089,9 @@ class Frontend:
         """The output token budget requested under the API's field name. It is
         a ceiling: a request generates up to the end of the context window
         its prompt leaves, all of it when the request names no budget."""
-        if len(prompt_tokens) >= self.max_context:
-            raise ContextLengthError(len(prompt_tokens), self.max_context - 1)
-        remaining = self.max_context - len(prompt_tokens)
+        if len(prompt_tokens) >= self._serving_context():
+            raise ContextLengthError(len(prompt_tokens), self._serving_context() - 1)
+        remaining = self._serving_context() - len(prompt_tokens)
         max_new = remaining if requested is None else requested
         if not isinstance(max_new, int) or isinstance(max_new, bool) or max_new <= 0:
             raise APIError(400, f"{field} must be a positive integer")

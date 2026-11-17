@@ -3,11 +3,14 @@
 #include "ops/Vision.hpp"
 #include "engine/AneFfnStartup.hpp"
 #include "engine/MemoryPlan.hpp"
+#include "engine/ModelResidency.hpp"
 #include "engine/Cache.hpp"
+#include "engine/WriteBehind.hpp"
 #include "engine/CacheDirectory.hpp"
 #include "engine/DiskSpace.hpp"
 #include "engine/Engine.hpp"
 #include "engine/MemoryGovernor.hpp"
+#include "engine/ResourceDomainLease.hpp"
 #include "engine/KvPageTier.hpp"
 #include "ops/PageStorage.hpp"
 #include "model/KvBlockCache.hpp"
@@ -37,6 +40,11 @@
 
 namespace splash::engine {
 
+struct EngineConfig;
+// The model-bound stratum one construction assembles, declared where the loader
+// member that returns it is; defined in the implementation next to it.
+struct ModelStratum;
+
 enum class RuntimeResourceStage {
   Configuration,
   BackendCreation,
@@ -61,6 +69,12 @@ struct RuntimeCacheIdentity {
   model::RopeScaling ropeScaling;
   // The target model's manifest.
   std::string targetModelSha256;
+
+  // A rebuilt residency is compatible with this graph only when the identity
+  // its loaded model carries is this graph's: same model manifests, same build,
+  // same KV layout, same RoPE scaling. [T031 prerequisite] the private
+  // recovery builder and the adoption gate compare identities with this.
+  bool operator==(const RuntimeCacheIdentity &) const = default;
 };
 
 [[nodiscard]] RuntimeCacheIdentity
@@ -255,30 +269,28 @@ private:
   bool commandOutOfMemory_ = false;
 };
 
-// The bound of a Metal memory budget: --max-memory where it set the budget,
-// else this Mac's own.
-[[nodiscard]] constexpr protocol::ShortfallBound
-memoryBound(uint64_t configuredLimitBytes, uint64_t hardBudgetBytes) noexcept {
-  return configuredLimitBytes && hardBudgetBytes == configuredLimitBytes
-             ? protocol::ShortfallBound::MaxMemory
-             : protocol::ShortfallBound::DeviceMemory;
+[[nodiscard]] constexpr protocol::ShortfallBound memoryBound(uint64_t configured, uint64_t budget) noexcept {
+  return configured && configured == budget ? protocol::ShortfallBound::MaxMemory : protocol::ShortfallBound::DeviceMemory;
 }
 
-// Owns every process-wide native resource exactly once. Members go in
-// reverse declaration order: what the engine gives back while idle -> the
-// readers of spilled KV (history stream, hot block cache) -> Neural Engine
-// split -> Cache -> KV pool -> the disk tier's space -> KV disk tier -> state
-// storage -> KV page storage -> governor -> loaded model -> SSD readers ->
-// Metal backend -> a persistent tier's directory, whose lock goes last.
-// The readers of spilled KV drain their reads before the cache and the tier
-// whose copies they read go, and those drain theirs before the SSD readers
-// stop. The tier's files, whose writes hold back for the readers' urgent
-// reads, only watch them (SsdReaders::criticalBusyProbe), so they and their
-// slots may outlive them. The KV disk tier must go before the KV page
-// storage: its IO worker reads and writes pages in place in the extents, and
-// its destructor waits for every transfer in flight. A persistent tier's
-// files are sealed first, however the process ends, so that the copies the
-// cache lets go of stay for the next process.
+// Owns both strata; residency cannot escape this retained owner. The
+// model-bound stratum (LoadedModel, plans, the ANE split and ReleasableMemory)
+// lives wholly inside ModelResidency; no retained member borrows it. Destruction:
+// stop probation and seal persistent files, then the residency's idle-weight
+// callbacks -> ANE program -> plans -> model images/stores/writers ->
+// spilled-KV readers -> WriteBehind -> Cache -> pool -> disk space -> tier ->
+// state -> pages -> governor -> shared SSD readers -> backend -> persistent
+// files/directory. KV readers drain before the tier/storage; the tier drains
+// in-place IO before pages go. SlotFiles' busy probes share a counter, not the
+// reader pool. Retained addresses never change when ModelResidency moves, nor
+// do the residency's internal objects. Absent residency (a moved-from one)
+// keeps every retained API valid; model-dependent reads report absence
+// instead of dereferencing it. A stratum can only
+// leave this owner through releaseModelResidency (T024): the lifecycle safe
+// point hands it to the designated worker-side disposal, which destroys it
+// before this retained owner does — never a residency outliving the storage
+// it was assembled against. This is ownership, not physical suspension:
+// T015-T025 add the lease, retirement witnesses and worker.
 class RuntimeResources final {
 public:
   // `requestedContextTokens` is the context the engine is asked to hold
@@ -307,6 +319,15 @@ public:
   // did not; true at once without a persistent tier.
   [[nodiscard]] bool closePersistentCache();
 
+  // [T020-T022] The exclusive authority over this graph's own resource domain,
+  // as a movable handle. The lifecycle owner (RuntimeBootstrap) hands exactly
+  // this lease to NativeRuntime::prepareResourceHandoff() and, on minted quiescence,
+  // to transferToWorker() at its safe point, returning a worker's parked token
+  // back to it. The backend and governor remain bound to this one authority;
+  // it is never reconstructed, duplicated or replaced by a fresh lease.
+  [[nodiscard]] ResourceDomainLease &resourceAuthority() noexcept {
+    return resourceAuthority_;
+  }
   [[nodiscard]] metal::MetalBackend &backend() noexcept { return *backend_; }
   [[nodiscard]] const EngineMemoryPlan &memoryPlan() const noexcept {
     return memoryPlan_;
@@ -319,13 +340,33 @@ public:
   }
   // Startup warmup holds its runway (KvPool::RunwayHold).
   [[nodiscard]] KvPool &kvPool() noexcept { return *kvPool_; }
+  // [Gate 3 / U-02] The retained graph's IO quiescence witness: the KV tier's
+  // worker, reader and batch records, the cache's records of the transfers it
+  // started, and the one state write — each counted by what still owes it, so
+  // the drain can name the owner that stands. It consults no request, command
+  // or callback, so it stays FALSE with an Engine already idle; supplying it as
+  // the lease's retained-IO witness is T019's.
+  [[nodiscard]] engine::Cache::RetainedIo retainedIo() const noexcept {
+    return cache_->retainedIo();
+  }
+  [[nodiscard]] WriteBehind &writeBehind() noexcept { return *writeBehind_; }
+  // Physical backing retained independently of ModelResidency: KV, then
+  // state storage. The current resource-domain holder publishes these values.
+  [[nodiscard]] std::pair<uint64_t, uint64_t> retainedMemoryBytes() const;
   [[nodiscard]] const RuntimeCacheIdentity &cacheIdentity() const noexcept {
     return cacheIdentity_;
   }
   // The share the prefill FFN's Neural Engine split runs at and the least
-  // rows of a chunk it takes; 0 for none.
-  [[nodiscard]] double aneFfnShare() const noexcept { return aneFfn_ ? aneFfn_->share() : 0.0; }
-  [[nodiscard]] uint32_t aneFfnMinimumRows() const noexcept { return aneFfn_ ? aneFfn_->minimumRows() : 0; }
+  // rows of a chunk it takes; 0 without one, including when the residency
+  // is absent.
+  [[nodiscard]] double aneFfnShare() const noexcept {
+    auto *split = residency_.aneFfn();
+    return split ? split->share() : 0.0;
+  }
+  [[nodiscard]] uint32_t aneFfnMinimumRows() const noexcept {
+    auto *split = residency_.aneFfn();
+    return split ? split->minimumRows() : 0;
+  }
   // How the start's split came out, and the automatic context.
   [[nodiscard]] const AneFfnOutcome &aneFfnOutcome() const noexcept { return aneFfnOutcome_; }
   // The split as it stands now, for /status.
@@ -344,45 +385,128 @@ public:
   [[nodiscard]] std::optional<model::KvBlockCacheStats> kvBlockCacheStats() const;
   [[nodiscard]] std::optional<model::KvHistoryStreamStats> kvHistoryStreamStats() const;
 
-  [[nodiscard]] model::RuntimeContext modelContext() noexcept;
+  // Null when the residency is absent; the engine starts only on a present
+  // one, and callers keep the returned borrow inside that scope.
+  [[nodiscard]] std::optional<model::RuntimeContext> modelContext() noexcept;
+  // [T031 prerequisite] The same RuntimeContext over one PRIVATE residency this
+  // owner does not hold: only the model, plans and ANE split come from the
+  // candidate; the backend, KV pages, state storage, block cache, history
+  // stream, verify rows and the retained governor's growth admission are this
+  // graph's, exactly as above. Null when the private residency is empty.
+  [[nodiscard]] std::optional<model::RuntimeContext>
+  modelContext(ModelResidency &privateResidency) noexcept;
   // What the engine gives back while idle (NativeLoopConfig::weights): the
   // weight images, and the Neural Engine split's program if it runs one.
-  [[nodiscard]] ReleasableMemory &releasableMemory() noexcept { return releasableMemory_; }
-  [[nodiscard]] ActualMemoryReport
+  // Null when the residency is absent; the loop keeps the borrow only while
+  // it is present.
+  [[nodiscard]] ReleasableMemory *releasableMemory() noexcept;
+  [[nodiscard]] ReleasableMemory *releasableMemory(ModelResidency &privateResidency) noexcept { return privateResidency.releasableMemory(); }
+  // True while a model residency is held; model-dependent reads below report
+  // absence (null/empty optionals) rather than zero-valued live measurements
+  // when it is false.
+  [[nodiscard]] bool modelResident() const noexcept { return residency_.storage_ != nullptr; }
+  // [T024] The lifecycle's designated disposal path takes the model-bound
+  // stratum out for physical destruction: the safe point MOVES this owner (its
+  // loaded model, plans, ANE split and idle-weight callbacks) to the residency
+  // worker, which destroys it under its claimed Worker interval. It is never
+  // adopted back by this call: re-establishing residency belongs to the
+  // recovery adoption protocol (T029–T033). Until then the residency reads
+  // absent (the T009 absence contract); every retained member above keeps
+  // its identity, and a stratum moved out this way is always destroyed BEFORE
+  // this (retained) owner goes, so the residency never outlives the storage it
+  // was assembled against.
+  [[nodiscard]] engine::ModelResidency releaseModelResidency() noexcept;
+
+  // [T031 prerequisite] The private residency a recovery assembles against THIS
+  // retained graph, for a candidate to carry while the published slot stays
+  // empty: it reuses the exact retained backend, SSD readers, KV/state storage
+  // and every retained object, and allocates only the model images, streamed
+  // stores, execution plans and the prefill FFN's split privately. Run ONLY
+  // while this thread holds this graph's claimed Worker interval (the backend
+  // and governor demand it); it never mutates `residency_`, never opens
+  // admission, never calls beginServing(), and never opens a second SSD cache
+  // tier: the retained tier's already-open files are reported to the shared
+  // model loader instead. `cancelled` is the operation's cooperative fence,
+  // consulted at the load's boundaries and installed as the backend's wait
+  // interrupt for the construction (restored to `config.cancelled` after). A
+  // failure destroys exactly what the construction allocated, in the
+  // split -> plans -> model order, and leaves the retained graph untouched.
+  // The streamed-store and ANE-split choices are the loader's effective ones
+  // again, recomputed with this config against the retained tier's state;
+  // a rebuild whose identity or KV/state geometry does not match this graph's
+  // is REFUSED, never a retained storage rebuilt.
+  [[nodiscard]] ModelResidency buildModelResidency(const RuntimeResourcesConfig &config,
+                                                   uint32_t requestedContextTokens,
+                                                   const std::function<bool()> &cancelled);
+
+  // [T031 prerequisite] The checked compatibility gate for moving such a
+  // private residency back into this owner's EMPTY slot: the candidate must
+  // hold a residency, its loaded model must be the model this graph's identity
+  // (and `expectedIdentity`, the identity its own construction reported)
+  // describes, and the published slot must be empty — an adoption never
+  // replaces a live stratum and never rebuilds retained storage. Non-throwing:
+  // a malformed candidate fails closed.
+  [[nodiscard]] bool canAdoptModelResidency(const ModelResidency &candidate,
+                                            const RuntimeCacheIdentity &expectedIdentity) const noexcept;
+  // Moves a candidate residency in only through that gate: false, and the
+  // candidate intact, when it refuses. Nothing is drained, published or
+  // announced here; what an adoption also rebinds is T031/T033's.
+  [[nodiscard]] bool adoptModelResidency(ModelResidency &&candidate,
+                                         const RuntimeCacheIdentity &expectedIdentity) noexcept;
+
+  [[nodiscard]] std::optional<ActualMemoryReport>
   actualMemoryReport(const model::ModelMemoryActual &modelMemory) const;
 
 private:
+  friend struct RuntimeResourcesTestAccess;
 
-  RuntimeResources(PersistentCacheFiles persistentCache,
-                   std::unique_ptr<metal::MetalBackend> backend,
-                   std::shared_ptr<model::SsdReaders> readers,
-                   model::LoadedModel model, ops::ExecutionPlans operators,
-                   EngineMemoryPlan memoryPlan,
-                   RuntimeCacheIdentity cacheIdentity,
-                   std::unique_ptr<MemoryGovernor> memoryGovernor, ClaimId startClaim,
-                   std::unique_ptr<MemoryGovernor::Scope> startScope,
-                   std::unique_ptr<kv::PageStorage> kvPages,
-                   std::unique_ptr<model::QwenStateStorage> stateStorage,
-                   std::unique_ptr<KvPageTier> kvTier,
-                   std::unique_ptr<DiskSpace> diskSpace,
-                   std::unique_ptr<KvPool> kvPool,
-                   std::unique_ptr<engine::Cache> cache,
-                   std::unique_ptr<ops::AneFfn> aneFfn, AneFfnOutcome aneFfnOutcome,
-                   std::unique_ptr<model::KvBlockCache> blockCache,
-                   std::unique_ptr<model::KvHistoryStream> historyStream, bool spillAlways,
+  RuntimeResources(PersistentCacheFiles &&persistentCache,
+                   std::unique_ptr<metal::MetalBackend> &&backend,
+                   std::shared_ptr<model::SsdReaders> &&readers,
+                   ModelResidency &&residency,
+                   EngineMemoryPlan &&memoryPlan,
+                   RuntimeCacheIdentity &&cacheIdentity,
+                   std::unique_ptr<MemoryGovernor> &&memoryGovernor, ClaimId startClaim,
+                   std::unique_ptr<MemoryGovernor::Scope> &&startScope,
+                   std::unique_ptr<kv::PageStorage> &&kvPages,
+                   std::unique_ptr<model::QwenStateStorage> &&stateStorage,
+                   std::unique_ptr<KvPageTier> &&kvTier,
+                   std::unique_ptr<DiskSpace> &&diskSpace,
+                   std::unique_ptr<KvPool> &&kvPool,
+                   std::unique_ptr<engine::Cache> &&cache,
+                   std::unique_ptr<WriteBehind> &&writeBehind,
+                   AneFfnOutcome &&aneFfnOutcome,
+                   std::unique_ptr<model::KvBlockCache> &&blockCache,
+                   std::unique_ptr<model::KvHistoryStream> &&historyStream, bool spillAlways,
                    model::VerifyRows verifyRows);
+  // [T031 prerequisite] The ONE model-bound phase, shared by a first assembly
+  // and a recovery rebuild (see its definition): `retained` null opens this
+  // graph's SSD tier and assembles it; `retained` set reuses that graph's
+  // backend, SSD readers and open tier and allocates only a stratum.
+  [[nodiscard]] static ModelStratum loadModelStratum(metal::MetalBackend &backend,
+                                                    const RuntimeResourcesConfig &config,
+                                                    uint32_t requestedContextTokens,
+                                                    const std::function<bool()> &cancelled,
+                                                    const RuntimeResources *retained);
   // Takes back the restore points the last process left in a persistent
   // tier (Cache::adopt) and opens its files for this one.
   void adoptPersistentCache();
   void stopProbation() noexcept;
+
+  // Construct synchronization before transferring any resource ownership:
+  // condition_variable construction may throw. The destructor joins first.
+  // Ends a probation once it has lasted, unless the process stops first.
+  std::thread probation_;
+  std::mutex probationMutex_;
+  std::condition_variable probationWake_;
+  bool probationStopped_ = false;
+  std::function<void()> beginServingTest_;
 
   PersistentCacheFiles persistentCache_;
   std::unique_ptr<metal::MetalBackend> backend_;
   // The engine's one pool of SSD readers: the model's streamed weights, the
   // KV tier and the readers of spilled KV read on it.
   std::shared_ptr<model::SsdReaders> readers_;
-  model::LoadedModel model_;
-  ops::ExecutionPlans operators_;
   EngineMemoryPlan memoryPlan_;
   RuntimeCacheIdentity cacheIdentity_;
   std::unique_ptr<MemoryGovernor> memoryGovernor_;
@@ -390,6 +514,12 @@ private:
   // until serving begins; the scope goes before the governor.
   ClaimId startClaim_;
   std::unique_ptr<MemoryGovernor::Scope> startScope_;
+  // The exclusive authority over this graph's resource domain: the thread
+  // that assembled it owns the Metal backend and the governor (bound at
+  // construction) until a lifecycle handoff moves the lease; the startup
+  // operation guard Bootstrap clears before serving is no authority, so it
+  // never removes this. T015-T025 add the worker/parked intervals.
+  ResourceDomainLease resourceAuthority_;
   std::unique_ptr<kv::PageStorage> kvPages_;
   std::unique_ptr<model::QwenStateStorage> stateStorage_;
   std::unique_ptr<KvPageTier> kvTier_;
@@ -397,22 +527,20 @@ private:
   std::unique_ptr<DiskSpace> diskSpace_;
   std::unique_ptr<KvPool> kvPool_;
   std::unique_ptr<engine::Cache> cache_;
-  std::unique_ptr<ops::AneFfn> aneFfn_;
+  // Retained persistence intent; borrows cache_, outlives every Engine.
+  std::unique_ptr<WriteBehind> writeBehind_;
   // A spill-capable target's readers of its spilled KV; none for another.
+  // They drain before the residency goes.
   std::unique_ptr<model::KvBlockCache> blockCache_;
   std::unique_ptr<model::KvHistoryStream> historyStream_;
-  // Over model_'s images, its expert store if it has one, and aneFfn_.
-  ReleasableMemory releasableMemory_;
+  // Constructed after every retained dependency, destroyed before them:
+  // inside it, idle-weight callbacks -> ANE program -> plans -> model.
+  ModelResidency residency_;
   AneFfnOutcome aneFfnOutcome_;
   // --kv-spill always.
   bool spillAlways_ = false;
   // --verify-rows, which modelContext() passes on.
   model::VerifyRows verifyRows_ = model::VerifyRows::Auto;
-  // Ends a probation once it has lasted, unless the process stops first.
-  std::thread probation_;
-  std::mutex probationMutex_;
-  std::condition_variable probationWake_;
-  bool probationStopped_ = false;
 };
 
 // The model's side of the split of `loaded`'s target on `backend`, valid

@@ -24,6 +24,8 @@ public:
   [[nodiscard]] CommandWork prefillWork(std::span<const PrefillLane> lanes, uint32_t first,
                                         uint32_t passesLeft) const override;
   [[nodiscard]] std::span<ElasticPool *const> pools() noexcept override;
+  // Outstanding backend and ANE descendants at the lifecycle drain fence.
+  [[nodiscard]] Descendants descendants() const noexcept override;
 
   Runtime(const Runtime &) = delete;
   Runtime &operator=(const Runtime &) = delete;

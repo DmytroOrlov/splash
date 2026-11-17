@@ -54,10 +54,20 @@ public:
   // A part taken back is still being written on its thread, which calls the
   // completion notifier once it ends (WeightMemory::writing).
   [[nodiscard]] bool writing() const noexcept { return config_.weights->writing(); }
+  [[nodiscard]] bool writerIntervalActive() const noexcept { return config_.weights->writerIntervalActive(); }
+  [[nodiscard]] bool pollWriterRetirement() { return config_.weights->pollWriterRetirement(); }
+  void enableExternalWriter() { config_.weights->enableExternalWriter(); }
+  void setWeightWriteScope(model::WeightWriteScope scope) { config_.weights->setWeightWriteScope(std::move(scope)); }
+  [[nodiscard]] bool hasPreparedWriter() const noexcept { return config_.weights->hasPreparedWriter(); }
+  void launchPreparedWriter(model::WriterRetirementPort &port) { config_.weights->launchPreparedWriter(port); }
+  bool finishPreparedWriter() { return config_.weights->finishPreparedWriter(); }
+  void cancelPreparedWriter() { config_.weights->cancelPreparedWriter(); }
   // Called on a part's thread as its write ends (WeightMemory).
   void setCompletionNotifier(const std::function<void()> &notifier) {
     config_.weights->setCompletionNotifier(notifier);
   }
+  void completionRecipients(std::vector<model::WeightMemory *> &out) { config_.weights->completionRecipients(out); }
+  uint32_t notifierBindings() const noexcept { return config_.weights->notifierBindings(); }
   struct Step final {
     enum class Kind : uint8_t { Progress, Restored, Refused } kind;
     metal::AllocationFailure failure = metal::AllocationFailure::None;
@@ -69,6 +79,9 @@ public:
   // period. Refused: admission or the driver refused the part, which stays
   // released, for `failure`; what came back stays.
   [[nodiscard]] Step restore(double nowMilliseconds);
+  // An asynchronous write's refusal is consumed only after Owner reclaim;
+  // use the same wait accounting as an Owner-side admission refusal.
+  Step refuse(double now, const metal::MetalAllocationError &refusal);
   // A request waiting for the restore failed at its resource wait limit: the
   // restore counts a failure if it is abandoned.
   void waiterFailed() noexcept;

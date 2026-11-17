@@ -1,5 +1,6 @@
 #include "AllocationFailure.hpp"
 #include "LoopFixture.hpp"
+#include "TestCache.hpp"
 #include "ProtocolPeer.hpp"
 #include "TestChecks.hpp"
 #include "TestEngine.hpp"
@@ -662,18 +663,19 @@ void testInvalidLimitsAreRejectedAtConstruction() {
           "the loop accepted invalid protocol limits");
 }
 
-// The loop refuses a config without the weights the bootstrap always gives
-// it.
+// The loop requires its control-plane clock even when weights are absent.
 void testLoopNeedsItsComponents() {
   test::TestKvStorage storage(8, 4096, 4);
   KvPool pool(storage, 8);
   engine::Cache cache(pool, nullptr, nullptr);
+  test::RetainedPersistence persistence{cache};
   Executor executor;
   NativeLoopConfig config{.engine = test::engineConfig()};
+  config.unixMicros = {};
   rejects([&] {
-    engine::NativeRuntime(std::move(config), cache, executor, [](std::span<const uint8_t>) {},
-                          protocol::ProtocolLimits{});
-  }, "the native engine loop lacks a component it needs", "a loop without its weights was built");
+    engine::NativeRuntime(std::move(config), metal::kResidencyKeepAliveSeconds, cache, persistence, executor,
+                          [](std::span<const uint8_t>) {}, test::readyStatusJson, protocol::ProtocolLimits{});
+  }, "the native engine loop lacks a component it needs", "a loop without its clock was built");
 }
 
 // The loop refuses an empty status source.
@@ -681,12 +683,14 @@ void testStatusNeedsASource() {
   test::TestKvStorage storage(8, 4096, 4);
   KvPool pool(storage, 8);
   engine::Cache cache(pool, nullptr, nullptr);
+  test::RetainedPersistence persistence{cache};
   Executor executor;
   Weights weights;
   engine::NativeRuntime loop(
       {.engine = test::engineConfig(
            {.weights = WeightResidencyConfig{.weights = &weights, .admit = test::admitAll}})},
-      cache, executor, [](std::span<const uint8_t>) {}, protocol::ProtocolLimits{});
+      metal::kResidencyKeepAliveSeconds, cache, persistence, executor, [](std::span<const uint8_t>) {},
+      test::readyStatusJson, protocol::ProtocolLimits{});
   rejects([&] { loop.serveStatus({}); }, "no status source", "an empty status source was connected");
 }
 

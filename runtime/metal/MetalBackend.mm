@@ -455,6 +455,45 @@ struct SharedEvent::Impl {
     __strong MTLSharedEventListener *listener = nil;
 };
 
+// [Gate 4 / U-01] One owed callback of BackendAsyncState's retirement counters
+// (MetalBackend::callbackRetirement): armed when a submission or an encoded
+// host step takes the obligation on, and let go when that callback has returned,
+// was skipped, or was dropped without ever running - a command whose encoding
+// failed after its first buffers committed, a step behind a halt. Either way
+// the closure can borrow nothing further from the domain once the seat leaves,
+// and it leaves with the holder: what holds a seat holds the BackendAsyncState
+// whose cell it names (CommandTicket::State::backend and HostSteps::backend are
+// declared before the members holding the seats, so they outlive them).
+class CallbackSeat final {
+public:
+    CallbackSeat() = default;
+    ~CallbackSeat() { release(); }
+    CallbackSeat(const CallbackSeat &) = delete;
+    CallbackSeat &operator=(const CallbackSeat &) = delete;
+    CallbackSeat(CallbackSeat &&other) noexcept : cell_(std::exchange(other.cell_, nullptr)) {}
+    CallbackSeat &operator=(CallbackSeat &&other) noexcept {
+        release();
+        cell_ = std::exchange(other.cell_, nullptr);
+        return *this;
+    }
+
+    void arm(std::atomic<uint32_t> *cell) {
+        release();
+        cell_ = cell;
+        if (cell_)
+            ++*cell_;
+    }
+    void release() noexcept {
+        if (!cell_)
+            return;
+        --*cell_;
+        cell_ = nullptr;
+    }
+
+private:
+    std::atomic<uint32_t> *cell_ = nullptr;
+};
+
 struct BackendAsyncState {
     explicit BackendAsyncState(double commandTimeoutSeconds)
         : commandWatchdog(commandTimeoutSeconds) {}
@@ -475,6 +514,25 @@ struct BackendAsyncState {
     bool stopping = false;
     // MetalBackend::setWaitInterrupt's predicate.
     std::function<bool()> waitInterrupt;
+
+    // [Gate 4 / U-01] One seat per owed callback (CallbackSeat): the command's
+    // CommandCompletion, and each encoded host step's `work`, `then` and `timed`
+    // report. Armed by the submission and by encodeHostStep, released by the
+    // holder when the callback returned, was skipped or dropped unrun.
+    std::atomic<uint32_t> gpuCallbacksOwed{0};
+    std::atomic<uint32_t> hostWorkOwed{0};
+    std::atomic<uint32_t> hostThenOwed{0};
+    std::atomic<uint32_t> hostTimingOwed{0};
+
+    // The receipt of those seats (MetalBackend::callbackRetirement). Passive:
+    // relaxed loads of four counters, no lock the callbacks take, and it never
+    // waits for, starts or interrupts any of them.
+    CallbackRetirement retirement() const noexcept {
+        return {gpuCallbacksOwed.load(std::memory_order_relaxed),
+                hostWorkOwed.load(std::memory_order_relaxed),
+                hostThenOwed.load(std::memory_order_relaxed),
+                hostTimingOwed.load(std::memory_order_relaxed)};
+    }
 
     void sampleDeviceMemory() const noexcept {
         if (!device) return;
@@ -655,6 +713,11 @@ struct HostSteps {
         std::optional<uint32_t> release;
         // The last buffer of an earlier step's beside dispatches, if any.
         __weak id<MTLCommandBuffer> besideBefore = nil;
+        // [Gate 4 / U-01] This step's owed closures (BackendAsyncState's
+        // counters): `work` and `timed` armed by the step's encoding, `then`
+        // armed only once its work returned, and armed again before the work's
+        // seat leaves, so no instant shows the command retired between them.
+        CallbackSeat workSeat, thenSeat, timingSeat;
     };
     __strong id<MTLSharedEvent> readyEvent = nil;
     // The last buffer of beside dispatches handed on (the encoder's alone).
@@ -718,15 +781,33 @@ struct HostSteps {
         std::lock_guard lock(mutex);
         if (reported) return;
         reported = true;
-        for (const Step &step : steps) {
+        for (Step &step : steps) {
             id<MTLCommandBuffer> before = step.before, after = step.after;
-            if (!step.done || !before || !after || !step.timed) continue;
+            if (!step.done || !before || !after) {
+                // A step that never ran reports nothing later either: its
+                // `timed` closure can borrow nothing further from here on.
+                step.timingSeat.release();
+                continue;
+            }
+            if (!step.timed) {
+                step.timingSeat.release();
+                continue;
+            }
             HostStepTiming timing;
             timing.pickupSeconds = std::max(0.0, step.pickup - before.GPUEndTime);
             timing.workSeconds = step.done - step.pickup;
             timing.resumeSeconds = std::max(0.0, after.GPUStartTime - step.done);
             step.timed(timing);
+            step.timingSeat.release();
         }
+    }
+    // A command that ended with a failure never reports its steps (finishCommand
+    // takes the failure path instead), so those closures retire here: they
+    // will not run for that command.
+    void abandonTiming() {
+        std::lock_guard lock(mutex);
+        for (Step &step : steps)
+            step.timingSeat.release();
     }
     // A failed command's account of the steps that ran: how many, the longest
     // work, and the longest pickup (from the end of the GPU work before a
@@ -858,22 +939,37 @@ private:
                     }
                     returned = awakeSeconds();
                     steps.ran(step, pickup, *returned);
-                } else if (stopping_) {
-                    steps.fail("host step not run: the backend stopped");
+                } else {
+                    // [Gate 4 / U-01] A step that will not run its work (its
+                    // buffer failed, an earlier step halted it, or the backend
+                    // stopped) owes nothing further from here: the closure
+                    // retires truthfully rather than standing uncounted.
+                    step.workSeat.release();
+                    if (stopping_)
+                        steps.fail("host step not run: the backend stopped");
                 }
                 if (!worked) steps.halted = true;
-                // The work after the step is committed while the spin keeps
-                // the GPU awake.
+                // [Gate 4 / U-01] The `then` takes its seat, and the step's work
+                // seat is let go, before the step's event lets the work after it
+                // go: the seat pair changes as one, so no instant shows this
+                // command retired while its `then` was still about to run, and
+                // once the GPU could have completed the step's work is already
+                // accounted as returned.
+                const bool thenDue = worked && step.then;
+                if (thenDue)
+                    step.thenSeat.arm(&steps.backend->hostThenOwed);
+                step.workSeat.release();
                 steps.stepReturned(step.ready);
                 if (step.release) release(steps.releases, *step.release);
                 // The step's return moves the deadline once the GPU went on.
                 if (returned) steps.backend->progressSubmission(steps.sequence, *returned);
-                if (worked && step.then) {
+                if (thenDue) {
                     try {
                         step.then();
                     } catch (...) {
                         steps.backend->markUnhealthy("Metal host step's then threw an exception");
                     }
+                    step.thenSeat.release();
                 }
             }
         }
@@ -905,6 +1001,12 @@ struct CommandTicket::State {
     std::shared_ptr<BackendAsyncState> backend;
     std::vector<std::shared_ptr<MetalAllocation>> retainedAllocations;
     CommandCompletion completion;
+    // [Gate 4 / U-01] This command's owed completion callback: armed by the
+    // submission, released when the callback has returned, or when this state
+    // goes with the callback never run (an encoding failure that committed
+    // buffers, a discarded command). Declared after `backend`, so it is destroyed
+    // before the state whose counters its seat names.
+    CallbackSeat gpuSeat;
     mutable std::mutex mutex;
     std::condition_variable condition;
     uint64_t sequence = 0;
@@ -963,7 +1065,14 @@ struct CommandTicket::State {
                 hostSteps->report();
             } catch (...) {
                 backend->markUnhealthy("Metal host step timing callback threw an exception");
+                // A report that threw part-way leaves the later steps' `timed`
+                // closures never run: they retire here rather than standing
+                // forever.
+                hostSteps->abandonTiming();
             }
+        } else if (hostSteps) {
+            // The command failed: its steps' round trips are never reported.
+            hostSteps->abandonTiming();
         }
 
         finish(timing, std::move(error), host.empty() && failed && commandOutOfMemory(failed.error));
@@ -991,6 +1100,10 @@ struct CommandTicket::State {
                 backend->markUnhealthy(
                     "Metal completion callback threw an exception");
             }
+            // [Gate 4 / U-01] The callback has returned: only now does this
+            // command stop owing it, whatever `completed` and the ticket's own
+            // readiness already showed.
+            gpuSeat.release();
         }
         condition.notify_all();
     }
@@ -1680,7 +1793,10 @@ struct MetalBackend::Impl {
         made.next = [queue commandBuffer];
         if (!made.next) failEncoding("unable to create Metal command buffer");
         steps->steps.push_back(
-            {ready, step.work, step.timed, step.then, command, made.next, 0.0, 0.0, released, steps->lastBeside});
+            {ready, step.work, step.timed, step.then, command, made.next, 0.0, 0.0, released, steps->lastBeside,
+             {}, {}, {}});
+        steps->steps.back().workSeat.arm(&steps->backend->hostWorkOwed);
+        if (step.timed) steps->steps.back().timingSeat.arm(&steps->backend->hostTimingOwed);
         if (made.beside) steps->lastBeside = made.beside;
         // `leading` holds the buffers handed on, nothing failing in between.
         leading.push_back(command);
@@ -1839,6 +1955,13 @@ struct MetalBackend::Impl {
         ticketState->retainedAllocations = std::move(retained);
         ticketState->sequence =
             asyncState->beginSubmission(dispatches.size());
+        // [Gate 4 / U-01] The submission now owes this callback: it runs, if at
+        // all, on the driver's completion thread or through the watchdog's
+        // recovery, after the GPU ended - and the state keeps it, and with it
+        // its seat, when the encoding fails past committed buffers or a waiter
+        // gives the command up.
+        if (ticketState->completion)
+            ticketState->gpuSeat.arm(&asyncState->gpuCallbacksOwed);
 
         auto failEncoding = [](std::string message) { throw MetalBackendError(std::move(message)); };
 
@@ -2021,6 +2144,15 @@ struct MetalBackend::Impl {
                 } else {
                     ticketState->leadingCommands = leading;
                     abandonedCommands.push_back(ticketState);
+                    // [Gate 4 / U-01] The last buffer of this command was never
+                    // committed with its handler, so nothing completes this
+                    // ticket: its completion callback will not run, and the
+                    // state that keeps the closure alive is the backend's own,
+                    // retired with the residency. It retires truthfully here
+                    // (idempotent: a handler that did land and runs releases
+                    // nothing further). The step seats stay: those buffers still
+                    // run their steps on the runner.
+                    ticketState->gpuSeat.release();
                 }
                 throw;
             }
@@ -2045,8 +2177,17 @@ struct MetalBackend::Impl {
         auto step = events.begin();
         const auto runSteps = [&](size_t before) {
             for (; step != events.end() && step->before == before; ++step) {
+                // [Gate 4 / U-01] The replayed step is owed its closures here
+                // too: profiling is a caller of the same contract.
+                CallbackSeat workSeat, thenSeat;
+                workSeat.arm(&asyncState->hostWorkOwed);
                 step->work();
-                if (step->then) step->then();
+                workSeat.release();
+                if (step->then) {
+                    thenSeat.arm(&asyncState->hostThenOwed);
+                    step->then();
+                    thenSeat.release();
+                }
             }
         };
         for (size_t index = 0; index < command.dispatches.size(); ++index) {
@@ -2066,7 +2207,13 @@ struct MetalBackend::Impl {
             asyncState->beginSubmission(command.dispatches.size());
         ticketState->timing = total;
         ticketState->completed = true;
-        if (completion) completion();
+        if (completion) {
+            // [Gate 4 / U-01] Owed while it runs on this thread.
+            CallbackSeat gpuSeat;
+            gpuSeat.arm(&asyncState->gpuCallbacksOwed);
+            completion();
+            gpuSeat.release();
+        }
         return CommandTicket(std::move(ticketState));
     }
 #endif
@@ -2292,6 +2439,10 @@ DeviceCapabilities probeDeviceCapabilities() {
 void MetalBackend::checkOperation() const {
     impl_->ensureHealthy();
     if (impl_->operationGuard) impl_->operationGuard();
+    // The per-operation guard is startup's own admission check; it is no
+    // authority. The lease's witness outlives whatever guard was set and
+    // whatever setOperationGuard({}) later clears.
+    if (authority()) authority()->check("Metal operation");
 }
 
 void MetalBackend::setOperationGuard(std::function<void()> guard) {
@@ -2373,6 +2524,10 @@ MetalBuffer MetalBackend::wrapSharedMemory(void *address, uint64_t bytes,
 }
 
 void MetalBackend::releaseMemory(const MetalBuffer &buffer) {
+    // A destructive resource operation: an authority-bound backend demands
+    // the holder thread even though releaseMemory never consulted the
+    // operation guard before.
+    if (authority()) authority()->check("Metal memory release");
     MetalAllocation &allocation = impl_->baseAllocation(buffer);
     if (allocation.owner)
         throw MetalBackendError("wrapped memory is its owner's to release");
@@ -2396,6 +2551,7 @@ void MetalBackend::restoreMemory(const MetalBuffer &buffer) {
 }
 
 void MetalBackend::setTableReach(const MetalBuffer &table, std::span<const MetalBuffer> reached) {
+    checkOperation();
     const auto owned = [&](const MetalBuffer &buffer) {
         return buffer.impl_ && buffer.impl_->allocation->accounting.get() == impl_->accounting.get();
     };
@@ -2535,6 +2691,17 @@ void MetalBackend::restartPeaks() noexcept {
 
 bool MetalBackend::commandInFlight() const noexcept {
     return impl_->asyncState->hasActiveSubmission();
+}
+
+// [Gate 4 / U-01] The four counters of the obligations this backend's submitted
+// commands and host steps still hold (CallbackSeat arms and releases), read
+// without touching a submission gate, a ticket, the GPU or a callback.
+CallbackRetirement MetalBackend::callbackRetirement() const noexcept {
+    return impl_->asyncState->retirement();
+}
+
+bool MetalBackend::callbacksRetired() const noexcept {
+    return callbackRetirement().retired();
 }
 
 void MetalBackend::checkHealth() {

@@ -13,6 +13,7 @@
 #include <limits>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace splash::test {
 
@@ -34,6 +35,12 @@ inline engine::MemoryGovernor *(*ampleGovernor)() = nullptr;
     config.governor = ampleGovernor();
   return config;
 }
+
+// The persistence queue a test retains beside its Cache: declared after that
+// Cache and before every Engine that takes it, so it outlives each borrower
+// and dies with the Cache. One per retained Cache lifetime, shared by every
+// Engine over that Cache, which borrows it rather than owning one.
+using RetainedPersistence = engine::WriteBehind;
 
 // The weights of a native loop under test: three images of a gibibyte that
 // count what the loop does with them, each restored under the admission the
@@ -80,6 +87,9 @@ public:
     return taken_.load(std::memory_order_acquire) && !ended_.load(std::memory_order_acquire);
   }
   void setCompletionNotifier(std::function<void()> notifier) override { written_ = std::move(notifier); }
+  void completionRecipients(std::vector<model::WeightMemory *> &out) override { out.push_back(this); }
+  void swapCompletionNotifier(std::function<void()> &notifier) noexcept override { written_.swap(notifier); }
+  uint32_t notifierBindings() const noexcept override { return written_ ? 1 : 0; }
   // Ends the write of the image restore() took back last, and calls the
   // completion notifier.
   void endWrite() {

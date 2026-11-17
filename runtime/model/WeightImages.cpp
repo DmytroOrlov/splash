@@ -26,7 +26,64 @@ WeightFile WeightImages::load(ImagePlan image) {
   return file;
 }
 
-WeightImages::~WeightImages() { static_cast<void>(endWrite()); }
+WeightImages::~WeightImages() {
+  if (prepared_ || retirement_) std::terminate();
+  static_cast<void>(endWrite());
+}
+
+void WeightImages::enableExternalWriter() {
+  if (writing_ || prepared_ || retirement_) throw std::logic_error("weight write already active");
+  externalWriter_ = true;
+}
+
+bool WeightImages::hasPreparedWriter() const noexcept { return prepared_; }
+bool WeightImages::writerIntervalActive() const noexcept { return prepared_ || retirement_; }
+bool WeightImages::pollWriterRetirement() { return !writerIntervalActive(); }
+
+void WeightImages::launchPreparedWriter(WriterRetirementPort &retirement) {
+  if (!prepared_ || retirement_ || !writing_)
+    throw std::logic_error("no prepared image writer");
+  Image &image = images_[restored_ - 1];
+  Writing &state = *writing_;
+  retirement.launch([&image, &state, written = written_, scope = writeScope_] {
+    try {
+      const std::function<void()> write = [&image] { image.write(contentsOf(image.buffer), image.buffer); };
+      if (scope) scope(write);
+      else write();
+    }
+    catch (...) { state.failure = std::current_exception(); }
+    state.ended.store(true, std::memory_order_release);
+    if (written) written();
+  });
+  retirement_ = &retirement;
+  prepared_ = false;
+}
+
+bool WeightImages::finishPreparedWriter() {
+  if (!retirement_) return !prepared_;
+  if (!retirement_->joined()) return false;
+  retirement_->reclaim();
+  const auto notifierFailure = retirement_->failure();
+  retirement_ = nullptr;
+  auto failure = writing_->failure ? writing_->failure : notifierFailure;
+  writing_.reset();
+  if (failure) {
+    try { std::rethrow_exception(failure); }
+    catch (const metal::MetalAllocationError &) {
+      backend_->releaseMemory(images_[--restored_].buffer);
+      throw;
+    }
+  }
+  return true;
+}
+
+void WeightImages::cancelPreparedWriter() {
+  if (!prepared_ || retirement_) throw std::logic_error("no unlaunched image writer");
+  backend_->releaseMemory(images_[restored_ - 1].buffer);
+  --restored_;
+  writing_.reset();
+  prepared_ = false;
+}
 
 std::exception_ptr WeightImages::endWrite() {
   if (!writing_) return nullptr;
@@ -37,6 +94,7 @@ std::exception_ptr WeightImages::endWrite() {
 }
 
 void WeightImages::release() {
+  if (writerIntervalActive()) throw std::logic_error("release while external writer is active");
   // The next restore writes the image again, so its write's failure, if
   // any, no longer matters.
   static_cast<void>(endWrite());
@@ -48,7 +106,7 @@ void WeightImages::release() {
 }
 
 bool WeightImages::writing() const noexcept {
-  return writing_ && !writing_->ended.load(std::memory_order_acquire);
+  return writerIntervalActive() || (writing_ && !writing_->ended.load(std::memory_order_acquire));
 }
 
 bool WeightImages::restore(const metal::AllocationAdmission &admit) {
@@ -65,6 +123,7 @@ bool WeightImages::restore(const metal::AllocationAdmission &admit) {
   }
   if (restored_ < images_.size()) {
     Image &image = images_[restored_];
+    auto writing = std::make_unique<Writing>();
     const metal::AllocationResult admitted =
         admit(image.buffer.sizeBytes(), [&] { backend_->restoreMemory(image.buffer); });
     if (!admitted)
@@ -74,7 +133,12 @@ bool WeightImages::restore(const metal::AllocationAdmission &admit) {
     ++restored_;
     // The image stays in place: load(), the only call that adds one, refuses
     // released weights.
-    auto writing = std::make_unique<Writing>();
+    if (externalWriter_) {
+      writing_ = std::move(writing);
+      prepared_ = true;
+      released_ = true;
+      return false;
+    }
     writing->thread = std::thread([&image, &state = *writing, written = written_] {
       try {
         image.write(contentsOf(image.buffer), image.buffer);

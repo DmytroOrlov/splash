@@ -1,6 +1,7 @@
 #include "../../../runtime/Supervision.hpp"
 #include "../../../runtime/metal/BackendInstrumentation.hpp"
 #include "../../../runtime/metal/MetalBackend.hpp"
+#include "../../../runtime/engine/ResourceDomainLease.hpp"
 #include "TestBuffers.hpp"
 #include "TestChecks.hpp"
 #include "TestFiles.hpp"
@@ -2891,6 +2892,175 @@ void hostStepAfterALongWaitIsTakenUpPromptly(const std::string &metallibPath) {
     require(pickup < 0.025, "a host step after a long wait was not taken up promptly: " + std::to_string(pickup) + " s");
 }
 
+// [Gate 4 / U-01] The retirement receipt (MetalBackend::callbackRetirement): each
+// category is owed from the submission or the step's encoding, and retires only
+// once that callback has returned - or was dropped without ever running. Neither
+// the ticket's readiness, `commandInFlight()` nor the GPU ending certifies any of
+// it: a completion callback parked past its own ticket's completion, a host step's
+// `then` parked past the GPU's completion, a parked `timed` report past which the
+// GPU callback has not yet run, and a command the watchdog gave up on all keep
+// the receipt pending, and each retires when its callback came back. Every wait
+// below is a bounded observation of a callback the test itself parked; no sleep
+// stands in for the proof.
+void callbackRetirementReceipt(const std::string &metallibPath) {
+    // A callback parked until the test releases it, which is what "still running
+    // on its own thread" means here.
+    struct Park final {
+        std::mutex mutex;
+        std::condition_variable wake;
+        bool released = false;
+        void wait() {
+            std::unique_lock lock(mutex);
+            wake.wait(lock, [&] { return released; });
+        }
+        void go() {
+            {
+                std::lock_guard lock(mutex);
+                released = true;
+            }
+            wake.notify_all();
+        }
+    };
+
+    { // A command's completion callback held past its ticket's completion.
+        MetalBackend backend(metallibPath);
+        MetalBuffer buffer = sharedBuffer(backend, sizeof(uint32_t));
+        const uint32_t count = 1, one = 1;
+        const std::vector<ComputeDispatch> dispatches(2, addition(buffer, count, one));
+        Park park;
+        std::atomic<bool> ran{false};
+        CommandTicket ticket = backend.submitCommandAsync(
+            Command{dispatches, {}}, [&] {
+                park.wait();
+                ran = true;
+            });
+        require(waitFor([&] { return ticket.ready(); }, std::chrono::seconds(10)),
+                "the command never completed its ticket");
+        const auto parked = backend.callbackRetirement();
+        require(parked.gpuCallbacks == 1 && !parked.retired() && !backend.callbacksRetired() && !ran,
+                "a completion callback parked past its own ticket's completion certified retirement");
+        park.go();
+        require(waitFor([&] { return backend.callbacksRetired(); }, std::chrono::seconds(10)) && ran,
+                "the receipt stayed pending after its completion callback returned");
+        (void)ticket.wait();
+        std::cout << "PASS a held GPU completion callback keeps retirement pending past the ticket\n";
+    }
+    { // A host step's `then` parked past the GPU's completion callback.
+        MetalBackend backend(metallibPath);
+        MetalBuffer buffer = sharedBuffer(backend, sizeof(uint32_t));
+        const uint32_t count = 1, one = 1;
+        const std::vector<ComputeDispatch> dispatches(2, addition(buffer, count, one));
+        Park park;
+        std::atomic<bool> started{false}, gpuRan{false}, thenRan{false};
+        const std::vector<EventStep> steps{{1, {}, 0, EventStep::Kind::Host, [] {}, {}, HostStepGpu::Idle,
+                                            [&] {
+                                                started = true;
+                                                park.wait();
+                                                thenRan = true;
+                                            }}};
+        CommandTicket ticket = backend.submitCommandAsync(Command{dispatches, steps}, [&] { gpuRan = true; });
+        require(waitFor([&] { return gpuRan.load() && started.load(); }, std::chrono::seconds(10)),
+                "the GPU's completion callback and the step's then did not both arrive with the then parked");
+        require(!thenRan.load(), "the step's then was not parked");
+        const auto parked = backend.callbackRetirement();
+        require(parked.hostThen == 1 && parked.gpuCallbacks == 0 && parked.hostWork == 0 &&
+                    !parked.retired() && !backend.callbacksRetired(),
+                "GPU completion and a returned host step certified a still-pending then");
+        require(ticket.ready(), "the ticket was not readable while its then was parked");
+        park.go();
+        require(waitFor([&] { return backend.callbacksRetired(); }, std::chrono::seconds(10)) && thenRan,
+                "the then did not retire once it returned");
+        (void)ticket.wait();
+        std::cout << "PASS a host step's then parked past GPU completion keeps retirement pending\n";
+    }
+    { // A host step's `timed` report parked, so the GPU callback is still owed.
+        MetalBackend backend(metallibPath);
+        MetalBuffer buffer = sharedBuffer(backend, sizeof(uint32_t));
+        const uint32_t count = 1, one = 1;
+        const std::vector<ComputeDispatch> dispatches(2, addition(buffer, count, one));
+        Park park;
+        std::atomic<bool> started{false}, gpuRan{false}, timedRan{false};
+        const std::vector<EventStep> steps{{1, {}, 0, EventStep::Kind::Host, [] {},
+                                            [&](const HostStepTiming &) {
+                                                started = true;
+                                                park.wait();
+                                                timedRan = true;
+                                            },
+                                            HostStepGpu::Idle, [&] {}}};
+        CommandTicket ticket = backend.submitCommandAsync(Command{dispatches, steps}, [&] { gpuRan = true; });
+        require(waitFor([&] { return started.load(); }, std::chrono::seconds(10)),
+                "the command's timed report never ran");
+        const auto parked = backend.callbackRetirement();
+        require(parked.hostTiming == 1 && parked.gpuCallbacks == 1 && parked.hostWork == 0 &&
+                    !parked.retired(),
+                "a parked timed report let its command's GPU callback retire early");
+        require(!gpuRan.load(), "the GPU completion callback ran before the step's timed report returned");
+        park.go();
+        require(waitFor([&] { return backend.callbacksRetired(); }, std::chrono::seconds(10)) && gpuRan.load(),
+                "the receipt stayed pending after the timed report and the GPU callback returned");
+        (void)ticket.wait();
+        std::cout << "PASS a parked host-step timing report keeps its command's callback owed\n";
+    }
+    { // A command the watchdog gave up on cannot certify retirement; it retires
+        // when its callback finally comes back.
+        MetalBackend backend(metallibPath, kResidencyKeepAliveSeconds, kShortCommandTimeoutSeconds);
+        MetalBuffer buffer = sharedBuffer(backend, sizeof(uint32_t));
+        const uint32_t count = 1, one = 1;
+        const ComputeDispatch dispatch = addition(buffer, count, one);
+        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        id<MTLCommandBuffer> command = [[device newCommandQueue] commandBuffer];
+        commandWatchdogGate = [device newSharedEvent];
+        MethodReplacement commit(command, @selector(commit),
+                                 reinterpret_cast<IMP>(commitBehindWatchdogGate));
+        originalCommandCommit = commit.original;
+        std::atomic<bool> ran{false};
+        CommandTicket ticket = backend.submitCommandAsync({&dispatch, 1}, [&] { ran = true; });
+        const bool abandoned = waitFor([&] {
+            try {
+                backend.checkHealth();
+                return false;
+            } catch (const MetalBackendError &) {
+                return true;
+            }
+        }, std::chrono::seconds(5));
+        const auto parked = backend.callbackRetirement();
+        require(abandoned && parked.gpuCallbacks == 1 && !backend.callbacksRetired() && !ran,
+                "an abandoned command, or one the watchdog is still bounding, certified retirement");
+        commandWatchdogGate.signaledValue = 1;
+        require(waitFor([&] { return ran.load() && backend.callbacksRetired(); }, std::chrono::seconds(10)),
+                "the abandoned command's callback did not retire once the GPU ended its command");
+        commandWatchdogGate = nil;
+        std::cout << "PASS an abandoned command keeps its callback owed until it came back\n";
+    }
+    { // A step whose work will never run (its command failed behind it) retires
+        // truthfully, as does a `timed` report of a command that ends failed.
+        MetalBackend backend(metallibPath);
+        MetalBuffer buffer = sharedBuffer(backend, sizeof(uint32_t));
+        const uint32_t count = 1, one = 1;
+        const std::vector<ComputeDispatch> dispatches(3, addition(buffer, count, one));
+        std::atomic<uint32_t> ran{0};
+        // The first step throws: the second runs no work, and neither reports
+        // its round trip (the command fails), so all six closures retire.
+        std::vector<EventStep> failing;
+        failing.push_back({1, {}, 0, EventStep::Kind::Host,
+                           [&] {
+                               ++ran;
+                               throw std::runtime_error("test host failure");
+                           },
+                           [&](const HostStepTiming &) { ++ran; }, HostStepGpu::Idle, [&] { ++ran; }});
+        failing.push_back({2, {}, 0, EventStep::Kind::Host, [&] { ++ran; },
+                           [&](const HostStepTiming &) { ++ran; }, HostStepGpu::Idle, [&] { ++ran; }});
+        try {
+            (void)backend.submitCommandAsync(Command{dispatches, failing}).wait();
+        } catch (const MetalBackendError &) {
+        }
+        require(waitFor([&] { return backend.callbacksRetired(); }, std::chrono::seconds(10)),
+                "a failed command left a host step's closure owed forever: ran=" + std::to_string(ran.load()));
+        require(ran.load() == 1, "a failed command ran other than the work that threw, which it names");
+        std::cout << "PASS a failed command's host-step closures retire truthfully\n";
+    }
+}
+
 // The watchdog bounds each stretch of a command between its progress, its
 // host steps as the work before each ends and as each returns, not the whole
 // command: checked as often as the engine's health checks may, a command of
@@ -3043,6 +3213,250 @@ double blockedHostStepRunnerStops(const std::string &metallibPath) {
 void blockedHostStepRunnerStopsPromptly(const std::string &metallibPath) {
     const double teardown = blockedHostStepRunnerStops(metallibPath);
     require(teardown < 0.5, "destroying a backend whose runner blocked on a step took " + std::to_string(teardown) + " s");
+}
+
+// The exclusive resource-domain authority (T015/FR-005): one lease, one holder
+// at a time, gating submission, allocation, pipeline preparation and
+// destructive memory operations. The startup operation guard is no authority:
+// clearing it (Bootstrap does before serving) never removes the lease's
+// witness. Parked authority is exclusive; passive reads stay available.
+void resourceDomainAuthority(const std::string &metallibPath) {
+    static_assert(!std::is_copy_constructible_v<splash::engine::ResourceDomainLease>);
+    static_assert(!std::is_copy_assignable_v<splash::engine::ResourceDomainLease>);
+    static_assert(std::is_move_constructible_v<splash::engine::ResourceDomainLease>);
+    static_assert(!std::is_copy_constructible_v<splash::engine::Quiescence>);
+    static_assert(!std::is_copy_constructible_v<splash::engine::WorkerHandoff>);
+
+    MetalBackend backend(metallibPath);
+    splash::engine::ResourceDomainLease lease =
+        splash::engine::ResourceDomainLease::acquireForOwner();
+    lease.attach(backend);
+    require(lease.holder() == splash::engine::ResourceDomainAuthority::Holder::Owner,
+            "the acquired lease does not hold the Owner interval");
+
+    // The Owner thread's operations run as upstream: allocate, submit,
+    // wrap nothing, release and restore, and the passive reads stay available.
+    MetalBuffer word = sharedBuffer(backend, 4 * 16);
+    const uint32_t count = 4, increment = 3;
+    const ComputeDispatch dispatch = addition(word, count, increment);
+    static_cast<void>(backend.submitCommandAsync({&dispatch, 1}).wait());
+    backend.releaseMemory(word);
+    backend.restoreMemory(word);
+    require(BackendInstrumentation::submittedCommands(backend) == 1,
+            "authority refused an Owner submission");
+    require(!lease.obtainQuiescence().has_value(),
+            "authority could migrate before its quiescence witnesses existed");
+
+    // The startup guard admits nothing and clears to nothing; the authority
+    // is a separate channel that outlives both.
+    const auto denyOperation = [] {
+        throw MetalAllocationError("startup guard active",
+                                   AllocationFailure::HostPressure);
+    };
+    backend.setOperationGuard(denyOperation);
+    rejects([&] { (void)sharedBuffer(backend, 64); }, "startup guard active",
+            "the startup guard admitted an allocation");
+    backend.setOperationGuard({});
+    MetalBuffer guardFree = sharedBuffer(backend, 64);  // cleared guard, Owner thread
+    (void)guardFree;
+    MetalBuffer table = sharedBuffer(backend, 64);
+    MetalBuffer addressed = backend.allocateBuffer(64, BufferStorage::Shared, "authority-addressed", BufferReach::Addressed);
+    backend.setTableReach(table, {&addressed, 1});
+    MetalBuffer releasedWord = sharedBuffer(backend, 64);
+    backend.releaseMemory(releasedWord);
+
+    // A second Owner lease cannot share this backend, and a moved-from handle
+    // cannot act at all: stable ownership, exactly one witness.
+    splash::engine::ResourceDomainLease rival =
+        splash::engine::ResourceDomainLease::acquireForOwner();
+    rejects([&] { rival.attach(backend); }, "another resource domain",
+            "a second Owner lease attached authority over the same backend");
+    {
+        splash::engine::ResourceDomainLease held = std::move(lease);
+        rejects([&] { lease.attach(backend); }, "does not hold the authority",
+                "a moved-from lease acted");
+        rejects([&] { (void)lease.obtainQuiescence(); }, "does not hold the authority",
+                "a moved-from lease minted quiescence");
+        lease = std::move(held);  // move restores the same authority, not a copy
+        require(lease.holder() == splash::engine::ResourceDomainAuthority::Holder::Owner,
+                "move changed the stable ownership");
+    }
+
+    // A real second thread cannot use the bound backend while the Owner
+    // interval is bound to this one. It reports its outcome and waits for
+    // this thread's checks; no timing assumptions.
+    std::promise<void> intruderAttempted;
+    auto attempted = intruderAttempted.get_future();
+    std::promise<void> releaseIntruder;
+    auto released = releaseIntruder.get_future();
+    std::string intruderError;
+    std::thread intruder([&] {
+        try {
+            static_cast<void>(sharedBuffer(backend, 64));
+            static_cast<void>(backend.submitCommandAsync({&dispatch, 1}).wait());
+        } catch (const std::exception &error) {
+            intruderError = error.what();
+        }
+        intruderAttempted.set_value();
+        released.wait();
+    });
+    attempted.wait();
+    require(BackendInstrumentation::submittedCommands(backend) == 1 &&
+                backend.healthy() && !backend.commandInFlight(),
+            "the Owner thread's reads and counts changed beside the intruder");
+    MetalBuffer stillMine = sharedBuffer(backend, 64);  // Owner thread unaffected
+    (void)stillMine;
+    releaseIntruder.set_value();
+    intruder.join();
+    require(intruderError.find("resource-domain authority refused") != std::string::npos,
+            "a second thread used the bound backend: " +
+                (intruderError.empty() ? std::string("no error at all")
+                                       : intruderError));
+
+    // Owner → Worker → Parked → Owner, with the contract's four fixture
+    // witnesses (the production receipts are T016-T019's, not claimed here).
+    lease.setAdmissionWitness([] { return true; });
+    lease.setRequestDrainWitness([] { return true; });
+    lease.setRetainedIoWitness([] { return true; });
+    lease.setCallbackRetirementWitness([] { return true; });
+    rival.setAdmissionWitness([] { return true; });
+    rival.setRequestDrainWitness([] { return true; });
+    rival.setRetainedIoWitness([] { return true; });
+    rival.setCallbackRetirementWitness([] { return true; });
+    auto allocationStale = lease.obtainQuiescence();
+    (void)sharedBuffer(backend, 64);
+    rejects([&] { (void)lease.transferToWorker(std::move(*allocationStale)); },
+            "fresh quiescence", "Owner Metal allocation left a proof usable");
+    auto proof = lease.obtainQuiescence();
+    require(proof.has_value(), "the fixture witnesses did not mint a proof");
+    auto foreign = rival.obtainQuiescence();
+    require(foreign.has_value(), "the rival witness set did not mint a proof");
+    rejects([&] { (void)lease.transferToWorker(std::move(*foreign)); },
+            "of this authority", "a proof minted by another domain migrated this one");
+    auto handoff = lease.transferToWorker(std::move(*proof));
+    require(lease.holder() == splash::engine::ResourceDomainAuthority::Holder::Worker,
+            "transfer did not move the holder to Worker");
+    rejects([&] { (void)lease.transferToWorker(std::move(*proof)); }, "of this authority",
+            "a spent proof migrated authority twice");
+
+    rejects([&] { (void)sharedBuffer(backend, 64); }, "resource-domain authority refused",
+            "former Owner allocated before worker claim");
+    // A real worker thread claims the Worker interval; while it holds, this
+    // (former Owner) thread is refused for every mutating operation, and
+    // the passive reads answer. Deterministic signal pairs, no sleeps.
+    std::promise<void> claimed;
+    auto claim = claimed.get_future();
+    std::promise<void> probesDone;
+    auto probesReady = probesDone.get_future();
+    std::promise<splash::engine::WorkerHandoff> handedBack;
+    auto handedBackToken = handedBack.get_future();
+    std::string workerError;
+    std::thread worker(
+        [token = std::move(handoff), &backend, &dispatch, &table, &addressed, &claimed, &probesReady,
+         &handedBack, &workerError]() mutable {
+          try {
+            token.claim();
+            MetalBuffer workerWord = sharedBuffer(backend, 64);
+            backend.setTableReach(table, {&addressed, 1});
+            static_cast<void>(backend.submitCommandAsync({&dispatch, 1}).wait());
+            (void)workerWord;
+          } catch (const std::exception &error) {
+            workerError = error.what();
+          }
+          claimed.set_value();
+          probesReady.wait();
+          handedBack.set_value(std::move(token).park());
+        });
+    claim.wait();
+    require(workerError.empty(), "the worker thread could not use the authority: " + workerError);
+    require(BackendInstrumentation::submittedCommands(backend) == 2,
+            "the Worker interval did not run its own thread's submission");
+    rejects([&] { (void)sharedBuffer(backend, 64); }, "resource-domain authority refused",
+            "the former Owner thread allocated while the Worker interval was claimed");
+    rejects([&] { (void)backend.newSharedEvent(); }, "resource-domain authority refused",
+            "the former Owner thread created events while the Worker interval was claimed");
+    rejects([&] { backend.preparePipelines({&dispatch, 1}); }, "resource-domain authority refused",
+            "the former Owner thread prepared pipelines while the Worker interval was claimed");
+    rejects([&] { backend.setTableReach(table, {&addressed, 1}); }, "resource-domain authority refused",
+            "the former Owner thread changed table reach while the Worker held authority");
+    rejects([&] { backend.releaseMemory(word); }, "resource-domain authority refused",
+            "the former Owner thread released memory while the Worker held authority");
+    rejects([&] { backend.restoreMemory(releasedWord); }, "resource-domain authority refused",
+            "the former Owner thread restored memory while the Worker held authority");
+    rejects([&] { (void)backend.submit(dispatch); }, "resource-domain authority refused",
+            "the former Owner thread submitted while the Worker held authority");
+    require(backend.healthy() && !backend.commandInFlight() &&
+                backend.memoryStats().allocatedBytes > 0,
+            "passive reads stopped working while a non-owner held the lease");
+    probesDone.set_value();
+    worker.join();
+    auto parkedToken = handedBackToken.get();
+
+    // Parked: exclusive, refused for everything destructive, by anyone.
+
+    require(parkedToken.holder() == splash::engine::ResourceDomainAuthority::Holder::Parked &&
+                lease.holder() == splash::engine::ResourceDomainAuthority::Holder::Parked,
+            "park() did not park the authority");
+    rejects([&] { (void)sharedBuffer(backend, 64); }, "resource-domain authority refused",
+            "parked authority admitted an allocation");
+    rejects([&] { backend.releaseMemory(word); }, "resource-domain authority refused",
+            "parked authority released memory");
+    rejects([&] { (void)backend.submit(dispatch); }, "resource-domain authority refused",
+            "parked authority submitted");
+
+    // Back to the Owner interval: the same operations run again.
+    lease.returnToOwner(std::move(parkedToken));
+    require(lease.holder() == splash::engine::ResourceDomainAuthority::Holder::Owner,
+            "returnToOwner did not restore the Owner interval");
+    (void)sharedBuffer(backend, 64);
+    backend.restoreMemory(releasedWord);
+    static_cast<void>(backend.submitCommandAsync({&dispatch, 1}).wait());
+    require(BackendInstrumentation::submittedCommands(backend) == 3,
+            "the returned Owner interval refused its operations");
+    {
+        auto writer = lease.lendToWriter();
+        std::promise<void> entered, release;
+        auto enteredFuture = entered.get_future();
+        auto releaseFuture = release.get_future();
+        writer.launch([&] {
+            try {
+                (void)sharedBuffer(backend, 64);
+                backend.setTableReach(table, {&addressed, 1});
+            } catch (...) {
+                entered.set_value();
+                throw;
+            }
+            entered.set_value();
+            releaseFuture.wait();
+        });
+        enteredFuture.wait();
+        rejects([&] { (void)sharedBuffer(backend, 64); }, "resource-domain authority refused",
+                "the former Owner allocated while Writer held authority");
+        rejects([&] { backend.setTableReach(table, {&addressed, 1}); }, "resource-domain authority refused",
+                "the former Owner changed table reach while Writer held authority");
+        release.set_value();
+        std::thread reaper([&] { writer.join(); });
+        reaper.join();
+        lease.reclaimWriter(writer);
+        require(!writer.failure(), "the Writer holder could not use the backend");
+    }
+    {
+        MetalBackend survivor(metallibPath);
+        {
+            auto temporary = splash::engine::ResourceDomainLease::acquireForOwner();
+            temporary.attach(survivor);
+        }
+        (void)sharedBuffer(survivor, 64);
+    }
+    {
+        auto survivor = splash::engine::ResourceDomainLease::acquireForOwner();
+        {
+            MetalBackend temporary(metallibPath);
+            survivor.attach(temporary);
+        }
+        // Destruction of the lease must not touch the destroyed backend.
+    }
+    std::cout << "PASS resource-domain lease gates every mutating backend operation\n";
 }
 
 void run(const std::string &metallibPath) {
@@ -3383,6 +3797,8 @@ std::span<const splash::test::TestCase> behaviourTests() {
         {"besideDispatchesUseNoLineTheStepWrites", [] { besideDispatchesUseNoLineTheStepWrites(metallib); }},
         {"failedBesideBufferSkipsLaterSteps", [] { failedBesideBufferSkipsLaterSteps(metallib); }},
         {"hostStepAfterALongWait", [] { (void)hostStepAfterALongWait(metallib); }},
+        {"callbackRetirementReceipt", [] { callbackRetirementReceipt(metallib); }},
+        {"resourceDomainAuthority", [] { resourceDomainAuthority(metallib); }},
         {"watchdogFollowsHostSteps", [] { watchdogFollowsHostSteps(metallib); }},
         {"hostStepOutlastsTheGpuWaitLimit", [] { hostStepOutlastsTheGpuWaitLimit(metallib); }},
         {"blockedHostStepRunnerStops", [] { (void)blockedHostStepRunnerStops(metallib); }},

@@ -1191,10 +1191,198 @@ void testCheckpointsSkipNearResumeAndReplayBoundaries() {
           "a request checkpointed within a chunk of the state it resumed from");
 }
 
+void testRetainedCheckpointSurvivesEngineReplacement() {
+  test::TestKvStorage storage(128, 4096, 4);
+  KvPool pool(storage, 0);
+  engine::Cache cache(pool, nullptr, nullptr);
+  test::RetainedPersistence persistence(cache);
+  // The graph both Engines borrow: one Cache over one KV pool and backing,
+  // and one retained WriteBehind, declared after its Cache and before every
+  // borrower, so it outlives each of them.
+  const auto *const retainedCache = std::addressof(cache);
+  const auto *const retainedPool = std::addressof(pool);
+  const auto *const retainedStorage = std::addressof(storage);
+  const auto *const retainedWrites = std::addressof(persistence);
+  const std::vector<uint32_t> prefix(129, 17);
+  const std::vector<uint32_t> suffix(33, 19);
+  std::vector<uint32_t> full(prefix);
+  full.insert(full.end(), suffix.begin(), suffix.end());
+
+  // What the boundary has to leave behind, as Engine A saw it.
+  const CompositeState *retainedState = nullptr;
+  uint64_t retainedBlock = 0;
+  uint32_t retainedBoundary = 0;
+  std::vector<uint32_t> prefixPages;
+  uint32_t allocatedPages = 0;
+  uint64_t extentAllocations = 0;
+  WriteBehindSnapshot retainedQueue{};
+
+  {
+    Executor warm;
+    // The fake marks the page of every block it writes and requires those
+    // marks of every later step: Engine B's step passes only on what Engine
+    // A left in the retained pages.
+    warm.kv = &storage;
+    Events events;
+    engine::Engine engineA(test::engineConfig({.maxContext = 102400}), cache, persistence, warm, events);
+    guardReleases(storage, engineA);
+    std::vector<uint32_t> activated;
+    warm.beginObserver = [&] { activated.push_back(warm.lastRestoredTokens); };
+    warm.commandTimes = [&](const BatchPlan &plan, std::span<const ModelBatchItem> items) {
+      if (plan.kind == WorkKind::Prefill)
+        prefixPages.assign(items.front().pageTable.begin(), items.front().pageTable.end());
+      return test::CommandTimes{};
+    };
+    engineA.submit(request(1, prefix));
+    test::runUntilIdle(engineA);
+    require(activated == std::vector<uint32_t>{0} && warm.prefillRows == 129 &&
+                warm.prefillChunks.size() == 1 && warm.prefillChunks.at(1) == 1 &&
+                events.starts == std::vector<uint32_t>{0} && events.startIds == std::vector<uint64_t>{1} &&
+                events.completedCount == 1 && events.failedCount == 0 && warm.resumeAttempts == 0,
+            "the first Engine did not compute the prefix cold and complete it");
+    const auto published = cache.snapshot().stateCache;
+    require(published.entries == 1 && published.publications == 1 && published.bytes == 64 &&
+                published.diskBytes == 0 && published.offloads == 0 && published.evictions == 0 &&
+                published.invalidations == 0 && published.pinned == 0,
+            "the first Engine computed the prefix without leaving one reusable checkpoint");
+    const auto held = cache.lookup(prefix, {});
+    require(held.state && held.state->boundary() == 128 && held.kvBoundary == 128 &&
+                held.resumeBoundary() == 128 && held.state->kvBlock() != 0,
+            "the checkpoint is not attached to the whole 128-token prefix boundary");
+    retainedState = held.state->state().get();
+    retainedBlock = held.state->kvBlock();
+    retainedBoundary = held.state->boundary();
+    require(prefixPages.size() >= 4, "the cold command named no page for each prefix block");
+    allocatedPages = pool.snapshot().pagesAllocated;
+    extentAllocations = pool.snapshot().extentAllocations;
+    retainedQueue = persistence.snapshot();
+  }
+
+  // Engine A is destroyed; the graph is the same one, and holds what it held:
+  // one state, the same object at the same block, its pages untouched.
+  {
+    auto held = cache.lookup(prefix, {});
+    require(held.state && held.state->state().get() == retainedState &&
+                held.state->kvBlock() == retainedBlock && held.state->boundary() == retainedBoundary &&
+                held.kvBoundary == 128,
+            "Engine A's destruction dropped, copied or replaced the retained checkpoint");
+    // The witness lease goes before the lease-release accounting below.
+    held.state.reset();
+    const auto kept = cache.snapshot();
+    require(kept.stateCache.entries == 1 && kept.stateCache.bytes == 64 && kept.stateCache.diskBytes == 0 &&
+                kept.stateCache.publications == 1 && kept.stateCache.offloads == 0 &&
+                kept.stateCache.evictions == 0 && kept.stateCache.invalidations == 0 &&
+                kept.stateCache.promotions == 0 && kept.stateCache.pinned == 0 &&
+                kept.activeRequests == 0 && std::addressof(cache) == retainedCache &&
+                std::addressof(pool) == retainedPool && std::addressof(persistence) == retainedWrites &&
+                pool.snapshot().pagesAllocated == allocatedPages &&
+                pool.snapshot().extentAllocations == extentAllocations,
+            "Engine A's destruction took back the retained KV, wrote a second copy or replaced the graph");
+    require(persistence.snapshot().waiting == retainedQueue.waiting &&
+                persistence.snapshot().durable == retainedQueue.durable &&
+                persistence.snapshot().unneeded == retainedQueue.unneeded &&
+                persistence.snapshot().refused == retainedQueue.refused && !persistence.nextWakeup(),
+            "destroying the borrower retimed or reset the retained persistence queue");
+  }
+
+  std::vector<uint32_t> coldPages;
+  uint32_t commandStart = 0;
+  uint32_t commandRows = 0;
+  {
+    Executor cold;  // the reloaded residency: it holds nothing of Engine A's work
+    cold.kv = &storage;
+    Events events;
+    engine::Engine engineB(test::engineConfig({.maxContext = 102400}), cache, persistence, cold, events);
+    guardReleases(storage, engineB);
+    std::vector<uint32_t> activated;
+    cold.beginObserver = [&] { activated.push_back(cold.lastRestoredTokens); };
+    cold.commandTimes = [&](const BatchPlan &plan, std::span<const ModelBatchItem> items) {
+      if (plan.kind == WorkKind::Prefill) {
+        coldPages.assign(items.front().pageTable.begin(), items.front().pageTable.end());
+        commandStart = items.front().logicalPosition;
+        commandRows = items.front().tokenCount;
+      }
+      return test::CommandTimes{};
+    };
+    engineB.submit(request(2, full));
+    test::runUntilIdle(engineB);
+    // The exact prefix-token boundary, from the admission and from the event.
+    require(activated == std::vector<uint32_t>{128} && cold.lastRestoredTokens == 128 &&
+                events.starts == std::vector<uint32_t>{128} && events.startIds == std::vector<uint64_t>{2},
+            "the second Engine did not start at the retained prefix boundary");
+    // The restored prefix, on its own: applied to the lane with no read, since
+    // the retained state is the one RAM copy the graph kept.
+    require(cold.restored == 128 && cold.diskReads == 0 && !cold.restoreControl->ready &&
+                !cold.restoreControl->cancelled,
+            "the prefix was not restored as the retained state, or was re-read");
+    // What actually ran: the uncached suffix only, in one command that began
+    // at row 128 with the 34 tokens past it.
+    require(cold.prefillRows == 34 && commandStart == 128 && commandRows == 34 &&
+                cold.prefillWidths == std::vector<uint32_t>{1} && cold.prefillChunks.size() == 1 &&
+                cold.prefillChunks.at(2) == 1,
+            "the second Engine recomputed prefix rows or ran other than the suffix");
+    // No replay, no warm-up, no synthetic request.
+    require(cold.beginAttempts == 1 && cold.resumeAttempts == 0 && cold.resumptions == 0 &&
+                cold.resumedPrompts.empty() && cold.suspensions == 0 && cold.snapshots == 0 &&
+                events.completedCount == 1 && events.failedCount == 0 &&
+                engineB.snapshot().submitted == 1 && engineB.snapshot().resourceReplayTokens == 0 &&
+                engineB.snapshot().resourceResumptions == 0,
+            "the second Engine replayed, resumed or warmed up the preserved prefix");
+    require(engineB.snapshot().cacheHits == 1 && engineB.snapshot().coldMisses == 0 &&
+                engineB.snapshot().reusedTokens == 128,
+            "the engine's own accounting does not separate the reused prefix from the rows it ran");
+    // The suffix command read the prefix through the pages Engine A wrote.
+    require(coldPages.size() >= 6 &&
+            std::equal(prefixPages.begin(), prefixPages.begin() + 4, coldPages.begin()),
+            "the suffix command did not read the retained prefix's own pages");
+    require(pool.snapshot().pagesAllocated == allocatedPages &&
+                pool.snapshot().extentAllocations == extentAllocations && storage.copies.empty() &&
+                storage.releasedExtents == 0 && std::addressof(storage) == retainedStorage,
+            "the second Engine took new KV backing instead of the retained chain");
+    // Accounting and lease release: still one entry, nothing written to disk,
+    // nothing pinned, and no lane or request of the second Engine left over.
+    const auto after = cache.snapshot();
+    // The retained point is still the one entry Engine A left, and the second
+    // Engine added only its own deeper point of the same chain: nothing was
+    // written to disk, promoted, invalidated, evicted or left pinned.
+    require(after.stateCache.entries == 2 && after.stateCache.bytes == 128 &&
+                after.stateCache.publications == 2 && after.stateCache.diskBytes == 0 &&
+                after.stateCache.offloads == 0 && after.stateCache.offloadFailures == 0 &&
+                after.stateCache.invalidations == 0 && after.stateCache.evictions == 0 &&
+                after.stateCache.promotions == 0 && after.stateCache.pinned == 0 &&
+                after.stateCache.inUse == 0 && after.activeRequests == 0 &&
+                after.lookup.stateDiskHits == 0 && engineB.snapshot().completed == 1 &&
+                cold.requests.empty() && engineB.idle(),
+            "the second Engine duplicated, rewrote or lost the retained state, or kept a lease or lane");
+    // A clean stop lifts the write budget and drains the queue it owns: this
+    // graph had nothing queued, and one borrower's stop neither adds to nor
+    // resets what the next one would have seen.
+    require(engineB.flushRestorePoints() && persistence.snapshot().waiting == retainedQueue.waiting &&
+                persistence.snapshot().durable == retainedQueue.durable &&
+                persistence.snapshot().unneeded == retainedQueue.unneeded &&
+                persistence.snapshot().refused == retainedQueue.refused && !persistence.nextWakeup(),
+            "a borrower's clean stop changed the retained persistence queue");
+  }
+
+  // Both borrowers are gone: the graph outlived them, one state at the same
+  // block, and no Engine owns any of it.
+  {
+    const auto kept = cache.snapshot();
+    require(std::addressof(cache) == retainedCache && std::addressof(persistence) == retainedWrites &&
+                std::addressof(pool) == retainedPool && std::addressof(storage) == retainedStorage &&
+                kept.stateCache.entries == 2 && kept.stateCache.bytes == 128 && kept.stateCache.diskBytes == 0 &&
+                kept.stateCache.pinned == 0 && kept.activeRequests == 0 &&
+                cache.lookup(prefix, {}).state->state().get() == retainedState,
+            "the retained graph outlived neither borrower, or a borrower left something behind");
+  }
+}
+
+
 } // namespace
 
 std::span<const test::TestCase> checkpointsTests() {
   static constexpr test::TestCase kTests[] = {
+      {"testRetainedCheckpointSurvivesEngineReplacement", testRetainedCheckpointSurvivesEngineReplacement},
       {"testConcurrentProgressRetainsAtMostOnePointPerLane", testConcurrentProgressRetainsAtMostOnePointPerLane},
       {"testSharedCheckpointSurvivesPeerRollingReplacement", testSharedCheckpointSurvivesPeerRollingReplacement},
       {"testRepeatedRetriesRollTheRestoredCheckpoint", testRepeatedRetriesRollTheRestoredCheckpoint},

@@ -561,8 +561,8 @@ class FrontendHandler(BaseHTTPRequestHandler):
                 "object": "model",
                 "created": 0,
                 "owned_by": "splash",
-                "max_model_len": self.app.max_context,
-                "context_length": self.app.max_context,
+                "max_model_len": self.app.configured_context_ceiling,
+                "context_length": self.app.configured_context_ceiling,
                 "vision": self.app.vision,
                 "input_modalities": self.app.input_modalities,
                 "limits": self._limits(),
@@ -1215,6 +1215,8 @@ def _native_command(args, model_root, relaunch_context=None):
     ]
     if relaunch_context is not None:
         command.extend(("--relaunch-context", str(relaunch_context)))
+    if args.pause_on_battery:
+        command.append("--pause-on-battery")
     return command
 
 

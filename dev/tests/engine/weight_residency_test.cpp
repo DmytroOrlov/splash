@@ -215,6 +215,36 @@ void testAnImageWrittenOnItsThreadEndsBeforeTheNextPart() {
           "the restore did not follow each image's write before the next part");
 }
 
+// The image body may have ended while its notifier and join still hold the
+// domain. The composite must forward this separate retirement state.
+void testWriterRetirementForwardedThroughComposite() {
+  struct Part final : model::WeightMemory {
+    bool active = true;
+    bool joined = false;
+    unsigned polls = 0;
+    bool released() const noexcept override { return true; }
+    void release() override {}
+    bool restore(const metal::AllocationAdmission &) override { return false; }
+    bool writing() const noexcept override { return false; }
+    bool writerIntervalActive() const noexcept override { return active; }
+    bool pollWriterRetirement() override {
+      ++polls;
+      if (joined) active = false;
+      return !active;
+    }
+  } image;
+  Store store;
+  ReleasableMemory memory({&image, &store}, std::nullopt);
+  WeightResidency residency({.weights = &memory, .admit = test::admitAll});
+  require(!residency.writing() && residency.writerIntervalActive(),
+          "body completion hid the active writer interval");
+  require(!residency.pollWriterRetirement() && image.polls == 1 && residency.writerIntervalActive(),
+          "the composite reported retirement before join");
+  image.joined = true;
+  require(residency.pollWriterRetirement() && image.polls == 2 && !residency.writerIntervalActive(),
+          "the joined writer did not retire through the composite");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -226,6 +256,7 @@ int main(int argc, char **argv) {
       {"testTheStorePartComesBackInOneAdmissionAfterTheImages",
        testTheStorePartComesBackInOneAdmissionAfterTheImages},
       {"testAnImageWrittenOnItsThreadEndsBeforeTheNextPart", testAnImageWrittenOnItsThreadEndsBeforeTheNextPart},
+      {"testWriterRetirementForwardedThroughComposite", testWriterRetirementForwardedThroughComposite},
   };
   const test::TestGroup groups[] = {{"residency", kTests}};
   return test::runTests("weight-residency", groups, argc, argv);

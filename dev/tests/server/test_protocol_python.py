@@ -167,7 +167,7 @@ def engine_events():
             b"a start command ran out of GPU memory",
         ),
         "warming": p.WarmingEvent(3, 9),
-        "start": p.StartEvent(91, 2, 4096),
+        "start": p.StartEvent(91, 2, 4096, 8192),
         "prompt_progress": p.PromptProgressEvent(91, 2048, 123456),
         "tokens": p.TokensEvent(91, 17, (10, 11, 12)),
         "mask_request_initial": p.MaskRequestEvent(91, 6, 4, ()),
@@ -310,6 +310,45 @@ class ProtocolPythonTests(unittest.TestCase):
             code,
             lambda: decode_event(native_peer.serialize_event(event)),
         )
+
+    def test_start_capacity_validation(self):
+        self.assert_fatal_event(p.IssueCode.INVALID_COUNT, p.StartEvent(1, 0, 0, 0))
+        self.assert_fatal_event(p.IssueCode.INVALID_COUNT, p.StartEvent(1, 0, 641, 640))
+        start = p.StartEvent(1, 0, 100, 640)
+        self.assertEqual(decode_event(native_peer.serialize_event(start)), start)
+        self.assertLess(
+            start.capacity_tokens,
+            p.ReadyEvent(4, 1024, False, 64, 9, (1,)).max_context_tokens,
+        )
+        data = native_peer.serialize_event(start)
+        with self.assertRaises(p.ProtocolError):
+            decode_event(data[:-1])
+        for version in (12, 13):
+            with self.subTest(version=version), self.assertRaises(p.ProtocolError):
+                decode_event(mutate_u16(data, 4, version))
+            with self.subTest(client_version=version), self.assertRaises(ValueError):
+                decode_client(mutate_u16(read_golden()["cancel"], 4, version))
+
+    def test_ready_and_start_wire_offsets(self):
+        golden = read_golden()
+        ready, start = golden["ready"], golden["start"]
+        self.assertEqual(p.FRAME_HEADER_BYTES, 16)
+        self.assertEqual(len(ready), 16 + 21 + 2 * 4)
+        self.assertEqual(
+            struct.unpack_from("<IIBIII2I", ready, 16),
+            (4, 524288, 0, 248320, 9, 2, 248044, 248046),
+        )
+        self.assertEqual(len(start), 16 + 20)
+        self.assertEqual(struct.unpack_from("<QIII", start, 16), (91, 2, 4096, 8192))
+        for name in ("ready", "start"):
+            data = golden[name]
+            for cut in range(16, len(data)):
+                with (
+                    self.subTest(name=name, cut=cut),
+                    self.assertRaises(p.ProtocolError),
+                ):
+                    decode_event(data[:cut])
+            self.assertEqual(decode_event(data), engine_events()[name])
 
     def test_client_frames_match_golden(self):
         golden = read_golden()

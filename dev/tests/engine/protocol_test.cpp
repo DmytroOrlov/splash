@@ -261,7 +261,7 @@ const std::vector<std::pair<std::string, EngineEvent>> &engineEvents() {
                         {},
                         "a start command ran out of GPU memory"}},
       {"warming", WarmingEvent{3, 9}},
-      {"start", StartEvent{91, 2, 4096}},
+      {"start", StartEvent{91, 2, 4096, 8192}},
       {"prompt_progress", PromptProgressEvent{91, 2048, 123456}},
       {"tokens", TokensEvent{91, 17, {10, 11, 12}}},
       {"mask_request_initial", MaskRequestEvent{91, 6, 4, {}}},
@@ -334,6 +334,26 @@ void testGoldenVectors(const char *path) {
   const auto golden = readGolden(path);
   CHECK(test, golden.size() ==
                   clientMessages().size() + engineEvents().size() + 1);
+  const auto &ready = golden.at("ready");
+  const auto &start = golden.at("start");
+  CHECK(test, kFrameHeaderBytes == 16);
+  CHECK(test, ready.size() == 16 + 21 + 2 * 4);
+  CHECK(test, loadU32(ready, 16) == 4);
+  CHECK(test, loadU32(ready, 20) == 524288);
+  CHECK(test, ready[24] == 0);
+  CHECK(test, loadU32(ready, 25) == 248320);
+  CHECK(test, loadU32(ready, 29) == 9);
+  CHECK(test, loadU32(ready, 33) == 2);
+  CHECK(test, loadU32(ready, 37) == 248044);
+  CHECK(test, loadU32(ready, 41) == 248046);
+  CHECK(test, start.size() == 16 + 20);
+  CHECK(test, loadU32(start, 16) == 91);
+  CHECK(test, loadU32(start, 20) == 0);
+  CHECK(test, loadU32(start, 24) == 2);
+  CHECK(test, loadU32(start, 28) == 4096);
+  CHECK(test, loadU32(start, 32) == 8192);
+  CHECK(test, roundTripEvent(std::get<ReadyEvent>(engineEvents()[0].second)) == std::get<ReadyEvent>(engineEvents()[0].second));
+  CHECK(test, roundTripEvent(StartEvent{91, 2, 4096, 8192}) == (StartEvent{91, 2, 4096, 8192}));
   const auto supervision = golden.find("supervision");
   CHECK(test, supervision != golden.end() &&
                   supervision->second == supervisionBudgets());
@@ -650,9 +670,11 @@ void testHeaderFailures() {
   badMagic[0] = 'X';
   expect(std::move(badMagic), IssueCode::BadMagic);
 
-  auto version = valid;
-  storeU16(version, 4, 1);
-  expect(std::move(version), IssueCode::UnsupportedVersion);
+  for (uint16_t oldVersion : {uint16_t{12}, uint16_t{13}}) {
+    auto version = valid;
+    storeU16(version, 4, oldVersion);
+    expect(std::move(version), IssueCode::UnsupportedVersion);
+  }
 
   auto unknownType = valid;
   storeU16(unknownType, 6, 0x7777);
@@ -1047,6 +1069,27 @@ void testBoundedArbitraryStatusJsonAndFrames() {
   CHECK(test, issue.code == IssueCode::FrameTooLarge);
 }
 
+void testDetachedLifecycleStatusRoundTrip() {
+  constexpr std::string_view test = "detached lifecycle status";
+  StatusJsonEvent event{808, R"({"schema_version":6,"control_ready":true,"inference_ready":false,"lifecycle":{"revision":17,"observation_sequence":18,"model_resident":false}})"};
+  CHECK(test, roundTripEvent(event) == event);
+}
+
+void testReadyIsOneStaticGenerationHandshake() {
+  constexpr std::string_view test = "static ready handshake";
+  std::vector<EngineEvent> events{ReadyEvent{4, 1024, false, 64, {1}, 9},
+      StatusJsonEvent{1, R"({"state":"suspended"})"},
+      StatusJsonEvent{2, R"({"state":"recovering"})"},
+      StatusJsonEvent{3, R"({"state":"ready"})"}};
+  std::vector<uint8_t> bytes;
+  for (const auto &event : events) {
+    auto encoded = serializeEvent(event, kLimits);
+    CHECK(test, encoded);
+    if (encoded) bytes.insert(bytes.end(), encoded.value->begin(), encoded.value->end());
+  }
+  CHECK(test, peer::decodeEvents(bytes) == events);
+}
+
 void testFailureTaxonomy() {
   constexpr std::string_view test = "failure taxonomy";
   for (ErrorEvent expected : {
@@ -1086,7 +1129,10 @@ void testFailureTaxonomy() {
   StartFailedEvent unknownBound;
   unknownBound.shortfall.bound = static_cast<ShortfallBound>(3);
   expectEventIssue(test, unknownBound, IssueCode::InvalidEnumValue);
-  expectEventIssue(test, StartEvent{8, ExecutionLimits::maximumBatchWidth, 0},
+  expectEventIssue(test, StartEvent{8, 0, 0, 0}, IssueCode::InvalidCount);
+  expectEventIssue(test, StartEvent{8, 0, 641, 640}, IssueCode::InvalidCount);
+  CHECK(test, roundTripEvent((StartEvent{8, 0, 100, 640})) == (StartEvent{8, 0, 100, 640}));
+  expectEventIssue(test, StartEvent{8, ExecutionLimits::maximumBatchWidth, 0, 640},
                    IssueCode::InvalidCount);
   expectEventIssue(test,
                    TokensEvent{8, std::numeric_limits<uint32_t>::max(), {1}},
@@ -1239,8 +1285,11 @@ int main(int argc, char **argv) {
     testThinkingBudget();
     testBoundedArbitraryStatusJsonAndFrames();
     testFailureTaxonomy();
+    testDetachedLifecycleStatusRoundTrip();
+    testReadyIsOneStaticGenerationHandshake();
     testUnnamedRequestFailuresAreFatal();
     testInvalidLimitsAndOuterTruncation();
+
     testFuzzLikeInputsAndMutations();
   } catch (const std::exception &error) {
     ++failures;

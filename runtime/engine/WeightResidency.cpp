@@ -26,12 +26,7 @@ WeightResidency::Step WeightResidency::restore(double now) {
   try {
     restored = config_.weights->restore(config_.admit);
   } catch (const metal::MetalAllocationError &refusal) {
-    if (!refusedSince_) {
-      refusedSince_ = now;
-      logLine("Weights wait for memory to be restored: ",
-              metal::allocationFailureName(refusal.failure()));
-    }
-    return {Step::Kind::Refused, refusal.failure()};
+    return refuse(now, refusal);
   }
   refusedSince_.reset();
   if (!restored)
@@ -43,6 +38,15 @@ WeightResidency::Step WeightResidency::restore(double now) {
   waiterFailed_ = false;
   idleFrom(now);
   return {Step::Kind::Restored};
+}
+
+WeightResidency::Step WeightResidency::refuse(double now, const metal::MetalAllocationError &refusal) {
+  if (!refusedSince_) {
+    refusedSince_ = now;
+    logLine("Weights wait for memory to be restored: ",
+            metal::allocationFailureName(refusal.failure()));
+  }
+  return {Step::Kind::Refused, refusal.failure()};
 }
 
 void WeightResidency::waiterFailed() noexcept { waiterFailed_ = true; }

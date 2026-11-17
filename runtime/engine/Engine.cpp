@@ -1,4 +1,7 @@
 #include "engine/Engine.hpp"
+#include "engine/ResourceDomainLease.hpp"
+#include <condition_variable>
+#include <thread>
 #include "AwakeClock.hpp"
 #include "Supervision.hpp"
 #include "engine/EngineAllocate.hpp"
@@ -48,13 +51,83 @@ std::string resourceTimeoutMessage(metal::AllocationFailure failure) {
   return message;
 }
 
-Engine::Engine(EngineConfig config, Cache &cache, model::Model &model,
-               EngineEventSink &events)
-    : config_(config), cache_(cache), writeBehind_(cache), model_(model), events_(events),
+// One reusable reaper is reserved before external-writer mode is enabled.
+// Its wake owns a notifier generation; it never dereferences the Engine.
+struct Engine::WriterCoordinator : model::WriterRetirementPort {
+  ResourceDomainLease &lease;
+  std::optional<WriterRetirement> retirement;
+  std::optional<ClaimHandle> claim;
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool job = false, done = false, stopping = false;
+  unsigned reaperRuns = 0;
+  std::function<void()> wake;
+  std::thread reaper;
+  void launch(std::function<void()> body) override { retirement->launch(std::move(body)); }
+  bool joined() const override { return retirement && retirement->joined(); }
+  void reclaim() override { lease.reclaimWriter(*retirement); }
+  std::exception_ptr failure() const override { return retirement->failure(); }
+  explicit WriterCoordinator(ResourceDomainLease &value) : lease(value), reaper([this] {
+    for (;;) {
+      std::unique_lock lock(mutex);
+      cv.wait(lock, [&] { return job || stopping; });
+      if (stopping) return;
+      ++reaperRuns;
+      lock.unlock();
+      try { retirement->join(); } catch (...) { std::terminate(); }
+      lock.lock();
+      auto notify = std::move(wake);
+      job = false;
+      done = true; // No further reaper access to the retirement handle.
+      lock.unlock();
+      if (notify) { try { notify(); } catch (...) {} }
+      notify = {};
+      lock.lock();
+      --reaperRuns;
+      cv.notify_all();
+    }
+  }) {}
+  ~WriterCoordinator() {
+    if (retirement || claim) std::terminate();
+    { std::lock_guard lock(mutex); stopping = true; }
+    cv.notify_one();
+    reaper.join(); // Idle service only, never an active image Writer.
+  }
+};
+
+void Engine::retireWeightWriterForShutdown() {
+  if (!writer_) return;
+  {
+    std::unique_lock lock(writer_->mutex);
+    writer_->cv.wait(lock, [&] {
+      return (!writer_->retirement || writer_->done) && !writer_->job && !writer_->reaperRuns;
+    });
+  }
+  if (writer_->retirement) static_cast<void>(pollWeightWriter());
+}
+
+bool Engine::pollWeightWriter() {
+  if (!writer_ || !writer_->retirement) return true;
+  {
+    std::lock_guard lock(writer_->mutex);
+    if (!writer_->done) return false;
+  }
+  if (!writer_->retirement->joined()) return false;
+  try { if (!weights_->finishPreparedWriter()) return false; }
+  catch (...) { writerFailure_ = std::current_exception(); }
+  // finishPreparedWriter reclaims before consuming the write/notifier error.
+  writer_->retirement.reset();
+  writer_->claim.reset();
+  governor().publishSnapshot();
+  return true;
+}
+
+Engine::Engine(EngineConfig config, Cache &cache, WriteBehind &writeBehind,
+               model::Model &model, EngineEventSink &events)
+    : config_(config), cache_(cache), writeBehind_(writeBehind), model_(model), events_(events),
       scheduler_({.decodeShare = config_.decodeShare,
                   .decodeGapMilliseconds = config_.decodeGapMilliseconds,
-                  .limits = model.commandLimits()},
-                 model) {
+                  .limits = model.commandLimits()}, model) {
   if (!config_.maxContext || !config_.vocabularySize) {
     throw std::invalid_argument("context and vocabulary sizes must be positive");
   }
@@ -67,6 +140,11 @@ Engine::Engine(EngineConfig config, Cache &cache, model::Model &model,
     throw std::invalid_argument("a target that can spill needs its page and slot sizes");
   if (config_.weights)
     weights_.emplace(*config_.weights);
+  if (weights_ && config_.writerLease) {
+    config_.writerLease->check("configure engine writer");
+    writer_ = std::make_unique<WriterCoordinator>(*config_.writerLease);
+    weights_->enableExternalWriter();
+  }
   // What the engine holds is the ledger's to take, cache before the
   // engine's own victims (the tie order of the sources), the cache tells it
   // what transfers return and what its pages hold, and the model what the
@@ -75,17 +153,29 @@ Engine::Engine(EngineConfig config, Cache &cache, model::Model &model,
   // over them (backend_benchmark's) finds them.
   MemoryLedger &ledger = config_.governor->ledger();
   ledger.addSource(cache_);
+  struct RetireOnFailure {
+    MemoryLedger &ledger;
+    VictimSource &source;
+    bool committed = false;
+    ~RetireOnFailure() { if (!committed) ledger.removeSource(source); }
+  } registration{ledger, victims_};
   ledger.addSource(victims_);
   ledger.setReturning([&cache = cache_] { return cache.returning(); },
                       [&cache = cache_](std::span<const uint64_t> requestIds) { return cache.returningFor(requestIds); });
-  ledger.setBufferBytes([&model = model_](uint32_t states, bool afterStart, bool keepLane) {
+  modelRegistration_ = ledger.registerModel(model_.pools(), [&model = model_](uint32_t states, bool afterStart, bool keepLane) {
     return model.idleBufferBytes(states, afterStart, keepLane);
   });
   ledger.setPageBytes({cache_.bytesPerPage(kv::PageForm::Full), cache_.bytesPerPage(kv::PageForm::Index),
                        cache_.bytesPerPage(kv::PageForm::Slim)});
+  registration.committed = true;
 }
 
-Engine::~Engine() { config_.governor->ledger().removeSource(victims_); }
+Engine::~Engine() {
+  if (writer_ && (writer_->retirement || weightsWriting() || !callbacksRetired())) std::terminate();
+  if (writer_) weights_->setWeightWriteScope({});
+  modelRegistration_.reset();
+  config_.governor->ledger().removeSource(victims_);
+}
 
 void Engine::submit(EngineRequest value) {
   const auto outOfVocabulary = [&](uint32_t token) {
@@ -127,6 +217,7 @@ void Engine::submit(EngineRequest value) {
   if (const auto found = requests_.find(id); found != requests_.end()) {
     if (!found->second.finalized)
       throw std::logic_error("request id is live in the engine");
+    if (weightsWriting()) throw std::logic_error("request id awaits writer retirement");
     scheduler_.remove(id);
     requests_.erase(found);
   }
@@ -143,23 +234,44 @@ void Engine::submit(EngineRequest value) {
 }
 
 void Engine::cancel(uint64_t id) {
-  if (const auto found = requests_.find(id); found != requests_.end())
-    settle(found->second, {LaneOutcome::Cancelled, {}});
+  if (const auto found = requests_.find(id); found != requests_.end()) {
+    if (weights_ && weights_->writerIntervalActive()) {
+      deferEnd(found->second, {LaneOutcome::Cancelled, {}});
+      deferredWriterTerminals_ = true;
+    } else
+      settle(found->second, {LaneOutcome::Cancelled, {}});
+  }
 }
 
 void Engine::stop(uint64_t id) {
   // A request that has generated nothing has nothing to stop on: it is cancelled.
-  if (const auto found = requests_.find(id); found != requests_.end())
-    settle(found->second,
-           {generatedTokens(found->second) ? LaneOutcome::Stopped : LaneOutcome::Cancelled, {}});
+  if (const auto found = requests_.find(id); found != requests_.end()) {
+    LaneEnd end{generatedTokens(found->second) ? LaneOutcome::Stopped : LaneOutcome::Cancelled, {}};
+    if (weights_ && weights_->writerIntervalActive()) {
+      deferEnd(found->second, std::move(end));
+      deferredWriterTerminals_ = true;
+    }
+    else settle(found->second, std::move(end));
+  }
 }
 
 void Engine::failRequest(uint64_t id, LaneOutcome outcome, std::string message) {
-  settle(request(id), {outcome, std::move(message)});
+  Request &active = request(id);
+  LaneEnd end{outcome, std::move(message)};
+  if (weights_ && weights_->writerIntervalActive()) {
+    deferEnd(active, std::move(end));
+    deferredWriterTerminals_ = true;
+  }
+  else settle(active, std::move(end));
 }
 
 void Engine::provideMask(uint64_t id, std::span<const uint32_t> words) {
   Request &active = request(id);
+  if (weights_ && weights_->writerIntervalActive()) {
+    if (!active.finalized && !active.pendingEnd)
+      deferredWriterMasks_.emplace_back(id, std::vector<uint32_t>(words.begin(), words.end()));
+    return;
+  }
   const bool ownedByActiveBatch =
       pending_ && pending_->ticket->ownsMaskWait(id);
   // A request that already left its mask wait (cancellation, deadline, or a
@@ -178,10 +290,86 @@ void Engine::provideMask(uint64_t id, std::span<const uint32_t> words) {
 }
 
 void Engine::setCompletionNotifier(std::function<void()> notifier) {
-  completionNotifier_ = std::move(notifier);
+  {
+    std::lock_guard lock(notifier_->bodyMutex);
+    // [Gate 4 / U-01] The binding is a slot, replaced wholesale: every hand-off
+    // bound from here on is given this closure, while a closure a holder
+    // already keeps running stays bound to the one it was given, which that
+    // binding's slot keeps alive for it.
+    notifier_->bodySlot =
+        std::make_shared<const std::function<void()>>(std::move(notifier));
+  }
+  // [Gate 4 / U-01] Binding never disables the notifier: the tracker keeps the
+  // closure, and every copy the machinery below makes is a seat it owes until
+  // its holder let go.
+  const BoundNotifier bound{notifier_};
+  completionNotifier_ = std::function<void()>(bound);
   cache_.setCompletionNotifier(completionNotifier_);
   if (weights_)
     weights_->setCompletionNotifier(completionNotifier_);
+}
+
+// [T031] Every allocation the ordinary setter performs is taken up front: the
+// shared body (one copy of `notifier`) and the three closure copies this
+// binding installs — the Engine's own slot plus its Cache's and the StateCache's,
+// one tracker seat each — so installation can be a rollback-safe swap. The
+// recipient freezing and the tracker's seat accounting work exactly as
+// setCompletionNotifier's chain does; the copies all share this binding's body.
+Engine::PreparedCompletionBinding Engine::prepareCompletionBinding(const std::function<void()> &notifier) {
+  PreparedCompletionBinding prepared;
+  prepared.bodySlot_ = std::make_shared<const std::function<void()>>(notifier);
+  const BoundNotifier bound{notifier_, prepared.bodySlot_};
+  std::function<void()> boundFunction{bound};
+  prepared.engineSlot_ = std::function<void()>(boundFunction);
+  prepared.cacheSlot_ = std::function<void()>(boundFunction);
+  prepared.stateSlot_ = std::function<void()>(boundFunction);
+  if (weights_) {
+    std::vector<model::WeightMemory *> recipients;
+    weights_->completionRecipients(recipients);
+    for (auto *recipient : recipients)
+      prepared.weightSlots_.emplace_back(recipient, boundFunction);
+  }
+  return prepared;
+}
+
+// [T031] Swaps the prepared slots in and the previous ones out, all by moves:
+// the body under the tracker's own mutex (the same single-writer edge
+// setCompletionNotifier uses), the Engine's slot, then the Cache's and the
+// StateCache's. Nothing allocates after the first swap, which is what lets
+// NativeRuntime's rollback reinstall the displaced binding through this very
+// call.
+Engine::PreparedCompletionBinding Engine::installCompletionBinding(PreparedCompletionBinding &&prepared) noexcept {
+  PreparedCompletionBinding displaced;
+  {
+    std::lock_guard lock(notifier_->bodyMutex);
+    displaced.bodySlot_ = std::move(notifier_->bodySlot);
+    notifier_->bodySlot = std::move(prepared.bodySlot_);
+  }
+  displaced.engineSlot_ = std::move(completionNotifier_);
+  completionNotifier_ = std::move(prepared.engineSlot_);
+  const auto graphDisplaced = cache_.installCompletionSlots(std::move(prepared.cacheSlot_), std::move(prepared.stateSlot_));
+  displaced.cacheSlot_ = std::move(graphDisplaced.first);
+  displaced.stateSlot_ = std::move(graphDisplaced.second);
+  displaced.weightSlots_ = std::move(prepared.weightSlots_);
+  for (auto &[recipient, slot] : displaced.weightSlots_) recipient->swapCompletionNotifier(slot);
+  return displaced;
+}
+
+void Engine::BoundNotifier::operator()() const {
+  if (!body_ || !*body_)
+    return;
+  // [Gate 4 / U-01] One run stands until the body returned, whatever the body
+  // starts: a notifier that borrows, or hands off further work, keeps the
+  // receipt pending across that window. The recipient is this binding's own
+  // slot, shared by every copy of it and never rewritten, so nothing is copied
+  // under a lock here and no callback runs under one the Engine, the tier or
+  // the cache takes.
+  ++tracker_->runs;
+  struct Returned final {
+    std::atomic<uint32_t> &runs;
+    ~Returned() { --runs; }
+  } returned{tracker_->runs};
+  (*body_)();
 }
 
 bool Engine::flushRestorePoints() {
@@ -194,6 +382,28 @@ bool Engine::flushRestorePoints() {
 }
 
 bool Engine::tick(double now) {
+  pollWeightWriter();
+  if (weights_ && weights_->writerIntervalActive()) {
+    bool progressed = false;
+    for (auto &[_, active] : requests_) {
+      if (!active.finalized && !active.pendingEnd && active.request.deadlineMilliseconds <= now) {
+        deferEnd(active, deadlineEnd());
+        deferredWriterTerminals_ = true;
+        progressed = true;
+      }
+    }
+    return progressed;
+  }
+  if (deferredWriterTerminals_) {
+    settleEndedBetweenPasses();
+    deferredWriterTerminals_ = false;
+  }
+  if (!deferredWriterMasks_.empty()) {
+    auto deferred = std::move(deferredWriterMasks_);
+    deferredWriterMasks_.clear();
+    for (auto &[id, words] : deferred)
+      if (requests_.contains(id)) provideMask(id, words);
+  }
   // The time since the last tick goes to what held each request then;
   // however the tick ends, what holds each from now on is as it leaves the
   // engine.
@@ -201,6 +411,7 @@ bool Engine::tick(double now) {
   struct Holders final {
     Engine &engine;
     ~Holders() {
+      if (engine.weightsWriting()) return;
       for (auto &[_, active] : engine.requests_)
         if (!active.finalized && !active.firstTokenSent)
           active.heldBy = engine.holderOf(active);
@@ -333,6 +544,7 @@ bool Engine::tick(double now) {
   // so that frames are answered between them.
   if (!weightsHeld()) {
     progressed = advanceWeights(now) || progressed;
+    if (weights_ && weights_->writerIntervalActive()) return progressed;
     if (!weightsHeld()) {
       sweepTerminal(now);
       return progressed;
@@ -620,6 +832,85 @@ EngineSnapshot Engine::snapshot() const {
   }
   std::ranges::sort(result.activeRequests, {}, &ActiveRequestSnapshot::id);
   return result;
+}
+
+// [Gate 2 / FR-009] The request-side drain witness (T016). Every category is a
+// request-side owner of Engine state, read from the machinery that owns it
+// (`requests_`, the scheduler's phase, `pending_` and its ticket, and each
+// Request's own mask wait, pass state, restore ticket and pending end), and
+// counted separately so a refusal names the owner that stands instead of
+// collapsing to one boolean. A request the scheduler has already ended, or one
+// finalized and not yet swept, counts as a completion record: its terminal
+// event has been emitted, and until sweepTerminal takes it the engine still
+// holds its telemetry (emitted tokens, score logits, failed restores) and
+// everything the record has not given back. A phase is never read as another
+// category's evidence: this witness says nothing about GPU/host callbacks,
+// completion notifiers or ANE descendants (Gate 4, T017), nor about KV and
+// state writes (Gate 3, T018), which is why all four witnesses are required.
+Engine::RequestDrain Engine::requestDrain() const {
+  RequestDrain drain;
+  for (const auto &[id, active] : requests_) {
+    if (active.pendingEnd)
+      ++drain.ends;
+    if (active.restore)
+      ++drain.restores;
+    if (active.maskRequestedMilliseconds)
+      ++drain.masks;
+    if (passCommand_.holds(id))
+      ++drain.tickets;
+    if (active.finalized) {
+      ++drain.records;
+      continue;
+    }
+    switch (scheduler_.phase(id)) {
+    case Phase::Queued:
+    case Phase::WaitingResources:
+    case Phase::WaitingPrefix:
+      ++drain.queued;
+      break;
+    case Phase::Prefill:
+    case Phase::Decode:
+    case Phase::WaitingMask:
+      ++drain.resident;
+      break;
+    default:
+      // Expired by the scheduler, awaiting the settle sweepTerminal runs.
+      ++drain.records;
+      break;
+    }
+  }
+  if (pending_) {
+    ++drain.commands;
+    // A ticket the model has not retired: its command is parked, and the
+    // lanes it holds cannot end before it does.
+    if (!pending_->ticket->ready())
+      ++drain.tickets;
+  }
+  return drain;
+}
+
+// [Gate 4 / U-01] The callback/descendant receipt, read from the owners of the
+// work: the model's backend and Neural Engine (Model::descendants, whose default
+// reports none for a model with neither) and this Engine's bound completion
+// notifier. The notifier's seats are its live copies less the bindings that are
+// actually installed — this Engine's slot plus Cache::notifierBindings() — so a
+// transient copy reads as owed (fail closed) and a setup that never completed
+// one of its three assignments can never read a borrowed closure as retired.
+// Nothing here waits, starts or releases a callback, and no count consults a
+// request, a lease or the GPU: this is Gate 4's own evidence.
+Engine::CallbackRetirement Engine::callbackRetirement() const {
+  if (weightsWriting()) { CallbackRetirement busy; busy.notifierRuns = 1; return busy; }
+  const model::Model::Descendants owed = model_.descendants();
+  CallbackRetirement receipt;
+  receipt.gpu = owed.gpu;
+  receipt.agentJobs = owed.agentJobs;
+  receipt.serviceWork = owed.serviceWork;
+  const uint32_t copies = notifier_->seats.load(std::memory_order_relaxed);
+  const uint32_t bindings =
+      (completionNotifier_ ? 1u : 0u) + cache_.notifierBindings() + (weights_ ? weights_->notifierBindings() : 0);
+  receipt.notifierSeats = copies > bindings ? copies - bindings : 0u;
+  receipt.notifierRuns = notifier_->runs.load(std::memory_order_relaxed);
+  return receipt;
 }
 
 bool Engine::admitQueued(double now) {
@@ -925,7 +1216,17 @@ bool Engine::admit(Request &active, double now) {
           ? CacheLookup{}
           : cache_.lookup(modelRequest.prompt, promptIdentity(active.request),
                           active.admissionProbe ? &*active.admissionProbe
-                                                : nullptr);
+                                                : nullptr,
+                          active.failedRestores);
+  // A state of the matched chain is being written to the disk tier: its copy
+  // is not acquirable until the transfer lands, so the request waits for it
+  // (bounded like every resource wait) rather than recompute the prefix.
+  if (!lookup.state && lookup.stateOffloadPending) {
+    active.refusedResources = true;
+    scheduler_.waitForResources(active.request.id);
+    deferResourceRetry(active, now, Denial{.pending = true}, StateFailure::MemoryPressure);
+    return false;
+  }
   // Only unstarted requests wait for a resident producer. Recheck planned
   // boundaries each step so producer loss leaves no stale dependency or lease.
   if (!resuming && pendingSharedPrefill(active, lookup.resumeBoundary())) {
@@ -1004,8 +1305,25 @@ bool Engine::admit(Request &active, double now) {
   cache_.beginRequest(requestId, active.kvMode);
   active.lane = *state.admission.lane;
   active.admission = ++admissions_;
-  if (droppedLease)
-    lookup = cache_.lookup(modelRequest.prompt, promptIdentity(active.request));
+  if (droppedLease) {
+    // The reclaim that freed the memory this start gave up its own lease for
+    // may have written that state to the disk tier. Its transfer lands only
+    // in pollTransfers(): take what is ready, then match the prompt again.
+    static_cast<void>(cache_.pollTransfers());
+    lookup = cache_.lookup(modelRequest.prompt, promptIdentity(active.request),
+                           nullptr, active.failedRestores);
+    if (!lookup.state && lookup.stateOffloadPending) {
+      // The write is still going: the start waits for the copy it reclaimed
+      // instead of recomputing the prefix it wrote. Bounded as any resource
+      // wait; the transfer's completion wakes this lane.
+      vacateLane(active, resuming);
+      active.refusedResources = true;
+      scheduler_.waitForResources(active.request.id);
+      deferResourceRetry(active, now, Denial{.pending = true},
+                         StateFailure::MemoryPressure);
+      return false;
+    }
+  }
   // The commitment covers the chain it restores too, once the lookup is
   // final, beside the copies on it the quota counts once the start holds
   // them. Writes a reclaim started may have taken the quota admitSpill
@@ -1176,12 +1494,12 @@ bool Engine::pollRestores() {
       completeAdmission(active, restore.lookup, std::move(restore.draft));
       continue;
     }
-    // The prefix could not be brought back. What failed is gone from the
-    // cache, so the next attempt matches the prefix that remains.
-    if (!stateRestored) {
-      cache_.discardState(restore.lookup.state->kvBlock(),
-                          restore.lookup.state->state().get());
-    }
+    // A destination restore failure does not prove the immutable source is
+    // bad. Keep it in the cache for a later request; this request excludes
+    // that block from its own next lookup and starts below it, so the retry
+    // cannot repeat the read that just failed.
+    if (!stateRestored && restore.lookup.state)
+      active.failedRestores.push_back(restore.lookup.state->kvBlock());
     restore.ticket.reset();
     restore.lookup = {};
     vacateLane(active, scheduler_.suspended(id));
@@ -2171,17 +2489,20 @@ void Engine::sweepTerminal(double now) {
 }
 
 bool Engine::releaseIdleWeights(double now) {
-  return weights_.value().release(now, idle(), true);
+  if (weightsWriting()) return false;
+  return weights_ && weights_->release(now, idle(), true);
 }
 
 bool Engine::releaseWeights(double now) {
-  return weights_.value().release(now, idle(), false);
+  if (weightsWriting()) return false;
+  return weights_ && weights_->release(now, idle(), false);
 }
 
-void Engine::startIdleClock(double now) { weights_.value().idleFrom(now); }
+void Engine::startIdleClock(double now) noexcept { if (weights_) weights_->idleFrom(now); }
 
 WeightsSnapshot Engine::weightsSnapshot() const {
-  WeightsSnapshot snapshot = weights_.value().snapshot();
+  if (!weights_) return {};
+  WeightsSnapshot snapshot = weights_->snapshot();
   // A request that finds them released restores them: from its arrival.
   snapshot.restoring = snapshot.restoring ||
                        (snapshot.released && std::ranges::any_of(requests_, [](const auto &entry) {
@@ -2206,13 +2527,44 @@ bool Engine::advanceWeights(double now) {
     // do not hold it back, critical pressure and the engine's limit refuse
     // it. Without a request it is a Start claim's, which comes back only as
     // far as the margins admit it.
+    if (writerFailure_) {
+      auto failure = std::exchange(writerFailure_, {});
+      try { std::rethrow_exception(failure); }
+      catch (const metal::MetalAllocationError &refusal) { return weights_->refuse(now, refusal); }
+    }
     ClaimHandle claim;
     claim.governor = &governor();
     claim.id = governor().ledger().open(
         {.cls = waiting.empty() ? ClaimClass::Start : ClaimClass::Floor, .timing = NeedTiming::Immediate});
-    const MemoryGovernor::Scope scope(governor(), claim.id);
-    return weights_->restore(now);
+    WeightResidency::Step step;
+    { const MemoryGovernor::Scope scope(governor(), claim.id); step = weights_->restore(now); }
+    if (writer_ && weights_->hasPreparedWriter()) {
+      try {
+        // All potentially throwing scope/notifier copies precede lending.
+        weights_->setWeightWriteScope([g = &governor(), id = claim.id](const std::function<void()> &work) {
+          const MemoryGovernor::Scope scope(*g, id);
+          work();
+        });
+        std::function<void()> wake = completionNotifier_;
+        writer_->claim.emplace(std::move(claim));
+        writer_->retirement.emplace(writer_->lease.lendToWriter());
+        weights_->launchPreparedWriter(*writer_);
+        { std::lock_guard lock(writer_->mutex);
+          writer_->wake = std::move(wake); writer_->done = false; writer_->job = true; }
+        writer_->cv.notify_one();
+      } catch (...) {
+        if (writer_->retirement) {
+          writer_->lease.cancelUnstartedWriter(*writer_->retirement);
+          writer_->retirement.reset();
+        }
+        weights_->cancelPreparedWriter();
+        writer_->claim.reset();
+        throw;
+      }
+    }
+    return step;
   }();
+  if (weights_->writerIntervalActive()) return true;
   if (step.kind != WeightResidency::Step::Kind::Refused) {
     // A part that came back ends each waiting request's wait for memory: its
     // limit counts from its next refusal, by the restore or, once the weights

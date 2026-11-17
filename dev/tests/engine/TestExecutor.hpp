@@ -70,6 +70,8 @@ private:
 struct OffloadControl {
   bool ready = false;
   bool released = false;
+  // The transfer's write itself fails: its disk copy must not be published.
+  bool success = true;
 };
 
 // A state write in flight; its disk copy is a DiskState.
@@ -78,7 +80,7 @@ public:
   explicit OffloadTicket(std::shared_ptr<OffloadControl> control)
       : control_(std::move(control)) {}
   bool ready() const noexcept override { return control_->ready; }
-  bool finish() override { return true; }
+  bool finish() override { return control_->success; }
   const std::shared_ptr<const CompositeState> &state() const noexcept override {
     return disk_;
   }
@@ -120,10 +122,12 @@ private:
 // DiskState.
 class KeptState final : public CompositeState {
 public:
-  explicit KeptState(std::shared_ptr<OffloadControl> control) : control_(std::move(control)) {}
+  explicit KeptState(std::shared_ptr<OffloadControl> control,
+                     std::shared_ptr<model::DiskBudget> budget = nullptr)
+      : control_(std::move(control)), budget_(std::move(budget)) {}
   uint64_t bytes() const noexcept override { return 64; }
   bool writable() const noexcept override { return true; }
-  bool canOffload(bool) const noexcept override { return true; }
+  bool canOffload(bool inUse) const noexcept override { return !budget_ || budget_->admits(inUse); }
   std::unique_ptr<StateOffload> offload(std::function<void()>) const override {
     return std::make_unique<OffloadTicket>(control_);
   }
@@ -133,6 +137,7 @@ public:
 
 private:
   std::shared_ptr<OffloadControl> control_;
+  std::shared_ptr<model::DiskBudget> budget_;
 };
 
 struct RestoreControl {
@@ -219,6 +224,20 @@ public:
   explicit Executor(
       uint32_t maximumLanes = model::ExecutionLimits::maximumBatchWidth)
       : maximumLanes(maximumLanes) {}
+
+  // [Gate 4 / U-01] What this model still owes its caller's resource domain
+  // (`Model::descendants`, the receipt an Engine folds into its own
+  // callback/descendant witness): the backend's GPU and host-step closures,
+  // the Neural Engine's unreported evaluations and the ANE service queue's
+  // posted work. A test sets these to hold that fourth witness open beside a
+  // graph that is otherwise idle; left alone they report none, which is exactly
+  // what this fake's inherited default reported.
+  metal::CallbackRetirement owedGpu;
+  uint32_t owedAgentJobs = 0;
+  uint32_t owedServiceWork = 0;
+  [[nodiscard]] model::Model::Descendants descendants() const noexcept override {
+    return {owedGpu, owedAgentJobs, owedServiceWork};
+  }
 
   void checkHealth() override {
     if (healthCheck)
@@ -834,6 +853,8 @@ public:
   // With it, captured states are KeptStates whose copies land when it says
   // so.
   std::shared_ptr<OffloadControl> keptTier;
+  // Where set, kept states obey the same write-budget admission as real states.
+  std::shared_ptr<model::DiskBudget> keptBudget;
   // With it, captured states are OffloadStates, written as the cache lets
   // them leave RAM, their copies landing when it says so.
   std::shared_ptr<OffloadControl> offloadTier;
@@ -1121,7 +1142,7 @@ private:
   std::shared_ptr<const CompositeState> seal(Reservation &reservation) {
     std::shared_ptr<uint64_t> pool = reservation.seal();
     if (keptTier)
-      return std::make_shared<KeptState>(keptTier);
+      return std::make_shared<KeptState>(keptTier, keptBudget);
     if (offloadTier)
       return std::make_shared<OffloadState>(offloadTier, std::move(pool));
     return std::make_shared<State>(std::move(pool));

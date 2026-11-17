@@ -227,7 +227,7 @@ struct ServeSettingsTests {
     @Test func theContextHintIsTheModels() {
         #expect(ContextLength.message(Self.flint).contains("at most 256K, the model’s own window"))
         #expect(!ContextLength.message(Self.flint).contains("YaRN"))
-        #expect(ContextLength.message(Self.moe).contains("at most 1,010,000. Past the model’s own window, 256K, it stretches it with YaRN"))
+        #expect(ContextLength.localizedMessage(Self.moe, locale: Locale(identifier: "en_US")).contains("at most 1,010,000. Past the model’s own window, 256K, it stretches it with YaRN"))
         #expect(ContextLength.message(.unknown).contains("YaRN"))
     }
 
@@ -250,7 +250,8 @@ struct ServeSettingsTests {
         #expect(ContextLength.parse("0") == nil && ContextLength.parse("12.5K") == nil && ContextLength.parse("lots") == nil)
         #expect(ContextLength.title(32768) == "32K tokens")
         #expect(ContextLength.title(1_000_000) == "1M tokens")
-        #expect(ContextLength.title(100_000) == "100,000 tokens")
+        #expect(ContextLength.title(100_000, locale: Locale(identifier: "en_US")) == "100,000 tokens")
+        #expect(ContextLength.title(100_000, locale: Locale(identifier: "de_DE")) == "100.000 tokens")
         // As typed, read back alike.
         #expect([32768, 1_000_000, 100_000].map { ContextLength.parse(ContextLength.text($0)) } == [32768, 1_000_000, 100_000])
     }
@@ -265,7 +266,7 @@ struct ServeSettingsTests {
             ServeRecord.Failure(kind: kind, message: message, bound: bound,
                                 required_bytes: required, budget_bytes: budget, plan_context_tokens: plan)
         }
-        func problem(_ failure: ServeRecord.Failure) -> String { Server.problem(failure, port: 8000) }
+        func problem(_ failure: ServeRecord.Failure) -> String { Server.problem(failure, port: 8000, locale: Locale(identifier: "en_US")) }
         #expect(problem(failure("memory_budget", "max_memory", required: 10_858_659_840, budget: 1_073_741_824))
             == "It needs 10.1 GB of memory but the memory limit is 1 GB. Raise the memory limit in Launch Options.")
         #expect(problem(failure("memory_budget", "device_memory", required: 10_858_659_840, budget: 1_073_741_824))
@@ -276,6 +277,8 @@ struct ServeSettingsTests {
             == "Its context fits up to 73,721 tokens within the memory limit. Choose a shorter context length, or raise the memory limit.")
         #expect(problem(failure("context_budget", "disk", plan: 73721))
             == "Its context fits up to 73,721 tokens in the SSD cache. Choose a shorter context length, or a larger SSD cache.")
+        #expect(Server.problem(failure("context_budget", "disk", plan: 73721), port: 8000, locale: Locale(identifier: "de_DE"))
+            == "Its context fits up to 73.721 tokens in the SSD cache. Choose a shorter context length, or a larger SSD cache.")
         #expect(problem(failure("host_memory"))
             == "Other apps are using the memory it needs. Quit some, then start it again.")
         #expect(problem(failure("command_memory"))
@@ -845,7 +848,7 @@ struct ServerTests {
         let record = try JSONDecoder().decode(ServeRecord.self, from: Data(contentsOf: golden))
         #expect(record.pid == 4242 && record.phase == .failed)
         let failure = try #require(record.failure)
-        #expect(Server.problem(failure, port: 8000)
+        #expect(Server.problem(failure, port: 8000, locale: Locale(identifier: "en_US"))
             == "It needs 10.1 GB of memory but the memory limit is 1 GB. Raise the memory limit in Launch Options.")
         // A warm-up, with its steps done of all.
         let warming = try JSONDecoder().decode(ServeRecord.self, from: Data(contentsOf: Self.goldens.appending(
@@ -860,7 +863,7 @@ struct ServerTests {
         let record = try golden("serve_record_golden.json")
         let words = "It needs 10.1 GB of memory but the memory limit is 1 GB. Raise the memory limit in Launch Options."
         func problem(_ record: ServeRecord?, pid: pid_t, holder: pid_t? = nil) -> String {
-            Server.exitProblem(record: record, pid: pid, port: 8000, holder: holder)
+            Server.exitProblem(record: record, pid: pid, port: 8000, holder: holder, locale: Locale(identifier: "en_US"))
         }
         #expect(problem(record, pid: 4242) == words)
         // A ready server that stopped restarting its engine, in the server's own words.
@@ -1428,21 +1431,23 @@ struct OutputTests {
     }
 
     @Test func formatsFiguresAndTimes() {
-        #expect(Format.seconds(9.84) == "9.8s" && Format.seconds(24.4) == "24s" && Format.seconds(84) == "1m 24s")
-        #expect(Format.latency(.milliseconds(136)) == ("136", "ms") && Format.latency(.milliseconds(1440)) == ("1.4", "s"))
+        #expect(Format.seconds(9.84, locale: Locale(identifier: "en_US")) == "9.8s" && Format.seconds(24.4) == "24s" && Format.seconds(84) == "1m 24s")
+        #expect(Format.latency(.milliseconds(136)) == ("136", "ms") && Format.latency(.milliseconds(1440), locale: Locale(identifier: "en_US")) == ("1.4", "s"))
         #expect(Format.parts("4.3 GB") == ("4.3", "GB") && Format.parts("12") == ("12", nil))
         #expect(Format.whole(36.8) == "37")
     }
 
     @Test func formatsSizes() {
         #expect(Format.size(120_000_000) == "120 MB")
-        #expect(Format.size(6_730_000_000) == "6.7 GB")
+        #expect(Format.size(6_730_000_000, locale: Locale(identifier: "en_US")) == "6.7 GB")
+        #expect(Format.size(6_730_000_000, locale: Locale(identifier: "de_DE")) == "6,7 GB")
         #expect(Format.size(10_980_000_000) == "11 GB")
         #expect(Format.size(21_250_000_000) == "21 GB")
         #expect(Format.size(Format.gigabytes(24)) == "24 GB")
         // Memory counts as the memory limit does: a 16 GB limit is 16 GiB.
         #expect(Format.memory(16 << 30) == "16 GB")
-        #expect(Format.memory(18_467_000_000) == "17.2 GB")
+        #expect(Format.memory(18_467_000_000, locale: Locale(identifier: "en_US")) == "17.2 GB")
+        #expect(Format.memory(18_467_000_000, locale: Locale(identifier: "de_DE")) == "17,2 GB")
         #expect(Format.memory(512 << 20) == "512 MB")
     }
 }
@@ -1477,7 +1482,7 @@ struct ChatTests {
         // A first message too long has no earlier ones a new chat would leave behind.
         #expect(ChatClient.message(of: overflow, for: [chat[0]], server: target) == "This message is longer than the model’s 256K-token context.")
         target.context = 57_337
-        #expect(ChatClient.message(of: overflow, for: [chat[0]], server: target) == "This message is longer than the model’s 57,337-token context.")
+        #expect(ChatClient.message(of: overflow, for: [chat[0]], server: target, locale: Locale(identifier: "en_US")) == "This message is longer than the model’s 57,337-token context.")
         target.context = nil
         #expect(ChatClient.message(of: overflow, for: chat, server: target) == "This chat is longer than the model’s context. Start a new chat to continue.")
         let other = Data(#"{"error":{"message":"engine is recovering; retry shortly","code":"engine_recovering"}}"#.utf8)

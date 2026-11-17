@@ -153,6 +153,53 @@ void teardown(const std::shared_ptr<model::SsdReaders> &readers, kv::Layout layo
   std::cout << "teardown " << kv::formatName(layout.format) << '\n';
 }
 
+// [Gate 3 / U-02] The tier's own retained IO, read where no poll could have
+// retired anything yet: every write its file worker may still run, every restore
+// it was asked for and has not retired (a queued one counts from the ask, before
+// any reader has run it), and every batch whose end the readers have not
+// returned. The tier retires its IO in its own poll, so the graph's witness
+// (Cache::retainedIo) is what carries a transfer from that poll until its caller
+// has consumed it; here each count is exact because no poll has run.
+void retainedIoNamesTheTierItsCallerOwes(const std::shared_ptr<model::SsdReaders> &readers, kv::Layout layout) {
+  constexpr uint32_t kPages = 12;
+  test::HostKvPages pages(layout, 2 * kPages + 1);
+  const kv::SlotFormat format(layout);
+  std::shared_ptr<DiskBudget> budget;
+  Tier tier(pages, format, slotFile(format, kPages + 1, budget), readers);
+  require(tier.retainedIo().quiescent(), "a tier that started nothing owed IO");
+
+  std::vector<std::shared_ptr<engine::KvDiskSlot>> slots;
+  std::vector<std::unique_ptr<KvTransfer>> writes;
+  for (uint32_t page = 0; page < kPages; ++page) {
+    pages.fill(page, page + 1);
+    slots.push_back(tier.acquireSlot(cached));
+    writes.push_back(tier.demote(page, slots.back(), WriteClass::Reclaim, {}));
+    require(writes.back() != nullptr, "a write within the tier's bound was refused");
+  }
+  auto io = tier.retainedIo();
+  require(io.writes == kPages && io.restores == 0 && io.batches == 0 && !io.quiescent(),
+          "the writes the tier's worker runs were not named by their owner");
+  runUntilReady(tier, writes);
+  for (const std::unique_ptr<KvTransfer> &write : writes)
+    require(write->finish(), "a write failed");
+  require(tier.retainedIo().writes == 0, "the tier kept a retired write");
+
+  std::vector<std::unique_ptr<KvTransfer>> restores;
+  for (uint32_t page = 0; page < kPages; ++page)
+    restores.push_back(tier.restore(slots[page], kPages + page, {}));
+  io = tier.retainedIo();
+  require(io.restores == kPages && io.batches == 0 && !io.quiescent(),
+          "the restores asked for before any reader ran were not named by the tier");
+  tier.submitRestores();
+  io = tier.retainedIo();
+  require(io.restores == kPages && io.batches >= 1 && !io.quiescent(),
+          "the batch whose end the readers have not returned was not named");
+  runUntilReady(tier, restores);
+  for (uint32_t page = 0; page < kPages; ++page)
+    require(restores[page]->finish(), "a restore failed");
+  require(tier.retainedIo().quiescent(), "the tier's IO outlived the poll that retired it");
+}
+
 } // namespace
 
 int main() {
@@ -166,6 +213,7 @@ int main() {
                                       kv::Layout{6, 2, 256, format, 0, false, 512, 0b010110},
                                       kv::Layout{12, 2, 256, format, 128, true, 0, 0, kv::Reads::SelectedBlocks}}) {
         roundTrips(readers, layout);
+        retainedIoNamesTheTierItsCallerOwes(readers, layout);
         teardown(readers, layout);
       }
     }

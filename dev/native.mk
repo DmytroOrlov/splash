@@ -23,13 +23,15 @@ SANITIZER_CONFIG_DIGEST := $(shell printf '%s\0' $(NATIVE_CONFIG_DIGEST) \
 	$(call shell-quote,$(ENGINE_SANITIZER_CXXFLAGS)) \
 	| shasum -a 256 | cut -c1-16)
 # Control-plane tests compile the runtime sources they check: their sanitizer
-# builds cannot use the unsanitized engine library, and none links a framework.
+# builds cannot use the unsanitized engine library. The FD tests link the
+# power-source adapter to exercise its real observation mailbox.
 CACHE_SOURCES := \
 	runtime/engine/KvPool.cpp \
 	runtime/engine/KvCache.cpp \
 	runtime/engine/StateCache.cpp \
 	runtime/engine/Cache.cpp \
-	runtime/engine/WriteBehind.cpp
+	runtime/engine/WriteBehind.cpp \
+	runtime/engine/ResourceDomainLease.cpp
 BACKEND_CONTROL_SOURCES := \
 	runtime/engine/Scheduler.cpp \
 	runtime/model/DraftContextPlan.cpp \
@@ -90,6 +92,8 @@ TEST_MEMORY_AUDIT_ASAN := $(ENGINE_SANITIZER_BUILD)/memory-audit-asan-ubsan
 TEST_STATUS_ASAN := $(ENGINE_SANITIZER_BUILD)/runtime-status-asan-ubsan
 TEST_JSON_WRITER_ASAN := $(ENGINE_SANITIZER_BUILD)/json-writer-asan-ubsan
 TEST_MEMORY_LEDGER_ASAN := $(ENGINE_SANITIZER_BUILD)/memory-ledger-asan-ubsan
+TEST_MEMORY_GOVERNOR_ASAN := $(ENGINE_SANITIZER_BUILD)/memory-governor-asan-ubsan
+TEST_MEMORY_GOVERNOR_TSAN := $(ENGINE_SANITIZER_BUILD)/memory-governor-tsan
 TEST_MEMORY_TEST := $(ENGINE_TEST_BUILD)/engine-memory-plan
 TEST_VISION_PREPARATION := $(ENGINE_TEST_BUILD)/vision-preparation
 TEST_DRAFT_PREPARATION := $(ENGINE_TEST_BUILD)/draft-preparation
@@ -137,11 +141,18 @@ TEST_ENGINE_TEST := $(ENGINE_TEST_BUILD)/engine
 TEST_ELASTIC_KV_TEST := $(ENGINE_TEST_BUILD)/elastic-kv-pool
 TEST_PROTOCOL_TEST := $(ENGINE_TEST_BUILD)/protocol
 TEST_NATIVE_LOOP_TEST := $(ENGINE_TEST_BUILD)/native-engine-loop
+TEST_NATIVE_LIFECYCLE := $(ENGINE_TEST_BUILD)/native-lifecycle-focused
+TEST_WRITER_AUTHORITY := $(ENGINE_TEST_BUILD)/writer-authority
+TEST_DOMAIN_GOVERNOR := $(ENGINE_TEST_BUILD)/domain-governor-scope
+TEST_SNAPSHOT_PUBLICATION := $(ENGINE_TEST_BUILD)/memory-snapshot-publication
+TEST_ENGINE_WRITER := $(ENGINE_TEST_BUILD)/engine-writer
+TEST_WEIGHT_IMAGES_WRITER := $(ENGINE_TEST_BUILD)/weight-images-writer
 TEST_ENGINE_SIM := $(ENGINE_TEST_BUILD)/engine-sim
 TEST_PRESSURE_SERVING := $(ENGINE_TEST_BUILD)/pressure-serving
 TEST_FD_TRANSPORT_TEST := $(ENGINE_TEST_BUILD)/native-fd-transport
 TEST_BOOTSTRAP_TEST := $(ENGINE_TEST_BUILD)/runtime-bootstrap
 TEST_NATIVE_ARGUMENTS_TEST := $(ENGINE_TEST_BUILD)/native-arguments
+TEST_NATIVE_MAIN := $(ENGINE_TEST_BUILD)/native-main
 TEST_RESOURCES_TEST := $(ENGINE_TEST_BUILD)/runtime-resources
 TEST_KV_PAGE_TIER_TEST := $(ENGINE_TEST_BUILD)/kv-page-tier
 TEST_METRICS_TEST := $(ENGINE_TEST_BUILD)/runtime-metrics
@@ -248,9 +259,12 @@ TEST_CPU_TARGETS := $(TEST_SLOT_FILE) $(TEST_SPARSE_ROW_STORE) $(TEST_SSD_READER
 	$(TEST_ELASTIC_KV_TEST) \
 	$(TEST_PROTOCOL_TEST) \
 	$(TEST_NATIVE_LOOP_TEST) \
+	$(TEST_NATIVE_LIFECYCLE) \
+	$(TEST_WRITER_AUTHORITY) $(TEST_DOMAIN_GOVERNOR) $(TEST_SNAPSHOT_PUBLICATION) $(TEST_ENGINE_WRITER) \
 	$(TEST_ENGINE_SIM) \
 	$(TEST_FD_TRANSPORT_TEST) \
 	$(TEST_BOOTSTRAP_TEST) \
+	$(TEST_NATIVE_MAIN) \
 	$(TEST_NATIVE_ARGUMENTS_TEST) \
 	$(TEST_METRICS_TEST) \
 	$(TEST_MEMORY_AUDIT_TEST) \
@@ -260,7 +274,7 @@ TEST_CPU_TARGETS := $(TEST_SLOT_FILE) $(TEST_SPARSE_ROW_STORE) $(TEST_SSD_READER
 	$(TEST_JSON_WRITER) \
 	$(TEST_Q8_CPU_TEST)
 
-TEST_METAL_TARGETS := $(TEST_DRAFT_PREPARATION) \
+TEST_METAL_TARGETS := $(TEST_WEIGHT_IMAGES_WRITER) $(TEST_DRAFT_PREPARATION) \
 	$(TEST_GGUF_PROJECTION) \
 	$(TEST_ANE_FFN) \
 	$(TEST_ANE_PROGRAM_FAULTS) \
@@ -332,7 +346,8 @@ SANITIZER_CONFIG_TARGETS := $(TEST_SLOT_FILE_ASAN) $(TEST_SLOT_FILE_TSAN) \
 	$(TEST_ELASTIC_KV_ASAN) $(TEST_ELASTIC_KV_TSAN) \
 	$(TEST_SLOT_RECYCLER_ASAN) $(TEST_SLOT_RECYCLER_TSAN) \
 	$(TEST_MEMORY_PLAN_ASAN) $(TEST_MEMORY_AUDIT_ASAN) $(TEST_STATUS_ASAN) $(TEST_JSON_WRITER_ASAN) \
-	$(TEST_MEMORY_LEDGER_ASAN)
+	$(TEST_MEMORY_LEDGER_ASAN) \
+	$(TEST_MEMORY_GOVERNOR_ASAN) $(TEST_MEMORY_GOVERNOR_TSAN)
 
 # Every native test, benchmark and tool depends on the engine's and the tests'
 # headers, and compiles and links its other prerequisites in the order it
@@ -362,14 +377,15 @@ $(TEST_DRAFT_CONTEXT_PLAN_TEST): runtime/model/DraftContextPlan.cpp \
 		dev/benchmarks/PrefillWork.hpp \
 		dev/tests/engine/draft_context_plan_test.cpp
 $(TEST_METRICS_TEST): $(BACKEND_CONTROL_SOURCES) \
-		runtime/engine/MemoryGovernor.cpp runtime/engine/MemoryLedger.cpp \
+		runtime/engine/MemoryGovernor.cpp runtime/engine/MemoryLedger.cpp runtime/engine/ResourceDomainLease.cpp \
 		dev/tests/engine/runtime_metrics_test.cpp
-$(TEST_MEMORY_GOVERNOR_TEST): runtime/metal/DeviceCapabilities.cpp \
+$(TEST_MEMORY_GOVERNOR_TEST) $(TEST_MEMORY_GOVERNOR_ASAN) $(TEST_MEMORY_GOVERNOR_TSAN): runtime/metal/DeviceCapabilities.cpp \
 		runtime/engine/MemoryPlan.cpp runtime/engine/MemoryGovernor.cpp \
-		runtime/engine/MemoryLedger.cpp \
+		runtime/engine/MemoryLedger.cpp runtime/engine/ResourceDomainLease.cpp \
 		dev/tests/engine/memory_governor_test.cpp
 $(TEST_MEMORY_LEDGER) $(TEST_MEMORY_LEDGER_ASAN): runtime/metal/DeviceCapabilities.cpp \
 		runtime/engine/MemoryPlan.cpp runtime/engine/MemoryGovernor.cpp runtime/engine/MemoryLedger.cpp \
+		runtime/engine/ResourceDomainLease.cpp \
 		dev/tests/engine/memory_ledger_test.cpp
 $(TEST_Q8_CPU_TEST): dev/tests/engine/q8_paged_kv_test.cc
 $(TEST_LEGACY_WEIGHT_CACHE): dev/tests/engine/legacy_weight_cache_test.cpp
@@ -377,7 +393,7 @@ $(TEST_LEGACY_WEIGHT_CACHE): dev/tests/engine/legacy_weight_cache_test.cpp
 $(TEST_WEIGHT_SOURCE) $(TEST_GGUF_FILE) $(TEST_MEMORY_TEST) $(TEST_KV_PAGE_CACHE_TEST) \
 		$(TEST_DRAFT_CONTEXT_PLAN_TEST) $(TEST_RAGGED_SCHEDULER_TEST) $(TEST_MODEL_BOUNDARY_TEST) \
 		$(TEST_WEIGHT_RESIDENCY) \
-		$(TEST_ELASTIC_KV_TEST) $(TEST_NATIVE_LOOP_TEST) $(TEST_ENGINE_SIM) $(TEST_METRICS_TEST) \
+		$(TEST_ELASTIC_KV_TEST) $(TEST_NATIVE_LOOP_TEST) $(TEST_NATIVE_LIFECYCLE) $(TEST_ENGINE_SIM) $(TEST_METRICS_TEST) \
 		$(TEST_MEMORY_AUDIT_TEST) $(TEST_MEMORY_GOVERNOR_TEST) $(TEST_MEMORY_LEDGER) $(TEST_STATUS_TEST) \
 		$(TEST_JSON_WRITER) \
 		$(TEST_Q8_CPU_TEST) $(TEST_SLOT_FILE) $(TEST_SPARSE_ROW_STORE) $(TEST_SSD_READERS) $(TEST_SLOT_RECYCLER) \
@@ -395,6 +411,14 @@ $(TEST_FAMILY_VALUES): dev/tests/engine/family_values_test.cpp $(ENGINE_LIBRARY)
 $(TEST_VISION_PREPARATION): dev/tests/engine/vision_preparation_test.cpp $(ENGINE_LIBRARY)
 $(TEST_NATIVE_ARGUMENTS_TEST): dev/tests/engine/native_arguments_test.cpp \
 		$(ENGINE_LIBRARY)
+# The battery-policy main's real entry points: the test translation unit
+# includes runtime/main.mm under SPLASH_NATIVE_MAIN_TEST (no int main) and
+# keeps the launcher, the battery policy gate and the startup dispatch alive.
+$(TEST_NATIVE_MAIN): dev/tests/engine/native_main_test.mm runtime/main.mm \
+		runtime/engine/PowerSource.mm \
+		$(BUILD_ID_HEADER) $(ENGINE_LIBRARY) $(LIB) | $(ENGINE_TEST_BUILD)
+	$(RUN_CONFIGURED) $(CXX) $(ENGINE_TEST_CXXFLAGS) -fobjc-arc \
+		-include $(BUILD_ID_HEADER) $< $(ENGINE_LIBRARY) $(ENGINE_LINKFLAGS) -o $@
 $(TEST_ANE_FFN_STARTUP): dev/tests/engine/ane_ffn_startup_test.cpp $(ENGINE_LIBRARY)
 $(TEST_MODEL_LOADING_TEST): dev/tests/engine/model_loading_test.cpp \
 		$(ENGINE_LIBRARY)
@@ -408,10 +432,17 @@ $(TEST_MODEL_EXECUTION_PLANS): dev/tests/engine/model_execution_plan_test.cpp \
 		$(ENGINE_LIBRARY)
 $(TEST_VISION_METAL_TEST): dev/tests/engine/vision_metal_test.cpp \
 		$(ENGINE_LIBRARY) $(LIB)
+$(TEST_WRITER_AUTHORITY): dev/tests/engine/writer_authority_test.cpp $(ENGINE_LIBRARY)
+$(TEST_DOMAIN_GOVERNOR): dev/tests/engine/resource_domain_governor_scope_test.cpp $(ENGINE_LIBRARY)
+$(TEST_SNAPSHOT_PUBLICATION): dev/tests/engine/memory_snapshot_publication_test.cpp $(ENGINE_LIBRARY)
+$(TEST_ENGINE_WRITER): dev/tests/engine/engine_writer_test.cpp $(ENGINE_LIBRARY)
+$(TEST_WEIGHT_IMAGES_WRITER): dev/tests/engine/weight_images_writer_test.cpp $(ENGINE_LIBRARY) $(LIB)
 
 $(TEST_SAFETENSORS_CHECKPOINT) $(TEST_FAMILY_VALUES) $(TEST_VISION_PREPARATION) \
 		$(TEST_NATIVE_ARGUMENTS_TEST) $(TEST_ANE_FFN_STARTUP) $(TEST_MODEL_LOADING_TEST) $(TEST_OPERATOR_WORKSPACE) \
-		$(TEST_EXECUTION_PLANS) $(TEST_KERNEL_SELECTION) $(TEST_MODEL_EXECUTION_PLANS) $(TEST_VISION_METAL_TEST): | $(ENGINE_TEST_BUILD)
+		$(TEST_EXECUTION_PLANS) $(TEST_KERNEL_SELECTION) $(TEST_MODEL_EXECUTION_PLANS) $(TEST_VISION_METAL_TEST) \
+		$(TEST_WRITER_AUTHORITY) $(TEST_DOMAIN_GOVERNOR) $(TEST_SNAPSHOT_PUBLICATION) $(TEST_ENGINE_WRITER) \
+		$(TEST_WEIGHT_IMAGES_WRITER): | $(ENGINE_TEST_BUILD)
 	$(RUN_CONFIGURED) $(CXX) $(ENGINE_TEST_CXXFLAGS) $(TEST_INPUTS) \
 		$(ENGINE_LINKFLAGS) -o $@
 $(TEST_COMMAND_LIMITS): dev/tests/engine/command_limits_test.cpp $(ENGINE_LIBRARY) | $(ENGINE_TEST_BUILD)
@@ -430,7 +461,7 @@ $(TEST_GGUF_REFERENCE): dev/tests/engine/gguf_reference_test.mm $(ENGINE_LIBRARY
 $(TEST_GGUF_PLANNER): dev/tests/engine/gguf_planner_test.mm $(ENGINE_LIBRARY)
 $(TEST_GGUF_PREPARATION): dev/tests/engine/gguf_preparation_test.mm $(ENGINE_LIBRARY)
 $(TEST_BOOTSTRAP_TEST): dev/tests/engine/runtime_bootstrap_test.mm \
-		dev/tests/engine/ProtocolPeer.cpp $(ENGINE_LIBRARY)
+		dev/tests/engine/ProtocolPeer.cpp $(ENGINE_LIBRARY) $(LIB)
 $(TEST_RESOURCES_TEST): dev/tests/engine/runtime_resources_test.mm dev/tools/LoadOptions.hpp \
 		dev/tests/engine/ProtocolPeer.cpp $(ENGINE_LIBRARY) $(LIB)
 $(TEST_KV_PAGE_TIER_TEST): dev/tests/engine/kv_page_tier_test.mm \
@@ -654,9 +685,15 @@ test-engine-cpu: $(TEST_CPU_TARGETS) $(TEST_ATTENTION_SWEEP) $(TEST_BACKEND_BENC
 	$(ENGINE_CPU_STEP) $(TEST_ELASTIC_KV_TEST)
 	$(ENGINE_CPU_STEP) $(TEST_PROTOCOL_TEST) dev/tests/engine/protocol_golden.txt
 	$(ENGINE_CPU_STEP) $(TEST_NATIVE_LOOP_TEST)
+	$(ENGINE_CPU_STEP) $(TEST_NATIVE_LIFECYCLE)
+	$(ENGINE_CPU_STEP) $(TEST_WRITER_AUTHORITY)
+	$(ENGINE_CPU_STEP) $(TEST_DOMAIN_GOVERNOR)
+	$(ENGINE_CPU_STEP) $(TEST_SNAPSHOT_PUBLICATION)
+	$(ENGINE_CPU_STEP) $(TEST_ENGINE_WRITER)
 	$(ENGINE_CPU_STEP) $(TEST_FD_TRANSPORT_TEST)
 	$(ENGINE_CPU_STEP) $(TEST_BOOTSTRAP_TEST)
 	$(ENGINE_CPU_STEP) $(TEST_NATIVE_ARGUMENTS_TEST) dev/tests/engine/native_command_golden.txt $(MODEL_CONFIGS)
+	$(ENGINE_CPU_STEP) $(TEST_NATIVE_MAIN)
 	$(ENGINE_CPU_STEP) $(TEST_METRICS_TEST)
 	$(ENGINE_CPU_STEP) $(TEST_MEMORY_AUDIT_TEST)
 	$(ENGINE_CPU_STEP) $(TEST_MEMORY_GOVERNOR_TEST)
@@ -668,6 +705,7 @@ test-engine-cpu: $(TEST_CPU_TARGETS) $(TEST_ATTENTION_SWEEP) $(TEST_BACKEND_BENC
 	@if [ -s $(ENGINE_CPU_FAILED) ]; then echo "test-engine-cpu failed:"; sed "s/^/  /" $(ENGINE_CPU_FAILED); exit 1; fi
 
 test-engine-metal: $(TEST_METAL_TARGETS)
+	$(METAL_TEST_ENV) $(TEST_WEIGHT_IMAGES_WRITER) $(LIB)
 	$(METAL_TEST_ENV) $(BUILD_ID_PYTHON) dev/tests/engine/run_draft_preparation.py $(TEST_DRAFT_PREPARATION) $(LIB) \
 		$(WEIGHT_GOLDENS)
 	$(METAL_TEST_ENV) $(TEST_GGUF_PREPARATION) $(LIB) $(WEIGHT_GOLDENS) $(MLX_QUANTIZATION_FIXTURE)
@@ -815,7 +853,7 @@ $(TEST_ELASTIC_KV_TEST) $(TEST_ELASTIC_KV_ASAN) $(TEST_ELASTIC_KV_TSAN): \
 $(TEST_SLOT_RECYCLER) $(TEST_SLOT_RECYCLER_ASAN) $(TEST_SLOT_RECYCLER_TSAN): \
 		runtime/model/SlotRecycler.cpp dev/tests/engine/slot_recycler_test.cpp
 $(TEST_PERSISTENT_CACHE) $(TEST_PERSISTENT_CACHE_ASAN) $(TEST_PERSISTENT_CACHE_TSAN): \
-		$(CACHE_SOURCES) runtime/engine/MemoryLedger.cpp runtime/model/SlotFile.cpp \
+		$(NATIVE_RUNTIME_SOURCES) runtime/engine/MemoryGovernor.cpp runtime/engine/MemoryLedger.cpp runtime/model/SlotFile.cpp \
 		dev/tests/engine/persistent_cache_test.cpp
 $(TEST_ENGINE_CACHE_TEST) $(TEST_ENGINE_CACHE_ASAN) $(TEST_ENGINE_CACHE_TSAN): \
 		$(CACHE_SOURCES) runtime/engine/MemoryLedger.cpp runtime/model/SlotFile.cpp \
@@ -829,7 +867,7 @@ $(TEST_PROTOCOL_TEST) $(TEST_PROTOCOL_ASAN) $(TEST_PROTOCOL_TSAN): \
 $(TEST_ENGINE_TEST) $(TEST_ENGINE_ASAN) $(TEST_ENGINE_TSAN): \
 		$(BACKEND_CONTROL_SOURCES) \
 		runtime/engine/MemoryGovernor.cpp \
-		runtime/engine/MemoryLedger.cpp runtime/model/SlotFile.cpp \
+		runtime/engine/ResourceDomainLease.cpp runtime/engine/MemoryLedger.cpp runtime/model/SlotFile.cpp \
 		dev/benchmarks/PrefillWork.hpp \
 		dev/tests/engine/engine_requests_test.cpp dev/tests/engine/engine_checkpoints_test.cpp \
 		dev/tests/engine/engine_commands_test.cpp dev/tests/engine/engine_memory_test.cpp \
@@ -850,19 +888,32 @@ $(TEST_TIMING_PROFILE) $(TEST_TIMING_PROFILE_ASAN) $(TEST_TIMING_PROFILE_TSAN): 
 		$(BACKEND_CONTROL_SOURCES) \
 		runtime/engine/MemoryGovernor.cpp runtime/engine/MemoryLedger.cpp \
 		dev/tests/engine/TimingProfile.cpp dev/tests/engine/timing_profile_test.cpp
+# The FD admission regression uses the real power callback mailbox.
+$(TEST_FD_TRANSPORT_TEST): ENGINE_TEST_CXXFLAGS += -framework CoreFoundation -framework IOKit
+$(TEST_FD_TRANSPORT_ASAN) $(TEST_FD_TRANSPORT_TSAN): ENGINE_SANITIZER_CXXFLAGS += -framework CoreFoundation -framework IOKit
 $(TEST_FD_TRANSPORT_TEST) $(TEST_FD_TRANSPORT_ASAN) $(TEST_FD_TRANSPORT_TSAN): \
+		runtime/engine/PowerSource.mm \
 		$(NATIVE_RUNTIME_SOURCES) \
-		runtime/engine/MemoryGovernor.cpp runtime/engine/MemoryLedger.cpp \
+		runtime/engine/MemoryGovernor.cpp runtime/engine/ResourceDomainLease.cpp runtime/engine/MemoryLedger.cpp \
 		runtime/engine/FdTransport.cpp dev/tests/engine/metal_stand_in.cpp \
 		dev/tests/engine/ProtocolPeer.cpp \
 		dev/tests/engine/native_fd_transport_test.cpp
 $(TEST_NATIVE_LOOP_TEST) $(TEST_NATIVE_LOOP_ASAN) $(TEST_NATIVE_LOOP_TSAN): \
 		$(NATIVE_RUNTIME_SOURCES) \
 		runtime/engine/MemoryGovernor.cpp runtime/engine/MemoryControl.cpp \
-		runtime/engine/MemoryLedger.cpp \
+		runtime/engine/MemoryLedger.cpp runtime/model/SlotFile.cpp \
 		dev/tests/engine/ProtocolPeer.cpp \
-		dev/tests/engine/native_loop_wire_test.cpp dev/tests/engine/native_loop_weights_test.cpp \
-		dev/tests/engine/native_loop_memory_test.cpp dev/tests/engine/native_loop_test_main.cpp
+		dev/tests/engine/native_loop_wire_test.cpp dev/tests/engine/native_loop_battery_test.cpp \
+		dev/tests/engine/native_loop_weights_test.cpp dev/tests/engine/native_loop_memory_test.cpp \
+		dev/tests/engine/native_loop_test_main.cpp
+$(TEST_NATIVE_LIFECYCLE): ENGINE_TEST_CXXFLAGS += -framework Foundation -framework IOKit
+$(TEST_NATIVE_LIFECYCLE): TEST_INPUTS = $(filter-out dev/tests/engine/engine_writer_test.cpp %.h %.hpp %.metallib,$(BUILD_INPUTS))
+$(TEST_NATIVE_LIFECYCLE): $(NATIVE_RUNTIME_SOURCES) \
+		runtime/engine/PowerSource.mm runtime/engine/Status.cpp runtime/engine/MemoryAudit.cpp \
+		runtime/engine/MemoryGovernor.cpp runtime/engine/MemoryLedger.cpp runtime/engine/MemoryPlan.cpp \
+		runtime/model/SlotFile.cpp runtime/metal/DeviceCapabilities.cpp \
+		dev/tests/engine/ProtocolPeer.cpp dev/tests/engine/engine_writer_test.cpp \
+		dev/tests/engine/native_lifecycle_ledger_test.cpp
 $(TEST_ENGINE_SIM) $(TEST_ENGINE_SIM_ASAN) $(TEST_ENGINE_SIM_TSAN): \
 		$(NATIVE_RUNTIME_SOURCES) \
 		runtime/engine/MemoryGovernor.cpp runtime/engine/MemoryControl.cpp \
@@ -949,6 +1000,8 @@ test-sanitizers: $(SANITIZER_CONFIG_TARGETS)
 	$(ASAN_TEST_ENV) $(TEST_STATUS_ASAN) dev/tests/engine/status_golden.json dev/tests/engine/status_variants_golden.jsonl
 	$(ASAN_TEST_ENV) $(TEST_JSON_WRITER_ASAN)
 	$(ASAN_TEST_ENV) $(TEST_MEMORY_LEDGER_ASAN)
+	$(ASAN_TEST_ENV) $(TEST_MEMORY_GOVERNOR_ASAN)
+	$(TSAN_TEST_ENV) $(TEST_MEMORY_GOVERNOR_TSAN)
 
 # The Metal tests of the backend, whose host-step runner shares each
 # command's steps with the thread that encodes it (its behaviour tests: its

@@ -6,6 +6,7 @@
 #include "model/Model.hpp"
 
 #include <cstdint>
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -148,9 +149,30 @@ public:
   void setCompletionNotifier(std::function<void()> notifier) {
     completion_ = std::move(notifier);
   }
+  // [T031] Moves one already-prepared closure into this slot and hands the
+  // previous one back (see Engine::installCompletionBinding): moves only, no
+  // copy and no allocation here — every allocation belongs to the preparation
+  // phase — so a staged adoption can undo this without calling a potentially
+  // allocating setter again inside a rollback.
+  [[nodiscard]] std::function<void()> installCompletion(std::function<void()> &&slot) noexcept {
+    std::function<void()> displaced = std::move(completion_);
+    completion_ = std::move(slot);
+    return displaced;
+  }
+  // [Gate 4 / U-01] Whether this slot holds the loop's completion closure
+  // now. `Engine::callbackRetirement` measures the closure's stable bindings
+  // this way instead of assuming them: a slot that a setup never reached is
+  // not counted, so the receipt never mistakes a borrowed closure for rest.
+  [[nodiscard]] uint32_t notifierBindings() const noexcept {
+    return completion_ ? 1u : 0u;
+  }
 
+  // The deepest state on the chain this request can still reuse, skipping the
+  // blocks it gave up on (a restore of that block already failed for it;
+  // the block itself stays in the cache for requests that did not).
   [[nodiscard]] std::optional<CompositeStateLease>
-  acquireDeepest(std::span<const uint64_t> kvChain);
+  acquireDeepest(std::span<const uint64_t> kvChain,
+                 std::span<const uint64_t> excluded = {});
 
   // Reuses a RAM copy without a restore pin. A normal boundary upgrades a
   // checkpoint; a checkpoint cannot downgrade an ordinary state. False for a
@@ -314,6 +336,20 @@ public:
   // reclaim frees at once after it lands.
   [[nodiscard]] uint64_t persistingBytes() const noexcept {
     return pending_ && pending_->source ? pending_->source->bytes() : 0;
+  }
+  // [Gate 3 / U-02] The write in flight has landed and waits for pollOffload:
+  // its disk copy is published there, a failed one is discarded there, and
+  // until that poll the transfer still owns its storage, the RAM copy it reads
+  // in place and the entry it stands for. `writing()` cannot tell this apart
+  // from a write still running, so a drain witness that only asks writing()
+  // cannot show a landed-but-unpolled transfer refusing it.
+  [[nodiscard]] bool offloadLanded() const noexcept {
+    return pending_ && pending_->transfer->ready();
+  }
+  // The write in flight is of a block of this chain: a lookup of the chain
+  // that found no state owes that transfer, and waits rather than recomputes.
+  [[nodiscard]] bool offloadPending(std::span<const uint64_t> kvChain) const noexcept {
+    return pending_ && std::ranges::find(kvChain, pending_->kvBlock) != kvChain.end();
   }
   [[nodiscard]] bool pollOffload();
   [[nodiscard]] StateCacheSnapshot snapshot() const noexcept;
